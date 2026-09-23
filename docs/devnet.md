@@ -9,7 +9,7 @@ Anchor program `programs/flacon` (briefing §6). Toolchain: Anchor CLI 1.2.0, So
 | Program id | `7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL` — [explorer](https://explorer.solana.com/address/7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL?cluster=devnet) |
 | Upgrade authority / deploy wallet | `Bsy5DFxtugs5PGqjF8ADrPYm7kt89dFpwEe9hTZokpFy` (`~/.config/solana/id.json`) — [explorer](https://explorer.solana.com/address/Bsy5DFxtugs5PGqjF8ADrPYm7kt89dFpwEe9hTZokpFy?cluster=devnet) |
 | Registry PDA `["registry"]` | `4JPPCBA7DpbmfDsq1oHDuiJD1zL8VhfuJSoWQyYZXZWt` — [explorer](https://explorer.solana.com/address/4JPPCBA7DpbmfDsq1oHDuiJD1zL8VhfuJSoWQyYZXZWt?cluster=devnet) |
-| Deploy tx | **pending** — see status below |
+| Deployed 2026-09-24 (slot 503146565), IDL account initialised (`anchor idl init`). Explorer: https://explorer.solana.com/address/7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL?cluster=devnet
 
 The program id is fixed in `Anchor.toml` (`[programs.localnet]` / `[programs.devnet]`), `declare_id!` in `programs/flacon/src/lib.rs`, `.env.example` (`FV_PROGRAM_ID`, `NEXT_PUBLIC_PROGRAM_ID`) and `apps/verify/.env`. The program keypair lives in `target/deploy/flacon-keypair.json` (git-ignored — back it up; it is only needed for the *first* deploy, upgrades are signed by the wallet).
 

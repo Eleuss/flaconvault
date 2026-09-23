@@ -26,8 +26,8 @@
     "@types/node": "^22.0.0",
     "chai": "^4.5.0",
     "mocha": "^10.8.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "ts-mocha": "^10.0.0",
     "ts-node": "^10.9.0",
     "tsx": "^4.19.0",
@@ -35,8 +35,8 @@
     "typescript": "^5.7.0"
   },
   "overrides": {
-    "react": "18.3.1",
-    "react-dom": "18.3.1",
+    "react": "$react",
+    "react-dom": "$react-dom",
     "@types/react": "^18",
     "@types/react-dom": "^18"
   }

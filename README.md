@@ -32,17 +32,41 @@ One truth, three parts: **the server is the only place that can check the chip**
 ## Run it
 
 ```bash
-# 1. proof package (once, and after changes)
-npm install && npm run proof:build && npm run vectors
+# 1. packages (once, and after changes): proof + vision, shared vectors
+npm install && npm run proof:build && npm run vectors && npm run build -w @flaconvault/vision
 
 # 2. verification server — http://localhost:8787
 cd apps/verify && uv sync && uv run uvicorn fv.main:app --port 8787 --reload
 
-# 3. web app — http://localhost:3000
+# 3. web app — http://localhost:3000  (copies OpenCV.js + heat_fields.json into public/ first)
 npm run web:dev
 ```
 
 Then open `/dev`, create a virtual tag for `SN-2026-000001`, hit **Tap**, open it in `/t`, follow to `/p/SN-2026-000001`.
+
+### Chain: local validator (no faucet needed)
+
+```bash
+anchor localnet --validator legacy                       # builds + deploys programs/flacon, 500 SOL for ~/.config/solana/id.json
+ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 npx tsx scripts/seed-devnet.ts --server-pubkey-from-env   # registry, server key, partner, sites
+ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 npx tsx scripts/seed-passports.ts                          # the three seed passports + seals
+```
+
+Set `NEXT_PUBLIC_SOLANA_RPC=http://127.0.0.1:8899` in `apps/web/.env.local` and `FV_SOLANA_RPC` in `apps/verify/.env`. The scan flow then runs end-to-end with the simulator: `/scan` → virtual tap → signature → transaction (burner wallet, airdrop button) → `/p/[serial]`.
+
+### Chain: devnet
+
+Same scripts without `ANCHOR_PROVIDER_URL`, after `anchor deploy --provider.cluster devnet` — needs devnet SOL in `~/.config/solana/id.json` (see `docs/devnet.md`).
+
+### Tests
+
+```bash
+npm run proof:test                          # 9   byte layout, grade rule, bundle hash, ed25519
+npm run test -w @flaconvault/vision         # 7   synthetic card: 10/10 under tilt, light, blur, noise
+cd apps/verify && uv run pytest -q          # 26+ SDM vectors, msg/sig/bundle identical to vectors.json, simulator flow
+anchor test --validator legacy              # 15  record_scan with/without Ed25519 ix, replay, tier gating, dead seal, grade table
+cargo test -p flacon                        # 9   message reconstruction, grade constants
+```
 
 ## Decisions that are fixed (briefing §1)
 
@@ -52,6 +76,17 @@ One chip (NTAG 424 DNA standard, no TagTamper) · mechanical tamper: a torn ante
 
 The seal is a **handling and provenance record, not a damage record**. Say "Siegel echt · Tap 14", "Hitze: über 40 °C erfasst". Never "beschädigt", "NFT", "fälschungssicher durch Blockchain".
 
-## Status
+## Status (2026-09-24)
 
-See commits with `— DoD` for finished sections. Devnet addresses: [`docs/devnet.md`](docs/devnet.md).
+| Briefing § | State |
+|---|---|
+| 4 data contracts, `packages/proof`, vectors | done — DoD |
+| 5 verification server + simulator | done — DoD (26 tests) |
+| 6 Anchor program | built + tested (15 + 9); **devnet deploy pending devnet SOL** |
+| 7 web screens `/`, `/p`, `/t`, `/dev`, `/certify`, `/wallet` | done; `/market` is week 3 |
+| 8 scan flow | done, verified end-to-end on a local validator with the simulator; camera/WebNFC path needs the Android device |
+| 9 camera indicator reading | done (`packages/vision`, `/dev/vision`); calibrate `docs/heat_fields.json` on delivery day |
+| 10 passport timeline + reconcile | timeline done; reconcile job in progress |
+| 11 escrow, 12 reputation view | 12 read view done; 11 not started (week 3) |
+
+Devnet addresses: [`docs/devnet.md`](docs/devnet.md).

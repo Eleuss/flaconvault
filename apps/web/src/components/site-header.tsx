@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { DEV_SIMULATOR } from "@/lib/config";
+import { WalletButton } from "./wallet-button";
 
 export function SiteHeader() {
   return (
@@ -15,6 +16,7 @@ export function SiteHeader() {
           <Link href="/scan" className="hover:text-ink">Siegel prüfen</Link>
           <Link href="/p/SN-2026-000001" className="hover:text-ink">Pass</Link>
           {DEV_SIMULATOR && <Link href="/dev" className="rounded-full border border-line px-3 py-1 text-xs hover:border-ink hover:text-ink">Simulator</Link>}
+          <WalletButton />
         </nav>
       </div>
     </header>

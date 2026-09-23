@@ -11,14 +11,21 @@
     "prebuild": "node scripts/copy-vendor.mjs"
   },
   "dependencies": {
+    "@anchor-lang/core": "^1.2.0",
     "@flaconvault/proof": "*",
+    "@flaconvault/vision": "*",
+    "@solana/wallet-adapter-base": "^0.9.28",
+    "@solana/wallet-adapter-phantom": "^0.9.30",
+    "@solana/wallet-adapter-react": "^0.15.40",
+    "@solana/wallet-adapter-react-ui": "^0.9.40",
+    "@solana/wallet-adapter-unsafe-burner": "^0.1.12",
     "@solana/web3.js": "^1.99.0",
+    "@techstark/opencv-js": "5.0.0-release.1",
     "lucide-react": "^0.460.0",
     "next": "14.2.35",
     "react": "^18",
     "react-dom": "^18",
-    "@flaconvault/vision": "*",
-    "@techstark/opencv-js": "5.0.0-release.1"
+    "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
     "@types/node": "^20",

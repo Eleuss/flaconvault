@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "/Users/av/.local/node/bin/npm",
+      "runtimeArgs": ["run", "dev", "-w", "@flaconvault/web"],
+      "port": 3000
+    },
+    {
+      "name": "verify",
+      "runtimeExecutable": "/Users/av/.local/bin/uv",
+      "runtimeArgs": ["run", "--directory", "apps/verify", "uvicorn", "fv.main:app", "--port", "8787"],
+      "port": 8787
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #fbfbf9;
+  --surface: #ffffff;
+  --ink: #171c19;
+  --muted: #5d675f;
+  --line: #d9ded9;
+  --amber: #a6651b;
+  --forest: #1f4b3b;
+  --ok: #2f7a4f;
+  --warn: #b7791f;
+  --bad: #b3261e;
+  --none: #8a938c;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121513;
+    --surface: #181c19;
+    --ink: #ecefec;
+    --muted: #9aa49c;
+    --line: #2a302c;
+    --amber: #d08a3a;
+    --forest: #7fb59c;
+    --ok: #63b083;
+    --warn: #d8a34a;
+    --bad: #e0685f;
+    --none: #6f7872;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #121513; --surface: #181c19; --ink: #ecefec; --muted: #9aa49c; --line: #2a302c;
+  --amber: #d08a3a; --forest: #7fb59c; --ok: #63b083; --warn: #d8a34a; --bad: #e0685f; --none: #6f7872;
+  color-scheme: dark;
+}
+
+html { background: var(--bg); }
+body { color: var(--ink); background: var(--bg); font-feature-settings: "ss01", "cv11"; -webkit-font-smoothing: antialiased; }
+.container-page { @apply mx-auto w-full max-w-page px-4 sm:px-6; }
+.eyebrow { @apply text-[11px] font-semibold uppercase tracking-[0.18em] text-muted; }
+.hairline { @apply border-t border-line; }
+.tabular { font-variant-numeric: tabular-nums; }
+.btn { @apply inline-flex items-center justify-center gap-2 rounded-full border border-ink bg-ink px-5 py-2.5 text-sm font-medium text-bg transition hover:opacity-90 active:translate-y-px disabled:opacity-40 disabled:pointer-events-none; }
+.btn-outline { @apply inline-flex items-center justify-center gap-2 rounded-full border border-line bg-transparent px-5 py-2.5 text-sm font-medium text-ink transition hover:border-ink active:translate-y-px disabled:opacity-40 disabled:pointer-events-none; }
+.btn-sm { @apply px-3.5 py-1.5 text-xs; }
+.card { @apply rounded-2xl border border-line bg-surface; }
+.link { @apply underline decoration-line underline-offset-4 transition hover:decoration-ink; }
+.mono { @apply font-mono text-[12px] tracking-tight; }
+@media (prefers-reduced-motion: no-preference) {
+  .page-in { animation: fade-in 420ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+  @keyframes fade-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+}

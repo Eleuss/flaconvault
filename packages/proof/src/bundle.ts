@@ -25,7 +25,7 @@ export const ScanProofBundleSchema = z.object({
   logger: z.null(),
   session: z.object({ nonce: hex32, issuedAt: z.number().int() }),
   device: z.object({ platform: z.enum(["ANDROID_WEB", "IOS_WEB", "DESKTOP_WEB", "SIMULATOR"]) }),
-  attester: z.object({ role: u8.max(4), tier: u8.max(4), pubkey: z.string().min(32).max(64) }),
+  attester: z.object({ role: u8.max(4), tier: u8.max(4), pubkey: z.string().min(32).max(64).nullable() }),
   server: z.object({
     keyId: u8, verdict: z.string(), ts: z.number().int(),
     sig: z.string().regex(/^0x[0-9a-f]{128}$/),

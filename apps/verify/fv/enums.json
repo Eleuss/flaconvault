@@ -1,0 +1,61 @@
+{
+  "schema": "flaconvault.enums.v1",
+  "tamper": {
+    "CLOSED": 0,
+    "OPENED_NOW": 1,
+    "OPENED_BEFORE": 2,
+    "UNKNOWN": 3
+  },
+  "indicator": {
+    "INTACT": 0,
+    "TRIGGERED": 1,
+    "UNREADABLE": 2,
+    "MISSING": 3
+  },
+  "tier": {
+    "SIGHTING": 0,
+    "SELF": 1,
+    "SELF_MEDIA": 2,
+    "CERTIFIED": 3,
+    "BIRTH": 4
+  },
+  "role": {
+    "OWNER": 0,
+    "SELLER": 1,
+    "BUYER": 2,
+    "VAULT": 3,
+    "PARTNER": 4
+  },
+  "grade": {
+    "A": 0,
+    "B": 1,
+    "C": 2,
+    "D": 3,
+    "VOID": 4
+  },
+  "seal_kind": {
+    "BOX": 0,
+    "NECK": 1
+  },
+  "event": {
+    "MINT": 0,
+    "SEAL_ATTACH": 1,
+    "SCAN": 2,
+    "LIST": 3,
+    "RESERVE": 4,
+    "SHIP": 5,
+    "RECEIVE": 6,
+    "RELEASE": 7,
+    "DISPUTE": 8,
+    "SEAL_DEAD": 9
+  },
+  "verdict": [
+    "VALID",
+    "INVALID",
+    "REPLAY",
+    "NONCE_INVALID",
+    "UNREGISTERED",
+    "NO_RESPONSE"
+  ],
+  "grade_rule": "briefing §4.5, see packages/proof/src/grade.ts"
+}

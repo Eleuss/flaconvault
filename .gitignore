@@ -1,0 +1,25 @@
+# node
+node_modules/
+dist/
+.next/
+out/
+*.tsbuildinfo
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+apps/verify/data/*.db
+apps/verify/data/media/
+# anchor / rust
+target/
+.anchor/
+test-ledger/
+# env / keys
+.env
+.env.local
+*.keypair.json
+keys/
+!*.example
+# os
+.DS_Store

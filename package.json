@@ -1,0 +1,20 @@
+{
+  "name": "flaconvault",
+  "private": true,
+  "version": "0.1.0",
+  "description": "FlaconVault — NFC seal, indicator card and on-chain passport for collectible perfume bottles.",
+  "workspaces": [
+    "packages/*",
+    "apps/web"
+  ],
+  "scripts": {
+    "proof:build": "npm run build -w @flaconvault/proof",
+    "proof:test": "npm run test -w @flaconvault/proof",
+    "vectors": "npm run vectors -w @flaconvault/proof",
+    "web:dev": "npm run dev -w @flaconvault/web",
+    "web:build": "npm run build -w @flaconvault/web"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

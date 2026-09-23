@@ -1,0 +1,130 @@
+{
+  "schema": "flaconvault.heat_fields.v1",
+  "card": "Einlegekarte Rev C (66 x 34 mm, origin top-left, y down)",
+  "note": "Start values per briefing §9: six equal columns over the inner 30 mm of the 32 x 12 strip centred in the heat window, ROI = middle 60 %. CALIBRATE on delivery day from a photo — change this file, not code.",
+  "window_mm": {
+    "x": 2.5,
+    "y": 5.6,
+    "w": 33.0,
+    "h": 13.0
+  },
+  "strip_mm": {
+    "x": 3.0,
+    "y": 6.1,
+    "w": 32.0,
+    "h": 12.0
+  },
+  "px_per_mm": 10,
+  "reference_colors": {
+    "heat_intact": "#E9E9E9",
+    "heat_triggered": "#111111",
+    "humidity_intact": "#3A6FB0",
+    "humidity_triggered": "#E58AB2",
+    "uv_intact": "#FFFFFF",
+    "uv_triggered": "#2F5DA8",
+    "grey18": "#767676",
+    "white": "#FFFFFF"
+  },
+  "humidity_mm": {
+    "cx": 56.5,
+    "cy": 12.1,
+    "r": 4.75,
+    "roi_r": 2.85
+  },
+  "aruco": {
+    "dict": "DICT_4X4_50",
+    "id": 7,
+    "x": 3.5,
+    "y": 24.9,
+    "size": 6.5
+  },
+  "qr": {
+    "x": 10.8,
+    "y": 24.9,
+    "size": 6.5
+  },
+  "patches_mm": {
+    "size": 2.5,
+    "gap": 0.6,
+    "y": 21.0,
+    "groups": {
+      "heat": 2.5,
+      "uv": 36.2,
+      "hum": 50.6
+    },
+    "order": [
+      "intact",
+      "triggered",
+      "grey18",
+      "white"
+    ]
+  },
+  "fields": [
+    {
+      "index": 0,
+      "temp_c": 29,
+      "decisive": false,
+      "roi_mm": {
+        "x": 5.0,
+        "y": 8.5,
+        "w": 3.0,
+        "h": 7.2
+      }
+    },
+    {
+      "index": 1,
+      "temp_c": 33,
+      "decisive": false,
+      "roi_mm": {
+        "x": 10.0,
+        "y": 8.5,
+        "w": 3.0,
+        "h": 7.2
+      }
+    },
+    {
+      "index": 2,
+      "temp_c": 34,
+      "decisive": false,
+      "roi_mm": {
+        "x": 15.0,
+        "y": 8.5,
+        "w": 3.0,
+        "h": 7.2
+      }
+    },
+    {
+      "index": 3,
+      "temp_c": 37,
+      "decisive": false,
+      "roi_mm": {
+        "x": 20.0,
+        "y": 8.5,
+        "w": 3.0,
+        "h": 7.2
+      }
+    },
+    {
+      "index": 4,
+      "temp_c": 40,
+      "decisive": true,
+      "roi_mm": {
+        "x": 25.0,
+        "y": 8.5,
+        "w": 3.0,
+        "h": 7.2
+      }
+    },
+    {
+      "index": 5,
+      "temp_c": 42,
+      "decisive": false,
+      "roi_mm": {
+        "x": 30.0,
+        "y": 8.5,
+        "w": 3.0,
+        "h": 7.2
+      }
+    }
+  ]
+}

@@ -1,0 +1,452 @@
+{
+  "schema": "flaconvault.vectors.v1",
+  "generatedBy": "packages/proof/scripts/gen-vectors.ts",
+  "constants": {
+    "MSG_PREFIX": "FVSCAN1",
+    "MSG_LEN": 152,
+    "BUNDLE_SCHEMA": "flaconvault.scanproof.v1",
+    "NONCE_TTL_S": 90,
+    "PDA_SEEDS": {
+      "registry": "registry",
+      "passport": "passport",
+      "seal": "seal",
+      "scan": "scan",
+      "origin": "origin"
+    },
+    "HEAT_FIELDS_C": [
+      29,
+      33,
+      34,
+      37,
+      40,
+      42
+    ],
+    "HEAT_DECISIVE_INDEX": 4,
+    "KEY_DIV_APP_ID_HEX": "D2760000850101",
+    "KEY_DIV_SYS_ID": "FlaconVault"
+  },
+  "serverTestKey": {
+    "keyId": 1,
+    "seedHex": "133950ec1a57106286ba0560b6e5ab9cc7a45754c07fa5d0300e9bba8966ba75",
+    "pubkeyHex": "8ddafff75fe35b174d24fca867f796bc253e32363a456f3486214f01c457ee01",
+    "note": "TEST ONLY — derived from sha256('flaconvault:test-server-key:1')"
+  },
+  "hashes": {
+    "serial": [
+      {
+        "serial": "SN-2026-000001",
+        "sha256Hex": "4c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb583"
+      },
+      {
+        "serial": "SN-2026-000002",
+        "sha256Hex": "8dc42f8330bb44142f87f81ae3a9617b2a40ff558aca0e6ca06de2d5cf3b8f99"
+      }
+    ],
+    "uid": [
+      {
+        "uidHex": "04A1B2C3D4E5F6",
+        "sha256Hex": "8150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f442"
+      },
+      {
+        "uidHex": "041E3C8A2D6B80",
+        "sha256Hex": "3ea0ea41ea2a5657da690a29cc395334e5d1097ffef4f5a00a33d43d6aad8897"
+      }
+    ],
+    "binding": [
+      {
+        "serial": "SN-2026-000001",
+        "batchCode": "4A12",
+        "firstSealUidHex": "04A1B2C3D4E5F6",
+        "sha256Hex": "683841a83fb6a056ea07fd6716f8b1e50bc07e391bfa6e4be916240d6d2f7b82"
+      }
+    ]
+  },
+  "scans": [
+    {
+      "name": "valid-neck-tier2-grade-a",
+      "input": {
+        "serial": "SN-2026-000001",
+        "uidHex": "04A1B2C3D4E5F6",
+        "counter": 14,
+        "tier": 2,
+        "role": 1,
+        "tamper": 3,
+        "uv": 3,
+        "hum": 0,
+        "heat": 0,
+        "heatLevels": [
+          1,
+          1,
+          0,
+          0,
+          0,
+          0
+        ],
+        "fill": 92,
+        "mediaHashHex": "358bd5e49a401b60105ca4fe2f6fd4563c617295f4704debe35da7844cd5b380",
+        "nonceHex": "9e3f156324d42f0ea4b6f4fce81d56fbd64a2143a3fdd60a130d9c90e5b4d688",
+        "ts": 1790000012
+      },
+      "serialHashHex": "4c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb583",
+      "uidHashHex": "8150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f442",
+      "heatMask": 3,
+      "msgHex": "46565343414e314c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f4420e000000030300005c358bd5e49a401b60105ca4fe2f6fd4563c617295f4704debe35da7844cd5b3809e3f156324d42f0ea4b6f4fce81d56fbd64a2143a3fdd60a130d9c90e5b4d6888c3bb16a00000000",
+      "sigHex": "343e4a9371da55850198ed360ee36c502c909bfbe88519f4ff1491952df683ed3eaef39133293d0a9d204403244c9095ffbb80c503358f0ed090c7188386d100",
+      "grade": 0,
+      "reviewRecommended": false,
+      "bundleCanonical": "{\"attester\":{\"pubkey\":\"7GhXQ2fV4d1eo9yq1vQdD9Zk9sHkYd8qz2pM4hN6FaK2\",\"role\":1,\"tier\":2},\"counter\":14,\"device\":{\"platform\":\"SIMULATOR\"},\"fill\":92,\"heatLevels\":[1,1,0,0,0,0],\"indicators\":{\"heat\":0,\"humidity\":0,\"uv\":3},\"location\":{\"city\":\"Wickede\",\"country\":\"DE\"},\"logger\":null,\"media\":[{\"ar\":null,\"sha256\":\"0x358bd5e49a401b60105ca4fe2f6fd4563c617295f4704debe35da7844cd5b380\",\"type\":\"SEAL_FRAMES\"}],\"schema\":\"flaconvault.scanproof.v1\",\"seal\":{\"kind\":\"NECK\",\"uidHash\":\"0x8150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f442\"},\"serial\":\"SN-2026-000001\",\"serialHash\":\"0x4c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb583\",\"server\":{\"keyId\":1,\"sig\":\"0x343e4a9371da55850198ed360ee36c502c909bfbe88519f4ff1491952df683ed3eaef39133293d0a9d204403244c9095ffbb80c503358f0ed090c7188386d100\",\"ts\":1790000012,\"verdict\":\"VALID\"},\"session\":{\"issuedAt\":1790000000,\"nonce\":\"0x9e3f156324d42f0ea4b6f4fce81d56fbd64a2143a3fdd60a130d9c90e5b4d688\"},\"tamper\":3,\"ts\":1790000015,\"uidHash\":\"0x8150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f442\",\"visual\":{\"loopIntact\":null,\"note\":\"\"}}",
+      "bundleHashHex": "8e7785f5466792d5c1272050e5294a429baebd97df5d3dfb2c4370e616699cb6"
+    },
+    {
+      "name": "heat-triggered-grade-c",
+      "input": {
+        "serial": "SN-2026-000001",
+        "uidHex": "04A1B2C3D4E5F6",
+        "counter": 15,
+        "tier": 2,
+        "role": 1,
+        "tamper": 3,
+        "uv": 3,
+        "hum": 0,
+        "heat": 1,
+        "heatLevels": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          0
+        ],
+        "fill": 92,
+        "mediaHashHex": "131755fe1794da3eeb5d2e68caa6ac8f9ada7b00e7871bc52b70d587e930c3e1",
+        "nonceHex": "7474c1e7ed929af580fe66e460b0603960defee0c8399f3c40a2a1660b7d6f09",
+        "ts": 1790000100
+      },
+      "serialHashHex": "4c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb583",
+      "uidHashHex": "8150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f442",
+      "heatMask": 31,
+      "msgHex": "46565343414e314c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f4420f000000030300015c131755fe1794da3eeb5d2e68caa6ac8f9ada7b00e7871bc52b70d587e930c3e17474c1e7ed929af580fe66e460b0603960defee0c8399f3c40a2a1660b7d6f09e43bb16a00000000",
+      "sigHex": "b25e195004b0fa4d895b823e3d03f765c1ce7ec80befff999c77d4f0538c3d7bc57dc51e548b58b44585229b56685aa0bd5dad3211987ce257f91509f019d30e",
+      "grade": 2,
+      "reviewRecommended": false,
+      "bundleCanonical": "{\"attester\":{\"pubkey\":\"7GhXQ2fV4d1eo9yq1vQdD9Zk9sHkYd8qz2pM4hN6FaK2\",\"role\":1,\"tier\":2},\"counter\":15,\"device\":{\"platform\":\"ANDROID_WEB\"},\"fill\":92,\"heatLevels\":[1,1,1,1,1,0],\"indicators\":{\"heat\":1,\"humidity\":0,\"uv\":3},\"location\":{\"city\":\"Wickede\",\"country\":\"DE\"},\"logger\":null,\"media\":[{\"ar\":null,\"sha256\":\"0x131755fe1794da3eeb5d2e68caa6ac8f9ada7b00e7871bc52b70d587e930c3e1\",\"type\":\"SEAL_FRAMES\"}],\"schema\":\"flaconvault.scanproof.v1\",\"seal\":{\"kind\":\"NECK\",\"uidHash\":\"0x8150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f442\"},\"serial\":\"SN-2026-000001\",\"serialHash\":\"0x4c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb583\",\"server\":{\"keyId\":1,\"sig\":\"0xb25e195004b0fa4d895b823e3d03f765c1ce7ec80befff999c77d4f0538c3d7bc57dc51e548b58b44585229b56685aa0bd5dad3211987ce257f91509f019d30e\",\"ts\":1790000100,\"verdict\":\"VALID\"},\"session\":{\"issuedAt\":1790000088,\"nonce\":\"0x7474c1e7ed929af580fe66e460b0603960defee0c8399f3c40a2a1660b7d6f09\"},\"tamper\":3,\"ts\":1790000103,\"uidHash\":\"0x8150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f442\",\"visual\":{\"loopIntact\":null,\"note\":\"\"}}",
+      "bundleHashHex": "f9933d9a10150856fd61390d6b9021957c5946f2ffc38667bb517dc55dd47077"
+    },
+    {
+      "name": "tier1-no-media-grade-b",
+      "input": {
+        "serial": "SN-2026-000002",
+        "uidHex": "04DE5F1EACC040",
+        "counter": 3,
+        "tier": 1,
+        "role": 0,
+        "tamper": 3,
+        "uv": 3,
+        "hum": 0,
+        "heat": 0,
+        "heatLevels": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "fill": 75,
+        "mediaHashHex": "0000000000000000000000000000000000000000000000000000000000000000",
+        "nonceHex": "f3ba9e408e06fcfc2340e086d1f128bcce70651d0af663d7fbc9638daeff8712",
+        "ts": 1790001000
+      },
+      "serialHashHex": "8dc42f8330bb44142f87f81ae3a9617b2a40ff558aca0e6ca06de2d5cf3b8f99",
+      "uidHashHex": "4219dea0df3f706e83fd515c9773de560db43844adc9e95f4095f0ecba8c1f2e",
+      "heatMask": 0,
+      "msgHex": "46565343414e318dc42f8330bb44142f87f81ae3a9617b2a40ff558aca0e6ca06de2d5cf3b8f994219dea0df3f706e83fd515c9773de560db43844adc9e95f4095f0ecba8c1f2e03000000030300004b0000000000000000000000000000000000000000000000000000000000000000f3ba9e408e06fcfc2340e086d1f128bcce70651d0af663d7fbc9638daeff8712683fb16a00000000",
+      "sigHex": "bf284076607852afd2c8472186ada51335e168467e4020992a5703ddb227ba5ec7110a031f6a91d6d9d81e4ce022f54d4c99e377d5cc304246a72ba061e0a805",
+      "grade": 1,
+      "reviewRecommended": false,
+      "bundleCanonical": "{\"attester\":{\"pubkey\":\"7GhXQ2fV4d1eo9yq1vQdD9Zk9sHkYd8qz2pM4hN6FaK2\",\"role\":0,\"tier\":1},\"counter\":3,\"device\":{\"platform\":\"SIMULATOR\"},\"fill\":75,\"heatLevels\":[0,0,0,0,0,0],\"indicators\":{\"heat\":0,\"humidity\":0,\"uv\":3},\"location\":{\"city\":null,\"country\":null},\"logger\":null,\"media\":[],\"schema\":\"flaconvault.scanproof.v1\",\"seal\":{\"kind\":\"BOX\",\"uidHash\":\"0x4219dea0df3f706e83fd515c9773de560db43844adc9e95f4095f0ecba8c1f2e\"},\"serial\":\"SN-2026-000002\",\"serialHash\":\"0x8dc42f8330bb44142f87f81ae3a9617b2a40ff558aca0e6ca06de2d5cf3b8f99\",\"server\":{\"keyId\":1,\"sig\":\"0xbf284076607852afd2c8472186ada51335e168467e4020992a5703ddb227ba5ec7110a031f6a91d6d9d81e4ce022f54d4c99e377d5cc304246a72ba061e0a805\",\"ts\":1790001000,\"verdict\":\"VALID\"},\"session\":{\"issuedAt\":1790000988,\"nonce\":\"0xf3ba9e408e06fcfc2340e086d1f128bcce70651d0af663d7fbc9638daeff8712\"},\"tamper\":3,\"ts\":1790001003,\"uidHash\":\"0x4219dea0df3f706e83fd515c9773de560db43844adc9e95f4095f0ecba8c1f2e\",\"visual\":{\"loopIntact\":null,\"note\":\"\"}}",
+      "bundleHashHex": "1a77caee2757a86c87605fd4af7ce7418f8a061f15e4fc2e78166437d52af89c"
+    },
+    {
+      "name": "certified-birth-tier4-far-future-ts",
+      "input": {
+        "serial": "SN-2026-000003",
+        "uidHex": "041E3C8A2D6B80",
+        "counter": 1,
+        "tier": 4,
+        "role": 4,
+        "tamper": 3,
+        "uv": 3,
+        "hum": 0,
+        "heat": 0,
+        "heatLevels": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "fill": 100,
+        "mediaHashHex": "9868959b541915636ae0cf8362efb6c1f225118411840d5586882acf4eb0033e",
+        "nonceHex": "799f2a3f604d80916f5740fdb1fca4811e523b0c439021535b75c4cf3375bc2b",
+        "ts": 4102444800
+      },
+      "serialHashHex": "835765daf8bc373c4879a542919644ba030e3338e0794b3ca0af8be7ac2ed9b9",
+      "uidHashHex": "3ea0ea41ea2a5657da690a29cc395334e5d1097ffef4f5a00a33d43d6aad8897",
+      "heatMask": 0,
+      "msgHex": "46565343414e31835765daf8bc373c4879a542919644ba030e3338e0794b3ca0af8be7ac2ed9b93ea0ea41ea2a5657da690a29cc395334e5d1097ffef4f5a00a33d43d6aad88970100000003030000649868959b541915636ae0cf8362efb6c1f225118411840d5586882acf4eb0033e799f2a3f604d80916f5740fdb1fca4811e523b0c439021535b75c4cf3375bc2b005786f400000000",
+      "sigHex": "1456c4bddbb03b8c623e2688844a6f5c8227ee4ed41016cc4ed8e7d05a71b3b6c57bd68a65634207090027cea9a4e64fdc1aaf59a0f45a38929fe34abd6e5c01",
+      "grade": 0,
+      "reviewRecommended": false,
+      "bundleCanonical": "{\"attester\":{\"pubkey\":\"7GhXQ2fV4d1eo9yq1vQdD9Zk9sHkYd8qz2pM4hN6FaK2\",\"role\":4,\"tier\":4},\"counter\":1,\"device\":{\"platform\":\"ANDROID_WEB\"},\"fill\":100,\"heatLevels\":[0,0,0,0,0,0],\"indicators\":{\"heat\":0,\"humidity\":0,\"uv\":3},\"location\":{\"city\":\"Düsseldorf\",\"country\":\"DE\"},\"logger\":null,\"media\":[{\"ar\":null,\"sha256\":\"0x9868959b541915636ae0cf8362efb6c1f225118411840d5586882acf4eb0033e\",\"type\":\"SEAL_FRAMES\"}],\"schema\":\"flaconvault.scanproof.v1\",\"seal\":{\"kind\":\"NECK\",\"uidHash\":\"0x3ea0ea41ea2a5657da690a29cc395334e5d1097ffef4f5a00a33d43d6aad8897\"},\"serial\":\"SN-2026-000003\",\"serialHash\":\"0x835765daf8bc373c4879a542919644ba030e3338e0794b3ca0af8be7ac2ed9b9\",\"server\":{\"keyId\":1,\"sig\":\"0x1456c4bddbb03b8c623e2688844a6f5c8227ee4ed41016cc4ed8e7d05a71b3b6c57bd68a65634207090027cea9a4e64fdc1aaf59a0f45a38929fe34abd6e5c01\",\"ts\":4102444800,\"verdict\":\"VALID\"},\"session\":{\"issuedAt\":4102444788,\"nonce\":\"0x799f2a3f604d80916f5740fdb1fca4811e523b0c439021535b75c4cf3375bc2b\"},\"tamper\":3,\"ts\":4102444803,\"uidHash\":\"0x3ea0ea41ea2a5657da690a29cc395334e5d1097ffef4f5a00a33d43d6aad8897\",\"visual\":{\"loopIntact\":null,\"note\":\"\"}}",
+      "bundleHashHex": "b629bab3d389c9562576183472f1ad76e5cf01794e550e8e1dc05e41da5d787d"
+    },
+    {
+      "name": "humidity-unreadable-review-flag",
+      "input": {
+        "serial": "SN-2026-000002",
+        "uidHex": "04DE5F1EACC040",
+        "counter": 4,
+        "tier": 2,
+        "role": 2,
+        "tamper": 3,
+        "uv": 3,
+        "hum": 2,
+        "heat": 0,
+        "heatLevels": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "fill": 40,
+        "mediaHashHex": "cd951608b9e29c5cf3554a4295c037110797055d8ddf3d99da935231665b7984",
+        "nonceHex": "b629ed66c7f4554af962a27a29db699435b178f8d548ffbf0719d103b5f00de4",
+        "ts": 1790002000
+      },
+      "serialHashHex": "8dc42f8330bb44142f87f81ae3a9617b2a40ff558aca0e6ca06de2d5cf3b8f99",
+      "uidHashHex": "4219dea0df3f706e83fd515c9773de560db43844adc9e95f4095f0ecba8c1f2e",
+      "heatMask": 1,
+      "msgHex": "46565343414e318dc42f8330bb44142f87f81ae3a9617b2a40ff558aca0e6ca06de2d5cf3b8f994219dea0df3f706e83fd515c9773de560db43844adc9e95f4095f0ecba8c1f2e040000000303020028cd951608b9e29c5cf3554a4295c037110797055d8ddf3d99da935231665b7984b629ed66c7f4554af962a27a29db699435b178f8d548ffbf0719d103b5f00de45043b16a00000000",
+      "sigHex": "36162e2c1e2a0a9862557aead45ab1ac9777b26bceb4a05b91ad171dd45ae861f3825f0a7f44efc41df9341901bd1151110de19c9e03b96cda31536088416f03",
+      "grade": 3,
+      "reviewRecommended": true,
+      "bundleCanonical": "{\"attester\":{\"pubkey\":\"7GhXQ2fV4d1eo9yq1vQdD9Zk9sHkYd8qz2pM4hN6FaK2\",\"role\":2,\"tier\":2},\"counter\":4,\"device\":{\"platform\":\"SIMULATOR\"},\"fill\":40,\"heatLevels\":[1,0,0,0,0,0],\"indicators\":{\"heat\":0,\"humidity\":2,\"uv\":3},\"location\":{\"city\":\"München\",\"country\":\"DE\"},\"logger\":null,\"media\":[{\"ar\":null,\"sha256\":\"0xcd951608b9e29c5cf3554a4295c037110797055d8ddf3d99da935231665b7984\",\"type\":\"SEAL_FRAMES\"}],\"schema\":\"flaconvault.scanproof.v1\",\"seal\":{\"kind\":\"BOX\",\"uidHash\":\"0x4219dea0df3f706e83fd515c9773de560db43844adc9e95f4095f0ecba8c1f2e\"},\"serial\":\"SN-2026-000002\",\"serialHash\":\"0x8dc42f8330bb44142f87f81ae3a9617b2a40ff558aca0e6ca06de2d5cf3b8f99\",\"server\":{\"keyId\":1,\"sig\":\"0x36162e2c1e2a0a9862557aead45ab1ac9777b26bceb4a05b91ad171dd45ae861f3825f0a7f44efc41df9341901bd1151110de19c9e03b96cda31536088416f03\",\"ts\":1790002000,\"verdict\":\"VALID\"},\"session\":{\"issuedAt\":1790001988,\"nonce\":\"0xb629ed66c7f4554af962a27a29db699435b178f8d548ffbf0719d103b5f00de4\"},\"tamper\":3,\"ts\":1790002003,\"uidHash\":\"0x4219dea0df3f706e83fd515c9773de560db43844adc9e95f4095f0ecba8c1f2e\",\"visual\":{\"loopIntact\":null,\"note\":\"\"}}",
+      "bundleHashHex": "15d237e695dda4c845c4e437fee60119a1726aad6a08c00f8bb164b5476bf478"
+    }
+  ],
+  "grades": [
+    {
+      "verdict": "VALID",
+      "tamper": 3,
+      "heat": 0,
+      "hum": 0,
+      "fill": 92,
+      "sealDead": false,
+      "grade": 0,
+      "reviewRecommended": false
+    },
+    {
+      "verdict": "VALID",
+      "tamper": 3,
+      "heat": 0,
+      "hum": 0,
+      "fill": 90,
+      "sealDead": false,
+      "grade": 0,
+      "reviewRecommended": false
+    },
+    {
+      "verdict": "VALID",
+      "tamper": 3,
+      "heat": 0,
+      "hum": 0,
+      "fill": 89,
+      "sealDead": false,
+      "grade": 1,
+      "reviewRecommended": false
+    },
+    {
+      "verdict": "VALID",
+      "tamper": 3,
+      "heat": 0,
+      "hum": 0,
+      "fill": 60,
+      "sealDead": false,
+      "grade": 1,
+      "reviewRecommended": false
+    },
+    {
+      "verdict": "VALID",
+      "tamper": 3,
+      "heat": 0,
+      "hum": 0,
+      "fill": 59,
+      "sealDead": false,
+      "grade": 3,
+      "reviewRecommended": false
+    },
+    {
+      "verdict": "VALID",
+      "tamper": 3,
+      "heat": 0,
+      "hum": 0,
+      "fill": 0,
+      "sealDead": false,
+      "grade": 3,
+      "reviewRecommended": false
+    },
+    {
+      "verdict": "VALID",
+      "tamper": 0,
+      "heat": 0,
+      "hum": 0,
+      "fill": 100,
+      "sealDead": false,
+      "grade": 0,
+      "reviewRecommended": false
+    },
+    {
+      "verdict": "VALID",
+      "tamper": 3,
+      "heat": 1,
+      "hum": 0,
+      "fill": 100,
+      "sealDead": false,
+      "grade": 2,
+      "reviewRecommended": false
+    },
+    {
+      "verdict": "VALID",
+      "tamper": 3,
+      "heat": 0,
+      "hum": 1,
+      "fill": 100,
+      "sealDead": false,
+      "grade": 2,
+      "reviewRecommended": false
+    },
+    {
+      "verdict": "VALID",
+      "tamper": 3,
+      "heat": 1,
+      "hum": 1,
+      "fill": 10,
+      "sealDead": false,
+      "grade": 2,
+      "reviewRecommended": false
+    },
+    {
+      "verdict": "VALID",
+      "tamper": 3,
+      "heat": 2,
+      "hum": 0,
+      "fill": 95,
+      "sealDead": false,
+      "grade": 0,
+      "reviewRecommended": true
+    },
+    {
+      "verdict": "VALID",
+      "tamper": 3,
+      "heat": 0,
+      "hum": 2,
+      "fill": 50,
+      "sealDead": false,
+      "grade": 3,
+      "reviewRecommended": true
+    },
+    {
+      "verdict": "VALID",
+      "tamper": 3,
+      "heat": 3,
+      "hum": 3,
+      "fill": 95,
+      "sealDead": false,
+      "grade": 0,
+      "reviewRecommended": false
+    },
+    {
+      "verdict": "VALID",
+      "tamper": 1,
+      "heat": 0,
+      "hum": 0,
+      "fill": 100,
+      "sealDead": false,
+      "grade": 4,
+      "reviewRecommended": false
+    },
+    {
+      "verdict": "VALID",
+      "tamper": 2,
+      "heat": 0,
+      "hum": 0,
+      "fill": 100,
+      "sealDead": false,
+      "grade": 4,
+      "reviewRecommended": false
+    },
+    {
+      "verdict": "VALID",
+      "tamper": 3,
+      "heat": 0,
+      "hum": 0,
+      "fill": 100,
+      "sealDead": true,
+      "grade": 4,
+      "reviewRecommended": false
+    },
+    {
+      "verdict": "REPLAY",
+      "tamper": 3,
+      "heat": 0,
+      "hum": 0,
+      "fill": 100,
+      "sealDead": false,
+      "grade": 4,
+      "reviewRecommended": false
+    },
+    {
+      "verdict": "INVALID",
+      "tamper": 3,
+      "heat": 0,
+      "hum": 0,
+      "fill": 100,
+      "sealDead": false,
+      "grade": 4,
+      "reviewRecommended": false
+    }
+  ],
+  "sdm": {
+    "note": "NTAG 424 DNA SUN, plain mirror (AN12196). Key = 16×0x00 (factory). From icedevml/sdm-backend tests & AN12196.",
+    "plain": [
+      {
+        "uidHex": "041E3C8A2D6B80",
+        "ctrHex": "000006",
+        "keyHex": "00000000000000000000000000000000",
+        "cmacHex": "4B00064004B0B3D3",
+        "valid": true
+      },
+      {
+        "uidHex": "041E3C8A2D6B80",
+        "ctrHex": "000006",
+        "keyHex": "00000000000000000000000000000000",
+        "cmacHex": "4B00064004B0B3D4",
+        "valid": false
+      }
+    ],
+    "encrypted_reference": [
+      {
+        "note": "AN12196 p.12, SEPARATED params, null keys",
+        "picc_data": "EF963FF7828658A599F3041510671E88",
+        "cmac": "94EED9EE65337086",
+        "uidHex": "04DE5F1EACC040",
+        "ctr": 61
+      }
+    ]
+  },
+  "urlExample": "https://<verifier-host>/t?uid=04A1B2C3D4E5F6&ctr=00000E&cmac=6F3A0B1C2D3E4F50"
+}

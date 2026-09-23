@@ -1,0 +1,30 @@
+{
+  "name": "@flaconvault/proof",
+  "version": "0.1.0",
+  "description": "Single source of truth: enums, byte layouts, ScanProof bundle schema, signature message, grade rule.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test src/*.test.ts",
+    "vectors": "node scripts/gen-vectors.ts",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "@noble/ed25519": "^2.3.0",
+    "@noble/hashes": "^1.8.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}

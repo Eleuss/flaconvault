@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { ArrowRight, Camera, Loader2, Nfc, RefreshCw, ShieldOff, Zap } from "lucide-react";
 import { Grade, Indicator, Role, Tier, NONCE_TTL_S } from "@flaconvault/proof";
@@ -41,7 +42,11 @@ export function ScanFlow() {
   const [frames, setFrames] = useState<{ img: FrameLike[]; blobs: Blob[]; mediaHash: string } | null>(null);
   const [reading, setReading] = useState<CardReading | null>(null);
   const [fill, setFill] = useState(92);
-  const [role, setRole] = useState<number>(Role.OWNER);
+  const params = useSearchParams();
+  const qRole = Number(params.get("role")), qTier = Number(params.get("tier")), qSite = Number(params.get("site"));
+  const [role, setRole] = useState<number>(qRole >= 0 && qRole <= 4 ? qRole : Role.OWNER);
+  const certified = qTier === Tier.CERTIFIED || qTier === Tier.BIRTH;
+  const siteId = certified && qSite > 0 ? qSite : 0;
   const [city, setCity] = useState("");
   const [country, setCountry] = useState("DE");
   const [verify, setVerify] = useState<VerifyResponse | null>(null);
@@ -54,7 +59,7 @@ export function ScanFlow() {
   const vision = useRef<VisionClient | null>(null);
   const video = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
-  const tier = frames ? Tier.SELF_MEDIA : Tier.SELF;
+  const tier = certified ? qTier : frames ? Tier.SELF_MEDIA : Tier.SELF;
 
   // ---- 1. session -------------------------------------------------------
   const startSession = useCallback(async () => {
@@ -195,7 +200,7 @@ export function ScanFlow() {
     setBusy("tx"); setError(null);
     try {
       const program = flaconProgram(connection, anchorWallet);
-      const { tx } = await buildRecordScanTx(program, wallet.publicKey, verify, { tier, role });
+      const { tx } = await buildRecordScanTx(program, wallet.publicKey, verify, { tier, role, siteId });
       const sig = await wallet.sendTransaction(tx, connection);
       await connection.confirmTransaction(sig, "confirmed");
       setTxSig(sig);
@@ -300,7 +305,7 @@ export function ScanFlow() {
           {preview.serial && <p className="mt-2 text-sm text-muted">Pass <span className="mono text-ink">{preview.serial}</span> · {preview.sealKind === 0 ? "Packungssiegel" : "Halssiegel"}</p>}
           <div className="mt-6 flex flex-wrap gap-3">
             {preview.verdict === "VALID" && <button onClick={() => setStep("camera")} className="btn"><Camera className="h-4 w-4" aria-hidden /> Weiter zur Kamera</button>}
-            {preview.verdict === "VALID" && <button onClick={skipCamera} className="btn-outline">Ohne Foto (Tier 1)</button>}
+            {preview.verdict === "VALID" && !certified && <button onClick={skipCamera} className="btn-outline">Ohne Foto (Tier 1)</button>}
             {preview.verdict !== "VALID" && <button onClick={startSession} className="btn-outline">Neu starten</button>}
           </div>
         </div>
@@ -318,7 +323,7 @@ export function ScanFlow() {
           </div>
           <div className="mt-4 flex flex-wrap gap-3">
             <button onClick={captureFrames} disabled={busy !== null} className="btn">{busy === "capture" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Camera className="h-4 w-4" aria-hidden />} 5 Bilder aufnehmen</button>
-            <button onClick={skipCamera} className="btn-outline">Ohne Foto (Tier 1)</button>
+            {!certified && <button onClick={skipCamera} className="btn-outline">Ohne Foto (Tier 1)</button>}
           </div>
         </div>
       )}
@@ -348,7 +353,9 @@ export function ScanFlow() {
               <label className="block">Rolle
                 <select value={role} onChange={(e) => setRole(+e.target.value)} className="ml-2 rounded-full border border-line bg-surface px-2 py-0.5 text-sm">
                   <option value={Role.OWNER}>Besitzer</option><option value={Role.SELLER}>Verkäufer</option><option value={Role.BUYER}>Käufer</option>
+                  {certified && <><option value={Role.VAULT}>Vault</option><option value={Role.PARTNER}>Partner</option></>}
                 </select>
+                {certified && <span className="ml-2 text-xs text-muted">Tier {qTier} · Standort {siteId}</span>}
               </label>
               <div className="mt-2 flex gap-2">
                 <input value={country} onChange={(e) => setCountry(e.target.value.toUpperCase().slice(0, 2))} placeholder="DE" className="w-14 rounded-full border border-line bg-surface px-2 py-0.5 text-sm" aria-label="Land" />

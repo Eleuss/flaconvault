@@ -15,6 +15,7 @@ export function SiteHeader() {
         <nav className="flex items-center gap-5 text-sm text-muted">
           <Link href="/scan" className="hover:text-ink">Siegel prüfen</Link>
           <Link href="/p/SN-2026-000001" className="hover:text-ink">Pass</Link>
+          <Link href="/certify" className="hover:text-ink">Zertifizieren</Link>
           {DEV_SIMULATOR && <Link href="/dev" className="rounded-full border border-line px-3 py-1 text-xs hover:border-ink hover:text-ink">Simulator</Link>}
           <WalletButton />
         </nav>

@@ -43,6 +43,13 @@
     "y": 24.9,
     "size": 6.5
   },
+  "qr_symbol": {
+    "x": 11.522,
+    "y": 25.622,
+    "size": 5.055,
+    "modules": 21,
+    "note": "the printed 21×21 symbol inside the 6.5 mm box (quiet zone excluded) — what QRCodeDetector returns"
+  },
   "patches_mm": {
     "size": 2.5,
     "gap": 0.6,

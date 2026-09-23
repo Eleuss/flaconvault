@@ -1,0 +1,23 @@
+{
+  "name": "@flaconvault/vision",
+  "version": "0.1.0",
+  "description": "Indicator reading from a camera frame: ArUco → homography → per-group white balance → ΔE classification (briefing §9). Runs in a Web Worker and in Node (tests).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test src/*.test.ts",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "@flaconvault/proof": "*"
+  },
+  "devDependencies": {
+    "@techstark/opencv-js": "5.0.0-release.1",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}

@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "predev": "node scripts/copy-vendor.mjs",
+    "prebuild": "node scripts/copy-vendor.mjs"
   },
   "dependencies": {
     "@flaconvault/proof": "*",
@@ -14,7 +16,9 @@
     "lucide-react": "^0.460.0",
     "next": "14.2.35",
     "react": "^18",
-    "react-dom": "^18"
+    "react-dom": "^18",
+    "@flaconvault/vision": "*",
+    "@techstark/opencv-js": "5.0.0-release.1"
   },
   "devDependencies": {
     "@types/node": "^20",

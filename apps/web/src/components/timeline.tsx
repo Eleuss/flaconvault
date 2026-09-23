@@ -2,7 +2,7 @@ import Link from "next/link";
 import { EventType } from "@flaconvault/proof";
 import { Award, Camera, Coins, ExternalLink, FileCheck2, PackageCheck, Scan, ShieldOff, Stamp, Truck, Unlock, type LucideIcon } from "lucide-react";
 import type { PassportEvent } from "@/lib/api";
-import { eventLine, fmtDate, gradeLetter, txUrl } from "@/lib/format";
+import { eventLine, fmtDate, txUrl } from "@/lib/format";
 import { GradeMark } from "./badges";
 
 const icons: Record<number, LucideIcon> = {

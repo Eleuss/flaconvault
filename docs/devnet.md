@@ -79,3 +79,19 @@ Instructions: `init_registry`, `add_server_key`, `add_partner`, `add_site` (auth
 `record_scan` must be sent as `[Ed25519Program.createInstructionWithPublicKey({publicKey: serverPubkey, message, signature}), flacon.record_scan(args)]` — the program reads the previous instruction from the instructions sysvar, checks that it is the ed25519 precompile, that the pubkey is the registry server key `args.server_key_id` valid at `args.ts`, and that the signed 152-byte message equals the reconstruction (`"FVSCAN1" ‖ serial_hash ‖ uid_hash ‖ counter ‖ tamper ‖ uv ‖ hum ‖ heat ‖ fill ‖ media_hash ‖ nonce ‖ ts`) byte for byte. Error codes are typed (`MissingEd25519Instruction`, `MessageMismatch`, `CounterNotIncreasing`, `SealDead`, `NotPartner`, …) — see `target/types/flacon_errors.ts`. Events: `RegistryInitialized`, `ServerKeyAdded`, `PartnerAdded`, `SiteAdded`, `PassportMinted`, `SealAttached`, `SealMarkedDead`, `ScanRecorded`.
 
 All enum values (`tamper`, `indicator`, `tier`, `role`, `grade`, `seal_kind`, `event`), the seeds, `MSG_PREFIX`, `MSG_LEN` and the grade thresholds (`GRADE_FILL_A_MIN = 90`, `GRADE_FILL_B_MIN = 60`) are IDL constants (`program.rawIdl.constants`) and are asserted against `docs/enums.json` / `docs/vectors.json` in `tests/flacon.ts`.
+
+## Funding the deploy wallet (manual step)
+
+`solana airdrop` on the public devnet RPC was rate-limited for more than an hour on 2026-09-23/24. Fund the wallet once by hand:
+
+1. Open https://faucet.solana.com, sign in with GitHub, request **5 SOL** for `Bsy5DFxtugs5PGqjF8ADrPYm7kt89dFpwEe9hTZokpFy` (devnet).
+2. Then, from the repo root:
+
+```bash
+solana balance --url https://api.devnet.solana.com
+anchor deploy --provider.cluster devnet
+npx tsx scripts/seed-devnet.ts --server-pubkey-from-env
+npx tsx scripts/seed-passports.ts
+```
+
+3. Switch the apps to devnet: `NEXT_PUBLIC_SOLANA_RPC=https://api.devnet.solana.com` in `apps/web/.env.local`, `FV_SOLANA_RPC=https://api.devnet.solana.com` in `apps/verify/.env`, restart both.

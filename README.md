@@ -63,7 +63,7 @@ Same scripts without `ANCHOR_PROVIDER_URL`, after `anchor deploy --provider.clus
 ```bash
 npm run proof:test                          # 9   byte layout, grade rule, bundle hash, ed25519
 npm run test -w @flaconvault/vision         # 7   synthetic card: 10/10 under tilt, light, blur, noise
-cd apps/verify && uv run pytest -q          # 26+ SDM vectors, msg/sig/bundle identical to vectors.json, simulator flow
+cd apps/verify && uv run pytest -q          # 36  SDM vectors, msg/sig/bundle identical to vectors.json, simulator flow, reconcile
 anchor test --validator legacy              # 15  record_scan with/without Ed25519 ix, replay, tier gating, dead seal, grade table
 cargo test -p flacon                        # 9   message reconstruction, grade constants
 ```
@@ -81,12 +81,12 @@ The seal is a **handling and provenance record, not a damage record**. Say "Sieg
 | Briefing § | State |
 |---|---|
 | 4 data contracts, `packages/proof`, vectors | done — DoD |
-| 5 verification server + simulator | done — DoD (26 tests) |
+| 5 verification server + simulator | done — DoD (36 tests) |
 | 6 Anchor program | built + tested (15 + 9); **devnet deploy pending devnet SOL** |
 | 7 web screens `/`, `/p`, `/t`, `/dev`, `/certify`, `/wallet` | done; `/market` is week 3 |
 | 8 scan flow | done, verified end-to-end on a local validator with the simulator; camera/WebNFC path needs the Android device |
 | 9 camera indicator reading | done (`packages/vision`, `/dev/vision`); calibrate `docs/heat_fields.json` on delivery day |
-| 10 passport timeline + reconcile | timeline done; reconcile job in progress |
-| 11 escrow, 12 reputation view | 12 read view done; 11 not started (week 3) |
+| 10 passport timeline + reconcile | done — DoD (reconcile every 60 s, `POST /api/reconcile`) |
+| 11 escrow, 12 reputation view | 12 read view done; 11 program in progress, `/market` next |
 
 Devnet addresses: [`docs/devnet.md`](docs/devnet.md).

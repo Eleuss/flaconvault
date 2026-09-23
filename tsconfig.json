@@ -1,0 +1,15 @@
+{
+  "//": "Root tsconfig: only for the Anchor mocha tests (tests/, migrations/). apps/web and packages/proof have their own.",
+  "compilerOptions": {
+    "types": ["mocha", "chai", "node"],
+    "typeRoots": ["./node_modules/@types"],
+    "lib": ["es2022"],
+    "module": "commonjs",
+    "target": "es2022",
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": false
+  },
+  "include": ["tests/**/*.ts", "migrations/**/*.ts", "target/types/**/*.ts"]
+}

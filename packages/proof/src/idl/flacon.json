@@ -1,0 +1,1948 @@
+{
+  "address": "7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL",
+  "metadata": {
+    "name": "flacon",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "FlaconVault — passport, seal and scan-proof program (briefing §6)"
+  },
+  "instructions": [
+    {
+      "name": "add_partner",
+      "docs": [
+        "Authority only."
+      ],
+      "discriminator": [
+        180,
+        111,
+        45,
+        157,
+        241,
+        187,
+        234,
+        88
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "registry"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "partner",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "add_server_key",
+      "docs": [
+        "Authority only. `valid_to == 0` = open-ended."
+      ],
+      "discriminator": [
+        235,
+        66,
+        203,
+        219,
+        31,
+        171,
+        8,
+        8
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "registry"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "key_id",
+          "type": "u8"
+        },
+        {
+          "name": "pubkey",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "valid_from",
+          "type": "i64"
+        },
+        {
+          "name": "valid_to",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "add_site",
+      "docs": [
+        "Authority only. `label` is UTF-8, zero padded to 32 bytes."
+      ],
+      "discriminator": [
+        170,
+        68,
+        156,
+        76,
+        219,
+        176,
+        127,
+        211
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "registry"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "site_id",
+          "type": "u16"
+        },
+        {
+          "name": "label",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "attach_seal",
+      "docs": [
+        "Partner (or authority) only. `kind` ∈ {BOX, NECK}."
+      ],
+      "discriminator": [
+        61,
+        26,
+        102,
+        251,
+        202,
+        190,
+        43,
+        208
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "passport",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  115,
+                  115,
+                  112,
+                  111,
+                  114,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "passport.serial_hash",
+                "account": "Passport"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seal",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  97,
+                  108
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "uid_hash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "signer",
+          "docs": [
+            "Must be a registered partner (or the registry authority)."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "uid_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "kind",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "init_registry",
+      "docs": [
+        "Creates the singleton registry; the payer becomes `authority`."
+      ],
+      "discriminator": [
+        131,
+        22,
+        4,
+        103,
+        24,
+        94,
+        163,
+        239
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "Payer becomes the registry authority."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "mark_seal_dead",
+      "docs": [
+        "Partner (or authority) only. Seal no longer answers → seal dead, passport void, grade VOID."
+      ],
+      "discriminator": [
+        65,
+        179,
+        161,
+        140,
+        252,
+        105,
+        7,
+        85
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "passport",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  115,
+                  115,
+                  112,
+                  111,
+                  114,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "passport.serial_hash",
+                "account": "Passport"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seal",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  97,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seal.uid_hash",
+                "account": "Seal"
+              }
+            ]
+          }
+        },
+        {
+          "name": "signer",
+          "docs": [
+            "Must be a registered partner (or the registry authority) — after a",
+            "confirmed no-response (escrow dispute or certification)."
+          ],
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "mint_passport",
+      "docs": [
+        "Partner (or authority) only. Birth certificate of a bottle."
+      ],
+      "discriminator": [
+        191,
+        229,
+        65,
+        107,
+        110,
+        33,
+        228,
+        202
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "passport",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  115,
+                  115,
+                  112,
+                  111,
+                  114,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "serial_hash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "issuer",
+          "docs": [
+            "Must be a registered partner (or the registry authority)."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "serial_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "binding_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "asset",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "record_scan",
+      "docs": [
+        "The core: anchors one server-signed scan. Must be preceded in the same",
+        "transaction by an `Ed25519Program` instruction over the §4.3 message."
+      ],
+      "discriminator": [
+        84,
+        105,
+        74,
+        98,
+        184,
+        80,
+        165,
+        253
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "passport",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  115,
+                  115,
+                  112,
+                  111,
+                  114,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "passport.serial_hash",
+                "account": "Passport"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seal",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  97,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seal.uid_hash",
+                "account": "Seal"
+              }
+            ]
+          }
+        },
+        {
+          "name": "scan_proof",
+          "docs": [
+            "One PDA per accepted scan: `[\"scan\", seal, counter LE]` (see module docs for `init_if_needed`)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  99,
+                  97,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seal"
+              },
+              {
+                "kind": "arg",
+                "path": "args.counter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "attester",
+          "docs": [
+            "The wallet that attests the scan; pays for the ScanProof."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "instructions",
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "RecordScanArgs"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Passport",
+      "discriminator": [
+        18,
+        61,
+        245,
+        239,
+        6,
+        15,
+        18,
+        34
+      ]
+    },
+    {
+      "name": "Registry",
+      "discriminator": [
+        47,
+        174,
+        110,
+        246,
+        184,
+        182,
+        252,
+        218
+      ]
+    },
+    {
+      "name": "ScanProof",
+      "discriminator": [
+        208,
+        136,
+        45,
+        119,
+        131,
+        191,
+        85,
+        170
+      ]
+    },
+    {
+      "name": "Seal",
+      "discriminator": [
+        162,
+        149,
+        250,
+        10,
+        100,
+        125,
+        36,
+        168
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "PartnerAdded",
+      "discriminator": [
+        118,
+        219,
+        220,
+        117,
+        186,
+        162,
+        106,
+        164
+      ]
+    },
+    {
+      "name": "PassportMinted",
+      "discriminator": [
+        196,
+        50,
+        69,
+        108,
+        203,
+        51,
+        9,
+        146
+      ]
+    },
+    {
+      "name": "RegistryInitialized",
+      "discriminator": [
+        144,
+        138,
+        62,
+        105,
+        58,
+        38,
+        100,
+        177
+      ]
+    },
+    {
+      "name": "ScanRecorded",
+      "discriminator": [
+        21,
+        215,
+        87,
+        213,
+        12,
+        213,
+        49,
+        171
+      ]
+    },
+    {
+      "name": "SealAttached",
+      "discriminator": [
+        204,
+        46,
+        119,
+        37,
+        164,
+        144,
+        64,
+        31
+      ]
+    },
+    {
+      "name": "SealMarkedDead",
+      "discriminator": [
+        42,
+        123,
+        197,
+        68,
+        98,
+        46,
+        127,
+        157
+      ]
+    },
+    {
+      "name": "ServerKeyAdded",
+      "discriminator": [
+        82,
+        41,
+        116,
+        202,
+        180,
+        59,
+        33,
+        89
+      ]
+    },
+    {
+      "name": "SiteAdded",
+      "discriminator": [
+        57,
+        141,
+        195,
+        149,
+        88,
+        67,
+        53,
+        161
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "Unauthorized",
+      "msg": "Signer is not the registry authority"
+    },
+    {
+      "code": 6001,
+      "name": "NotPartner",
+      "msg": "Signer is not a registered partner"
+    },
+    {
+      "code": 6002,
+      "name": "DuplicateServerKey",
+      "msg": "A server key with this key_id already exists"
+    },
+    {
+      "code": 6003,
+      "name": "ServerKeysFull",
+      "msg": "Registry holds the maximum number of server keys"
+    },
+    {
+      "code": 6004,
+      "name": "InvalidKeyValidity",
+      "msg": "valid_to must be 0 (open-ended) or >= valid_from"
+    },
+    {
+      "code": 6005,
+      "name": "DuplicatePartner",
+      "msg": "Partner already registered"
+    },
+    {
+      "code": 6006,
+      "name": "PartnersFull",
+      "msg": "Registry holds the maximum number of partners"
+    },
+    {
+      "code": 6007,
+      "name": "InvalidSiteId",
+      "msg": "site_id 0 is reserved for 'no site'"
+    },
+    {
+      "code": 6008,
+      "name": "DuplicateSite",
+      "msg": "A site with this site_id already exists"
+    },
+    {
+      "code": 6009,
+      "name": "SitesFull",
+      "msg": "Registry holds the maximum number of sites"
+    },
+    {
+      "code": 6010,
+      "name": "InvalidSealKind",
+      "msg": "Seal kind must be 0 (BOX) or 1 (NECK); 2 (LOOP) is reserved"
+    },
+    {
+      "code": 6011,
+      "name": "SealCountOverflow",
+      "msg": "Passport seal_count overflow"
+    },
+    {
+      "code": 6012,
+      "name": "SealPassportMismatch",
+      "msg": "Seal does not belong to this passport"
+    },
+    {
+      "code": 6013,
+      "name": "SealDead",
+      "msg": "Seal is dead (no longer answers) — no further scans"
+    },
+    {
+      "code": 6014,
+      "name": "PassportVoid",
+      "msg": "Passport is void"
+    },
+    {
+      "code": 6015,
+      "name": "CounterNotIncreasing",
+      "msg": "Counter must be greater than the seal's last counter"
+    },
+    {
+      "code": 6016,
+      "name": "InvalidInstructionsSysvar",
+      "msg": "Instructions sysvar account mismatch"
+    },
+    {
+      "code": 6017,
+      "name": "MissingEd25519Instruction",
+      "msg": "The instruction before record_scan must be an Ed25519Program instruction"
+    },
+    {
+      "code": 6018,
+      "name": "MalformedEd25519Instruction",
+      "msg": "Ed25519 instruction data is malformed (expects exactly one signature over a 152-byte message)"
+    },
+    {
+      "code": 6019,
+      "name": "UnknownServerKey",
+      "msg": "No server key with this key_id in the registry"
+    },
+    {
+      "code": 6020,
+      "name": "ServerKeyMismatch",
+      "msg": "Ed25519 public key does not match the registry server key"
+    },
+    {
+      "code": 6021,
+      "name": "ServerKeyNotValidAtTs",
+      "msg": "Server key is not valid at the given ts"
+    },
+    {
+      "code": 6022,
+      "name": "MessageMismatch",
+      "msg": "Signed message does not match the reconstruction from the arguments"
+    },
+    {
+      "code": 6023,
+      "name": "InvalidRole",
+      "msg": "role must be 0..=4"
+    },
+    {
+      "code": 6024,
+      "name": "InvalidTier",
+      "msg": "tier must be 0..=4"
+    },
+    {
+      "code": 6025,
+      "name": "TierNotAllowedForRole",
+      "msg": "OWNER/SELLER/BUYER may attest at most tier 2 (SELF_MEDIA)"
+    },
+    {
+      "code": 6026,
+      "name": "SiteIdNotAllowed",
+      "msg": "site_id may only be set for role VAULT or PARTNER"
+    },
+    {
+      "code": 6027,
+      "name": "UnknownSite",
+      "msg": "site_id is not registered"
+    },
+    {
+      "code": 6028,
+      "name": "InvalidIndicator",
+      "msg": "tamper/uv/hum/heat codes must be 0..=3"
+    },
+    {
+      "code": 6029,
+      "name": "InvalidFill",
+      "msg": "fill must be 0..=100"
+    },
+    {
+      "code": 6030,
+      "name": "InvalidHeatLevels",
+      "msg": "heat_levels must be a 6-bit mask (< 64)"
+    },
+    {
+      "code": 6031,
+      "name": "HeatInconsistent",
+      "msg": "heat must equal bit 4 of heat_levels when heat is INTACT or TRIGGERED"
+    },
+    {
+      "code": 6032,
+      "name": "ScanCountOverflow",
+      "msg": "Passport scan_count overflow"
+    }
+  ],
+  "types": [
+    {
+      "name": "PartnerAdded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "partner",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Passport",
+      "docs": [
+        "Seeds: `[\"passport\", serial_hash]` — the bottle's birth certificate."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "serial_hash",
+            "docs": [
+              "sha256(serial, UTF-8)"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "binding_hash",
+            "docs": [
+              "sha256(serial ‖ batch_code ‖ uid_hash_first_seal)"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "asset",
+            "docs": [
+              "Metaplex Core asset (stored only, no CPI in this program)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "issuer",
+            "type": "pubkey"
+          },
+          {
+            "name": "grade",
+            "docs": [
+              "grade enum (constants::GRADE_*)"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "scan_count",
+            "type": "u32"
+          },
+          {
+            "name": "seal_count",
+            "type": "u8"
+          },
+          {
+            "name": "void",
+            "type": "bool"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PassportMinted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "passport",
+            "type": "pubkey"
+          },
+          {
+            "name": "serial_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "binding_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "asset",
+            "type": "pubkey"
+          },
+          {
+            "name": "issuer",
+            "type": "pubkey"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RecordScanArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "counter",
+            "type": "u32"
+          },
+          {
+            "name": "tier",
+            "type": "u8"
+          },
+          {
+            "name": "role",
+            "type": "u8"
+          },
+          {
+            "name": "tamper",
+            "type": "u8"
+          },
+          {
+            "name": "uv",
+            "type": "u8"
+          },
+          {
+            "name": "hum",
+            "type": "u8"
+          },
+          {
+            "name": "heat",
+            "type": "u8"
+          },
+          {
+            "name": "heat_levels",
+            "docs": [
+              "6-bit mask, bit i = Thermax field i; bit 4 (40 °C) is the decisive one."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "fill",
+            "type": "u8"
+          },
+          {
+            "name": "site_id",
+            "docs": [
+              "0 = none; otherwise a registered site (only with role VAULT/PARTNER)."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "media_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bundle_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "nonce",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "server_key_id",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Registry",
+      "docs": [
+        "Seeds: `[\"registry\"]`"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "server_keys",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "ServerKey"
+                }
+              }
+            }
+          },
+          {
+            "name": "partners",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "sites",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "Site"
+                }
+              }
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RegistryInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "registry",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ScanProof",
+      "docs": [
+        "Seeds: `[\"scan\", seal, counter u32 LE]` — one PDA per accepted scan."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "seal",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u32"
+          },
+          {
+            "name": "tier",
+            "type": "u8"
+          },
+          {
+            "name": "role",
+            "type": "u8"
+          },
+          {
+            "name": "tamper",
+            "type": "u8"
+          },
+          {
+            "name": "uv",
+            "type": "u8"
+          },
+          {
+            "name": "hum",
+            "type": "u8"
+          },
+          {
+            "name": "heat",
+            "type": "u8"
+          },
+          {
+            "name": "heat_levels",
+            "docs": [
+              "6-bit mask, bit i = Thermax field i (29/33/34/37/40/42 °C); bit 4 is decisive."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "fill",
+            "type": "u8"
+          },
+          {
+            "name": "site_id",
+            "docs": [
+              "0 = none; otherwise a registry site (only for role VAULT/PARTNER)."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "media_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bundle_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "attester",
+            "type": "pubkey"
+          },
+          {
+            "name": "server_key_id",
+            "type": "u8"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ScanRecorded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "passport",
+            "type": "pubkey"
+          },
+          {
+            "name": "seal",
+            "type": "pubkey"
+          },
+          {
+            "name": "scan_proof",
+            "type": "pubkey"
+          },
+          {
+            "name": "attester",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u32"
+          },
+          {
+            "name": "tier",
+            "type": "u8"
+          },
+          {
+            "name": "role",
+            "type": "u8"
+          },
+          {
+            "name": "tamper",
+            "type": "u8"
+          },
+          {
+            "name": "uv",
+            "type": "u8"
+          },
+          {
+            "name": "hum",
+            "type": "u8"
+          },
+          {
+            "name": "heat",
+            "type": "u8"
+          },
+          {
+            "name": "heat_levels",
+            "type": "u8"
+          },
+          {
+            "name": "fill",
+            "type": "u8"
+          },
+          {
+            "name": "site_id",
+            "type": "u16"
+          },
+          {
+            "name": "grade",
+            "type": "u8"
+          },
+          {
+            "name": "scan_count",
+            "type": "u32"
+          },
+          {
+            "name": "server_key_id",
+            "type": "u8"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Seal",
+      "docs": [
+        "Seeds: `[\"seal\", uid_hash]` — one NFC seal (box or neck) pointing at a passport."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "passport",
+            "type": "pubkey"
+          },
+          {
+            "name": "kind",
+            "docs": [
+              "seal_kind enum (constants::SEAL_KIND_*)"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "uid_hash",
+            "docs": [
+              "sha256(uid bytes, 7)"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "last_counter",
+            "type": "u32"
+          },
+          {
+            "name": "dead",
+            "type": "bool"
+          },
+          {
+            "name": "attached_at",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SealAttached",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "passport",
+            "type": "pubkey"
+          },
+          {
+            "name": "seal",
+            "type": "pubkey"
+          },
+          {
+            "name": "uid_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "kind",
+            "type": "u8"
+          },
+          {
+            "name": "seal_count",
+            "type": "u8"
+          },
+          {
+            "name": "attached_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SealMarkedDead",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "passport",
+            "type": "pubkey"
+          },
+          {
+            "name": "seal",
+            "type": "pubkey"
+          },
+          {
+            "name": "by",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ServerKey",
+      "docs": [
+        "One accepted server signing key. `valid_to == 0` means open-ended."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "key_id",
+            "type": "u8"
+          },
+          {
+            "name": "pubkey",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "valid_from",
+            "type": "i64"
+          },
+          {
+            "name": "valid_to",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ServerKeyAdded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "key_id",
+            "type": "u8"
+          },
+          {
+            "name": "pubkey",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "valid_from",
+            "type": "i64"
+          },
+          {
+            "name": "valid_to",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Site",
+      "docs": [
+        "A physical location (vault, partner shop). `label` is UTF-8, zero padded."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "site_id",
+            "type": "u16"
+          },
+          {
+            "name": "label",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "SiteAdded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "site_id",
+            "type": "u16"
+          },
+          {
+            "name": "label",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "constants": [
+    {
+      "name": "EVENT_DISPUTE",
+      "type": "u8",
+      "value": "8"
+    },
+    {
+      "name": "EVENT_LIST",
+      "type": "u8",
+      "value": "3"
+    },
+    {
+      "name": "EVENT_MINT",
+      "type": "u8",
+      "value": "0"
+    },
+    {
+      "name": "EVENT_RECEIVE",
+      "type": "u8",
+      "value": "6"
+    },
+    {
+      "name": "EVENT_RELEASE",
+      "type": "u8",
+      "value": "7"
+    },
+    {
+      "name": "EVENT_RESERVE",
+      "type": "u8",
+      "value": "4"
+    },
+    {
+      "name": "EVENT_SCAN",
+      "type": "u8",
+      "value": "2"
+    },
+    {
+      "name": "EVENT_SEAL_ATTACH",
+      "type": "u8",
+      "value": "1"
+    },
+    {
+      "name": "EVENT_SEAL_DEAD",
+      "type": "u8",
+      "value": "9"
+    },
+    {
+      "name": "EVENT_SHIP",
+      "type": "u8",
+      "value": "5"
+    },
+    {
+      "name": "GRADE_A",
+      "type": "u8",
+      "value": "0"
+    },
+    {
+      "name": "GRADE_B",
+      "type": "u8",
+      "value": "1"
+    },
+    {
+      "name": "GRADE_C",
+      "type": "u8",
+      "value": "2"
+    },
+    {
+      "name": "GRADE_D",
+      "type": "u8",
+      "value": "3"
+    },
+    {
+      "name": "GRADE_FILL_A_MIN",
+      "docs": [
+        "`fill >= GRADE_FILL_A_MIN` → A"
+      ],
+      "type": "u8",
+      "value": "90"
+    },
+    {
+      "name": "GRADE_FILL_B_MIN",
+      "docs": [
+        "`fill >= GRADE_FILL_B_MIN` → B"
+      ],
+      "type": "u8",
+      "value": "60"
+    },
+    {
+      "name": "GRADE_VOID",
+      "type": "u8",
+      "value": "4"
+    },
+    {
+      "name": "HEAT_DECISIVE_INDEX",
+      "docs": [
+        "Index of the decisive heat field (vectors.constants.HEAT_DECISIVE_INDEX)."
+      ],
+      "type": "u8",
+      "value": "4"
+    },
+    {
+      "name": "INDICATOR_INTACT",
+      "type": "u8",
+      "value": "0"
+    },
+    {
+      "name": "INDICATOR_MISSING",
+      "type": "u8",
+      "value": "3"
+    },
+    {
+      "name": "INDICATOR_TRIGGERED",
+      "type": "u8",
+      "value": "1"
+    },
+    {
+      "name": "INDICATOR_UNREADABLE",
+      "type": "u8",
+      "value": "2"
+    },
+    {
+      "name": "MAX_PARTNERS",
+      "type": "u8",
+      "value": "16"
+    },
+    {
+      "name": "MAX_SERVER_KEYS",
+      "type": "u8",
+      "value": "8"
+    },
+    {
+      "name": "MAX_SITES",
+      "type": "u8",
+      "value": "16"
+    },
+    {
+      "name": "MSG_LEN",
+      "docs": [
+        "Total length of the server-signed message in bytes."
+      ],
+      "type": "u16",
+      "value": "152"
+    },
+    {
+      "name": "MSG_PREFIX",
+      "type": "bytes",
+      "value": "[70, 86, 83, 67, 65, 78, 49]"
+    },
+    {
+      "name": "ORIGIN_SEED",
+      "docs": [
+        "Reserved for the `Origin` account (`[\"origin\", passport]`, briefing §6).",
+        "Deliberately not implemented in the hackathon build."
+      ],
+      "type": "bytes",
+      "value": "[111, 114, 105, 103, 105, 110]"
+    },
+    {
+      "name": "PASSPORT_SEED",
+      "type": "bytes",
+      "value": "[112, 97, 115, 115, 112, 111, 114, 116]"
+    },
+    {
+      "name": "REGISTRY_SEED",
+      "type": "bytes",
+      "value": "[114, 101, 103, 105, 115, 116, 114, 121]"
+    },
+    {
+      "name": "ROLE_BUYER",
+      "type": "u8",
+      "value": "2"
+    },
+    {
+      "name": "ROLE_OWNER",
+      "type": "u8",
+      "value": "0"
+    },
+    {
+      "name": "ROLE_PARTNER",
+      "type": "u8",
+      "value": "4"
+    },
+    {
+      "name": "ROLE_SELLER",
+      "type": "u8",
+      "value": "1"
+    },
+    {
+      "name": "ROLE_VAULT",
+      "type": "u8",
+      "value": "3"
+    },
+    {
+      "name": "SCAN_SEED",
+      "type": "bytes",
+      "value": "[115, 99, 97, 110]"
+    },
+    {
+      "name": "SEAL_KIND_BOX",
+      "type": "u8",
+      "value": "0"
+    },
+    {
+      "name": "SEAL_KIND_NECK",
+      "type": "u8",
+      "value": "1"
+    },
+    {
+      "name": "SEAL_SEED",
+      "type": "bytes",
+      "value": "[115, 101, 97, 108]"
+    },
+    {
+      "name": "TAMPER_CLOSED",
+      "type": "u8",
+      "value": "0"
+    },
+    {
+      "name": "TAMPER_OPENED_BEFORE",
+      "type": "u8",
+      "value": "2"
+    },
+    {
+      "name": "TAMPER_OPENED_NOW",
+      "type": "u8",
+      "value": "1"
+    },
+    {
+      "name": "TAMPER_UNKNOWN",
+      "type": "u8",
+      "value": "3"
+    },
+    {
+      "name": "TIER_BIRTH",
+      "type": "u8",
+      "value": "4"
+    },
+    {
+      "name": "TIER_CERTIFIED",
+      "type": "u8",
+      "value": "3"
+    },
+    {
+      "name": "TIER_SELF",
+      "type": "u8",
+      "value": "1"
+    },
+    {
+      "name": "TIER_SELF_MEDIA",
+      "type": "u8",
+      "value": "2"
+    },
+    {
+      "name": "TIER_SIGHTING",
+      "type": "u8",
+      "value": "0"
+    }
+  ]
+}

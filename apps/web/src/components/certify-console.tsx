@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import { ArrowRight, Loader2, Printer, ShieldCheck } from "lucide-react";
 import { bindingHash, bytesToHex, serialHash, uidHash } from "@flaconvault/proof";
 import { flaconProgram, passportPda, registryPda, sealPda } from "@/lib/flacon";
@@ -63,7 +63,13 @@ export function CertifyConsole() {
     } catch (e) { setError(`Core-Mint fehlgeschlagen (auf localnet fehlt das Core-Programm): ${(e as Error).message}`); }
     finally { setBusy(null); }
   };
-  const usePlaceholder = () => { const k = PublicKey.unique().toBase58(); setAsset(k); note(`Platzhalter-Asset ${k.slice(0, 8)}…`); };
+  const airdrop = async () => {
+    if (!wallet.publicKey) return;
+    setBusy("airdrop"); setError(null);
+    try { const s = await connection.requestAirdrop(wallet.publicKey, 1e9); await connection.confirmTransaction(s, "confirmed"); note("1 SOL Airdrop"); }
+    catch (e) { setError(`Airdrop: ${(e as Error).message}`); } finally { setBusy(null); }
+  };
+  const usePlaceholder = () => { const k = Keypair.generate().publicKey.toBase58(); setAsset(k); note(`Platzhalter-Asset ${k.slice(0, 8)}…`); };
 
   const mintPassport = async () => {
     if (!anchorWallet || !wallet.publicKey || !asset) return;
@@ -138,7 +144,10 @@ export function CertifyConsole() {
         <WalletButton />
         {registry === undefined && wallet.connected && <span className="text-xs text-muted"><Loader2 className="inline h-3.5 w-3.5 animate-spin" aria-hidden /> Registry …</span>}
         {registry && <Pill tone={isPartner ? "ok" : "bad"}>{isPartner ? "Partner-Wallet bestätigt" : "Wallet ist kein Partner"}</Pill>}
+        {wallet.publicKey && <span className="mono text-xs text-muted" data-wallet={wallet.publicKey.toBase58()}>{wallet.publicKey.toBase58()}</span>}
         {registry === null && wallet.connected && <Pill tone="none">Registry nicht gefunden — scripts/seed-devnet.ts ausführen</Pill>}
+        {wallet.connected && <button onClick={loadRegistry} className="btn-outline btn-sm">Registry neu laden</button>}
+        {wallet.connected && DEV_SIMULATOR && <button onClick={airdrop} disabled={busy !== null} className="btn-outline btn-sm">1 SOL Airdrop (Test)</button>}
       </div>
       {error && <p className="mt-4 rounded-xl border border-bad/40 px-4 py-3 text-sm text-bad">{error}</p>}
 

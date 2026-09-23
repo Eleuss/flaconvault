@@ -35,7 +35,11 @@ uv run uvicorn fv.main:app --port 8787 --reload
 | `FV_WEB_URL` | `http://localhost:3000` | `/t` redirects to `${FV_WEB_URL}/t?tap=<id>` |
 | `FV_VERIFIER_HOST` | `http://localhost:8787` | host baked into simulator tag URLs |
 | `FV_CORS_ORIGINS` | `http://localhost:3000` | comma-separated allow-list |
-| `FV_SOLANA_RPC`, `FV_PROGRAM_ID`, `FV_IRYS_KEY` | | reported by `/health`; used from week 2 |
+| `FV_SOLANA_RPC` | `https://api.devnet.solana.com` | JSON-RPC used by the reconcile job and `/api/registry` (local validator: `http://127.0.0.1:8899`) |
+| `FV_PROGRAM_ID` | — | `flacon` program id; empty = reconcile disabled, `/api/sites` falls back to the seed sites |
+| `FV_RECONCILE_INTERVAL_S` | `60` | seconds between reconcile cycles; `0` = manual `POST /api/reconcile` only |
+| `FV_RECONCILE_TIMEOUT_S` | `600` | a SCAN(pending) without ScanProof PDA after this long → `failed` |
+| `FV_IRYS_KEY` | | week 2 (Arweave) |
 
 Comments must be on their own lines (python-dotenv treats an inline `# …` after an empty value as the value).
 
@@ -53,9 +57,12 @@ Hashes in responses are `0x` + lowercase hex (32 bytes); in the DB they are stor
 | POST | `/api/preview` | `{uid, ctr, cmac}` → non-consuming check `{verdict, counter, serial, serialHash, uidHash, sealKind, sealDead, message}` |
 | POST | `/api/verify` | Scan flow step 7 — see below |
 | POST | `/api/media` | multipart `file` (or `files`) → `{sha256: "0x…", ar: null, bytes, files}`; stored at `data/media/<sha256>.bin`. Several files are hashed as one concatenation in upload order |
-| POST | `/api/events` | `{eventId, txSig}` confirms a pending event · `{serial, type, txSig?, sealUidHash?, actor?, actorLabel?, payload?, location?, ts?}` inserts one (`confirmed` if `txSig`, else `pending`). Side effects: `MINT` creates the passport (needs `payload.brand`, `payload.name`; optional `batch`, `asset`, `issuerLabel`), `SEAL_ATTACH` upserts the seal (needs `payload.uid`, optional `payload.kind`), `SEAL_DEAD` marks the seal dead and voids the passport |
+| POST | `/api/events` | `{eventId, txSig}` confirms a pending event · `{serial, type, txSig?, sealUidHash?, actor?, actorLabel?, payload?, location?, ts?}` inserts one (`confirmed` if `txSig`, else `pending`). Side effects: `MINT` creates/updates the passport (`payload.brand`, `payload.name` required for a new serial; `batch`, `asset`, `issuerLabel`, `siteId` optional; `issuer` = `actor`), `SEAL_ATTACH` upserts the seal (`payload.uid` 7-byte hex, `payload.kind` default 1), `SEAL_DEAD` marks the seal dead and voids the passport. MINT and SEAL_ATTACH are idempotent: a second call for the same serial / uid updates `txSig`/`status`/payload of the first event instead of adding a row |
 | GET | `/api/passport/<serial>` | Passport + timeline (shape below), 404 if unknown |
 | GET | `/api/passports` | `[{serial, brand, name, grade, void, scanCount, lastEventTs}]` |
+| POST | `/api/reconcile` | Run one reconcile cycle now (§10) → `{checked, confirmed, failed, pending, mismatched, refreshed:{passports, seals}, enabled}` |
+| GET | `/api/registry` | Registry PDA `{programId, authority, partners:[base58], serverKeys:[{keyId, pubkeyHex, validFrom, validTo}], sites:[{siteId, label}], source:"chain"\|"fallback"}` — fallback (no program id / RPC down / PDA missing): `authority null`, `serverKeys []`, `partners` = partner attesters from the DB, seed sites |
+| GET | `/api/sites` | `[{siteId, label}]` for the certification console (registry sites, else the two seed sites) |
 | GET | `/api/attester/<pubkey>` | `{pubkey, label, isPartner, firstSeen, scanCount, certifiedCount, agreeCount, compareCount, agreeRate, escrowsOk, escrowsDisputed, recentSerials}` |
 | POST | `/api/dev/tag` | `{uid?, serial?, kind?}` → virtual tag (random `04…` UID if omitted); with `serial` also attaches the seal |
 | POST | `/api/dev/tap` | `{uid}` → `{responds: true, uid, ctr, ctrHex, cmac, url}` or, if killed, `{responds: false, uid, tapId, url}` (a `NO_RESPONSE` tap row) |
@@ -112,6 +119,26 @@ to `POST /api/events` with the `txSig` after confirmation.
                 "gradeAfter": 0, "location": { "country": "DE", "city": "Düsseldorf" } } ] }
 ```
 
+## Reconcile job (briefing §10)
+
+Runs in the FastAPI lifespan every `FV_RECONCILE_INTERVAL_S` (first cycle 5 s after start) when `FV_PROGRAM_ID` is
+set, and on `POST /api/reconcile`. For every `events` row `type=SCAN, status=pending` with a `seal_uid_hash` and a
+`counter` in its payload it derives `ScanProof ["scan", seal_pda, counter u32le]` (solders) and reads it via
+`getMultipleAccounts`:
+
+* account exists → `status=confirmed`; `tx_sig` filled from `getSignaturesForAddress` when it was missing (an
+  existing one is left alone); `counter, tamper, uv, hum, heat, fill, media_hash, bundle_hash` (+ `heatLevels`,
+  `attester`) are compared with the stored bundle and any difference is recorded in
+  `payload.reconcile = {checkedAt, scanPda, mismatch: [...]}`;
+* account missing and the event is older than `FV_RECONCILE_TIMEOUT_S` → `status=failed`
+  (`payload.reconcile.reason`); otherwise it stays pending.
+
+Then every Passport/Seal PDA that exists refreshes `passports.grade/void` and `seals.last_counter/dead` — chain
+wins, but only for passports with nothing pending (so a freshly signed scan does not flicker) and only once the
+chain has recorded a scan or a void (a freshly minted PDA carries just the mint default); a counter is never
+lowered (replay safety) and a raised seal counter pulls the simulator tag along. One log line per change
+(`fv.reconcile`).
+
 `events` are sorted by `ts` ascending. SCAN payloads of tier ≥ 1 are the full §4.4 bundle plus `grade`,
 `reviewRecommended`, `msgHex`, `bundleHash`; Tier-0 sightings carry `{tier: 0, verdict, counter, tapId}`.
 `scanCount` counts SCAN events of all tiers; `certifiedCount` those with tier ≥ 3.
@@ -151,8 +178,10 @@ fv/proof.py       message bytes, Ed25519, grade rule, canonical bundle   fv/rout
 fv/sdm.py         SUN CMAC check + generation, AN10922 diversification   fv/service.py     shared tap check (CMAC → counter → seal)
 fv/db.py          sqlite3 repository, fv/schema.sql                      fv/views.py       JSON shapes for the web app
 fv/enums.py       enums from fv/enums.json (synced from docs/enums.json) fv/strings.py     UI wording (briefing §16)
-fv/seed.py        docs/seed/passports.json → DB                          libsdm/           vendored icedevml/sdm-backend (MIT)
-config.py         SDMMAC_PARAM for libsdm                                tests/            pytest suite
+fv/seed.py        docs/seed/passports.json → DB                          fv/routes_chain.py /api/reconcile /api/registry /api/sites
+fv/chain.py       PDAs (solders), Anchor account decoders, JSON-RPC       fv/reconcile.py   §10 reconcile cycle
+config.py         SDMMAC_PARAM for libsdm                                libsdm/           vendored icedevml/sdm-backend (MIT)
+                                                                         tests/            pytest suite
 ```
 
 ## Wording (briefing §16)

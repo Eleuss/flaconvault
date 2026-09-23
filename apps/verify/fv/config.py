@@ -46,6 +46,8 @@ class Settings:
     cors_origins: list[str] = field(default_factory=lambda: ["http://localhost:3000"])
     seed_path: Path = field(default_factory=lambda: DEFAULT_SEED_PATH)
     port: int = 8787
+    reconcile_interval_s: int = 60                         # 0 disables the background loop (manual POST /api/reconcile only)
+    reconcile_timeout_s: int = 600                         # SCAN(pending) without ScanProof PDA after this → failed
 
     def __post_init__(self) -> None:
         self.key_mode = self.key_mode.strip().lower()
@@ -62,6 +64,13 @@ class Settings:
                 "python -c \"import os;print(os.urandom(32).hex())\""
             )
         self.server_seed_hex = seed
+        self.program_id = (self.program_id or "").strip()
+        if self.program_id:
+            from solders.pubkey import Pubkey
+            try:
+                Pubkey.from_string(self.program_id)
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(f"FV_PROGRAM_ID is not a valid base58 pubkey: {self.program_id!r}") from exc
         self.db_path = _resolve(self.db_path)
         self.media_dir = _resolve(self.media_dir)
         self.seed_path = Path(self.seed_path)
@@ -95,4 +104,6 @@ def settings_from_env() -> Settings:
         cors_origins=origins,
         seed_path=Path(e("FV_SEED_PATH") or DEFAULT_SEED_PATH),
         port=int(e("FV_PORT") or 8787),
+        reconcile_interval_s=int(e("FV_RECONCILE_INTERVAL_S") or 60),
+        reconcile_timeout_s=int(e("FV_RECONCILE_TIMEOUT_S") or 600),
     )

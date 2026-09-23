@@ -11,10 +11,10 @@ from pydantic import BaseModel, Field, field_validator
 
 from fv import proof
 from fv.config import Settings
-from fv.db import (bump_attester, confirm_event, consume_nonce, get_attester, get_event, get_nonce, get_passport,
-                   get_seal_by_hash, insert_event, insert_nonce, insert_tap, list_passports, mark_seal_dead, now,
-                   previous_scan_before, purge_nonces, set_passport_grade, upsert_attester, upsert_passport,
-                   upsert_seal, void_passport, transaction)
+from fv.db import (bump_attester, confirm_event, consume_nonce, find_event, get_attester, get_event, get_nonce,
+                   get_passport, get_seal_by_hash, insert_event, insert_nonce, insert_tap, list_passports,
+                   mark_seal_dead, now, previous_scan_before, purge_nonces, set_passport_grade, update_event_payload,
+                   upsert_attester, upsert_passport, upsert_seal, void_passport, transaction)
 from fv.deps import get_conn, get_settings
 from fv.enums import EventType, Grade, Indicator, NONCE_INVALID, NO_RESPONSE, SealKind, Tamper, VALID
 from fv.service import check_tap
@@ -276,14 +276,21 @@ def events(body: EventBody, conn=Depends(get_conn)):
             upsert_attester(conn, pubkey=body.actor, first_seen=ts, label=body.actorLabel)
 
         passport = get_passport(conn, body.serial)
-        if etype == EventType.MINT and not passport:
-            if not payload.get("brand") or not payload.get("name"):
+        if etype == EventType.MINT:
+            if not passport and not (payload.get("brand") and payload.get("name")):
                 raise HTTPException(422, "MINT for an unknown serial needs payload.brand and payload.name")
             passport = upsert_passport(conn, serial=body.serial, serial_hash=proof.serial_hash(body.serial).hex(),
-                                       brand=payload["brand"], name=payload["name"], batch=payload.get("batch"),
+                                       brand=payload.get("brand") or passport["brand"], name=payload.get("name") or passport["name"],
+                                       batch=payload.get("batch") or (passport["batch"] if passport else None),
                                        asset=payload.get("asset"), issuer=body.actor,
                                        issuer_label=payload.get("issuerLabel") or actor_label, grade=Grade.A, void=False,
                                        created_at=ts)
+            existing = find_event(conn, body.serial, EventType.MINT)
+            if existing:   # idempotent: same serial → update tx_sig/status/payload of the first MINT event
+                merged = {**json.loads(existing["payload_json"] or "{}"), **payload}
+                update_event_payload(conn, existing["id"], merged)
+                row = confirm_event(conn, existing["id"], body.txSig, body.status or ("confirmed" if body.txSig else existing["status"]))
+                return event_view(row)  # type: ignore[arg-type]
         if not passport:
             raise HTTPException(404, "passport not found")
 
@@ -300,8 +307,15 @@ def events(body: EventBody, conn=Depends(get_conn)):
             seal = upsert_seal(conn, uid_hash=proof.uid_hash(uid_b).hex(), uid_hex=uid_b.hex().upper(), serial=body.serial,
                                kind=kind, attached_at=ts)
             seal_uid_hash = seal["uid_hash"]
+            payload["uid"] = uid_b.hex().upper()
             payload.setdefault("uidHash", "0x" + seal_uid_hash)
             payload.setdefault("kindName", SealKind.name(kind) if kind in SealKind.values() else "LOOP")
+            existing = find_event(conn, body.serial, EventType.SEAL_ATTACH, seal_uid_hash)
+            if existing:   # idempotent: same seal → update the first SEAL_ATTACH event
+                merged = {**json.loads(existing["payload_json"] or "{}"), **payload}
+                update_event_payload(conn, existing["id"], merged)
+                row = confirm_event(conn, existing["id"], body.txSig, body.status or ("confirmed" if body.txSig else existing["status"]))
+                return event_view(row)  # type: ignore[arg-type]
         if etype == EventType.SEAL_DEAD:
             if seal_uid_hash:
                 if not get_seal_by_hash(conn, seal_uid_hash):

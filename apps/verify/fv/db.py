@@ -293,3 +293,42 @@ def update_sim_tag(conn, uid_hex: str, **fields: Any) -> dict | None:
         sets = ", ".join(f"{k}=?" for k in fields)
         conn.execute(f"UPDATE sim_tags SET {sets} WHERE uid_hex=?", (*[int(v) if isinstance(v, bool) else v for v in fields.values()], uid_hex.upper()))
     return get_sim_tag(conn, uid_hex)
+
+
+# ---------- reconcile / registry helpers ----------
+
+def pending_scan_events(conn) -> list[dict]:
+    return _rows(conn.execute("SELECT * FROM events WHERE type=2 AND status='pending' AND seal_uid_hash IS NOT NULL ORDER BY id").fetchall())
+
+
+def set_event_status(conn, event_id: int, status: str, tx_sig: str | None) -> None:
+    conn.execute("UPDATE events SET status=?, tx_sig=COALESCE(tx_sig, ?) WHERE id=?", (status, tx_sig, event_id))
+
+
+def update_event_payload(conn, event_id: int, payload: dict) -> None:
+    conn.execute("UPDATE events SET payload_json=? WHERE id=?", (json.dumps(payload, ensure_ascii=False, sort_keys=True), event_id))
+
+
+def has_pending_events(conn, serial: str) -> bool:
+    return conn.execute("SELECT 1 FROM events WHERE serial=? AND status='pending' LIMIT 1", (serial,)).fetchone() is not None
+
+
+def all_passports(conn) -> list[dict]:
+    return _rows(conn.execute("SELECT * FROM passports ORDER BY serial").fetchall())
+
+
+def all_seals(conn) -> list[dict]:
+    return _rows(conn.execute("SELECT * FROM seals ORDER BY attached_at").fetchall())
+
+
+def find_event(conn, serial: str, type: int, seal_uid_hash: str | None = None) -> dict | None:
+    if seal_uid_hash:
+        r = conn.execute("SELECT * FROM events WHERE serial=? AND type=? AND seal_uid_hash=? ORDER BY id LIMIT 1",
+                         (serial, type, seal_uid_hash.lower())).fetchone()
+    else:
+        r = conn.execute("SELECT * FROM events WHERE serial=? AND type=? ORDER BY id LIMIT 1", (serial, type)).fetchone()
+    return _row(r)
+
+
+def partner_pubkeys(conn) -> list[str]:
+    return [r[0] for r in conn.execute("SELECT pubkey FROM attesters WHERE is_partner=1 ORDER BY first_seen").fetchall()]

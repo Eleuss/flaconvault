@@ -243,3 +243,36 @@ def test_reset_reseeds(client):
     assert len(client.get("/api/dev/tags").json()) == 5
     assert client.post("/api/dev/reset").json()["ok"]
     assert len(client.get("/api/dev/tags").json()) == 4
+
+
+def test_certify_console_mint_and_seal_attach_idempotent(client):
+    partner = "PxPGKQsGTYE2ti3awtEae4Yjk64NF2tcxQN1oDchhyR"
+    mint = {"serial": "SN-2026-000042", "type": "MINT", "actor": partner, "txSig": "M" * 88,
+            "payload": {"serial": "SN-2026-000042", "brand": "Amouage", "name": "Interlude Man", "batch": "AM01",
+                        "asset": "4FQoaiZa5NGcjJK5qzZ2VnXFa8MBM7TZEtyruU2wu6ck", "issuerLabel": "Parfümerie X, Düsseldorf", "siteId": 1},
+            "location": {"country": "DE", "city": "Düsseldorf"}}
+    e1 = client.post("/api/events", json=mint).json()
+    assert e1["type"] == 0 and e1["status"] == "confirmed" and e1["txSig"] == "M" * 88 and e1["payload"]["siteId"] == 1
+    p = client.get("/api/passport/SN-2026-000042").json()
+    assert p["asset"] == "4FQoaiZa5NGcjJK5qzZ2VnXFa8MBM7TZEtyruU2wu6ck" and p["issuer"] == partner and p["batch"] == "AM01"
+    assert p["issuerLabel"] == "Parfümerie X, Düsseldorf" and p["grade"] == 0
+    # second MINT for the same serial: same event row, tx_sig updated, no duplicate
+    e1b = client.post("/api/events", json={**mint, "txSig": "N" * 88}).json()
+    assert e1b["id"] == e1["id"] and e1b["txSig"] == "N" * 88 and e1b["status"] == "confirmed"
+    assert [e["type"] for e in client.get("/api/passport/SN-2026-000042").json()["events"]] == [0]
+
+    att = {"serial": "SN-2026-000042", "type": "SEAL_ATTACH", "actor": partner, "txSig": "S" * 88,
+           "payload": {"uid": "04c0ffee000042", "kind": 1}}
+    e2 = client.post("/api/events", json=att).json()
+    uid_hash = "0x" + proof.uid_hash(bytes.fromhex("04C0FFEE000042")).hex()
+    assert e2["type"] == 1 and e2["status"] == "confirmed" and e2["sealUidHash"] == uid_hash and e2["payload"]["kindName"] == "NECK"
+    p = client.get("/api/passport/SN-2026-000042").json()
+    assert p["seals"] == [{"uidHash": uid_hash, "kind": 1, "lastCounter": 0, "dead": False, "attachedAt": e2["ts"]}]
+    e2b = client.post("/api/events", json={**att, "txSig": "T" * 88}).json()
+    assert e2b["id"] == e2["id"] and e2b["txSig"] == "T" * 88
+    p = client.get("/api/passport/SN-2026-000042").json()
+    assert len(p["seals"]) == 1 and [e["type"] for e in p["events"]] == [0, 1]
+    # the attached uid now verifies against this passport
+    client.post("/api/dev/tag", json={"uid": "04C0FFEE000042"})
+    tap = client.post("/api/dev/tap", json={"uid": "04C0FFEE000042"}).json()
+    assert client.post("/api/preview", json={"uid": tap["uid"], "ctr": tap["ctrHex"], "cmac": tap["cmac"]}).json()["serial"] == "SN-2026-000042"

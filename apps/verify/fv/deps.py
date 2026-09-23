@@ -23,3 +23,7 @@ def get_conn(request: Request) -> Iterator:
         yield conn
     finally:
         conn.close()
+
+
+def get_rpc(request: Request):
+    return request.app.state.rpc

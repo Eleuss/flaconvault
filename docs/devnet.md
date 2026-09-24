@@ -167,3 +167,13 @@ Useful `memcmp` filters for `getProgramAccounts(escrow)`: orders of a seller →
 | `dispute()` | config, order, vault, buyerToken, buyer, seller, signer, seal?, asset?, mplCoreProgram?, tokenProgram, systemProgram |
 
 IDL + TS types: `packages/proof/src/idl/escrow.json`, `packages/proof/src/idl/escrow.ts`.
+
+
+## Escrow on devnet (2026-09-24)
+
+`escrow` deployed (`9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL`, IDL registered). Config `CJWph4fTD2sJFZoei1x5xCjq18UEAVyHnLQSnLX7JVa7`, test USDC mint `FLhABVjb5dHqbZs8zpWXi4Qr9JhHJC2gx75KnHQ9AdW5` (6 dp, mint authority = deploy wallet; `scripts/fund-dev-wallet.ts <pubkey> [sol] [usdc]` hands out SOL + USDC).
+
+Scene 6 played end-to-end in the browser with two persistent dev wallets (A seller `AciBj4mKqxhPDF7KRYqvpGt8EZm75b582dumVmTv2LJ1`, B buyer `7u5uM6oU3XnzDpPNYHxSFhviB6pLaS52XXVsjAwE8jtf`) on SN-2026-000001 at 480 USDC:
+list → reserve (vault funded) → seller scan (counter 18) → record_pre_ship_scan → ship → buyer scan (counter 19) → record_receipt_scan (match: heat/hum equal, Δfill 0) → release.
+Release tx: https://explorer.solana.com/tx/2oEXVqFVJ6kg6ubCrLFVGFzGV6QB67WMPVzhij99aT8RBsVoWbw1UfkcvxzP83gcrU4xx4iXpHAwwcw18sJFBLhv?cluster=devnet
+Order PDA `2cSy9BQac8LcNzb4ir32mRB178SejNbLnf95VdF8PQe2` (state RELEASED). The passport timeline shows LIST/SHIP/RECEIVE/RELEASE with their signatures.

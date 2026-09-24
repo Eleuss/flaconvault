@@ -83,10 +83,10 @@ The seal is a **handling and provenance record, not a damage record**. Say "Sieg
 | 4 data contracts, `packages/proof`, vectors | done — DoD |
 | 5 verification server + simulator | done — DoD (36 tests) |
 | 6 Anchor program | done — DoD: deployed on devnet (`7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL`), registry + passports seeded, first live scan anchored |
-| 7 web screens `/`, `/p`, `/t`, `/dev`, `/certify`, `/wallet` | done; `/market` is week 3 |
+| 7 web screens `/`, `/p`, `/t`, `/dev`, `/certify`, `/wallet`, `/market` | done |
 | 8 scan flow | done — DoD (simulator): verified on localnet and devnet; camera/WebNFC path needs the Android device |
 | 9 camera indicator reading | done (`packages/vision`, `/dev/vision`); calibrate `docs/heat_fields.json` on delivery day |
 | 10 passport timeline + reconcile | done — DoD (reconcile every 60 s, `POST /api/reconcile`) |
-| 11 escrow, 12 reputation view | 12 read view done; 11 program in progress, `/market` next |
+| 11 escrow + `/market` + Blink, 12 reputation view | done — DoD: escrow deployed on devnet, scene 6 played end-to-end (see `docs/devnet.md`); Blink at `/api/actions/verify-buy` |
 
 Devnet addresses: [`docs/devnet.md`](docs/devnet.md). Delivery-day runbook: [`docs/hardware-day.md`](docs/hardware-day.md).

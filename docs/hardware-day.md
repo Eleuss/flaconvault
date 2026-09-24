@@ -48,6 +48,10 @@ Punch Ø 9 mm, stick it into the circle, check blue/pink against the printed pat
 
 Scene 2 buyer tap (iPhone works too: `/t` only) · Scene 3 certification scan with gloves/scale: `/certify` → **Zum Scan** (tier 4, photo required) · Scene 5 fraud: replay + torn sticker.
 
+## Demo wallets
+
+With `NEXT_PUBLIC_DEV_SIMULATOR=true` the wallet menu offers **Dev-Wallet A (Verkäufer)** and **Dev-Wallet B (Käufer)** — keypairs persisted in the browser's localStorage, so one phone can play both escrow roles. Fund them with `npx tsx scripts/fund-dev-wallet.ts <pubkey> 0.05 500` (SOL + test USDC on devnet). For the real demo use Phantom and set the simulator flag to false.
+
 ## Devnet budget
 
 Wallet `Bsy5DFxtugs5PGqjF8ADrPYm7kt89dFpwEe9hTZokpFy`. flacon deployed (≈1.3 SOL rent). Escrow deploy needs ≈2.3 SOL. Each scan ≈0.002 SOL + rent for the ScanProof (≈0.003). Top up via https://faucet.solana.com when below 1 SOL.

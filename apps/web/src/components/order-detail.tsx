@@ -58,14 +58,14 @@ export function OrderDetail({ serial }: { serial: string }) {
     .map((e) => ({ counter: e.payload.counter as number, ts: e.ts, fill: typeof e.payload.fill === "number" ? e.payload.fill : null, pda: scanPda(sealKey!, e.payload.counter as number), label: `Zähler ${e.payload.counter} · ${fmtDate(e.ts)}${typeof e.payload.fill === "number" ? ` · Füllstand ${e.payload.fill} %` : ""}` }))
     .reverse();
 
-  const run = async (label: string, fn: () => Promise<string>, event?: { type: number; payload?: Record<string, unknown> }) => {
+  type Ev = { type: number; payload?: Record<string, unknown> };
+  const run = async (label: string, fn: () => Promise<string>, event?: Ev | ((after: OrderView | null | undefined) => Ev | null)) => {
     if (!wallet.publicKey) return;
     setBusy(label); setError(null);
     const before = order ? `${order.state}:${order.buyer?.toBase58() ?? ""}:${order.sellerScan?.toBase58() ?? ""}:${order.buyerScan?.toBase58() ?? ""}` : "";
     try {
       const sig = await fn();
       setLastTx(sig);
-      if (event) await api.events({ serial, type: event.type, txSig: sig, actor: wallet.publicKey.toBase58(), payload: event.payload ?? {} });
       // public RPCs are load-balanced: a read right after confirmation can lag — poll until the order changed
       for (let i = 0; i < 8; i++) {
         await load();
@@ -74,6 +74,8 @@ export function OrderDetail({ serial }: { serial: string }) {
         if (after !== before) break;
         await new Promise((r) => setTimeout(r, 1500));
       }
+      const ev = typeof event === "function" ? event(orderRef.current) : event;
+      if (ev) await api.events({ serial, type: ev.type, txSig: sig, actor: wallet.publicKey.toBase58(), payload: ev.payload ?? {} });
     } catch (e) { setError((e as Error).message); } finally { setBusy(null); }
   };
   const prog = () => escrowProgram(connection, anchorWallet!);
@@ -84,9 +86,12 @@ export function OrderDetail({ serial }: { serial: string }) {
 
   const act = {
     reserve: () => run("reserve", () => escrowIx.reserve(prog(), order!, wallet.publicKey!, config!.usdcMint).rpc(), { type: EventType.RESERVE, payload: { priceUsdc: order!.priceUsdc, currency: "USDC" } }),
-    preShip: () => run("preShip", () => escrowIx.preShip(prog(), order!, chosen!.pda, sealKey!).rpc(), { type: EventType.SCAN, payload: { note: "pre_ship_recorded", counter: chosen!.counter, purpose: "PRE_SHIP_RECORD" } }),
+    preShip: () => run("preShip", () => escrowIx.preShip(prog(), order!, chosen!.pda, sealKey!).rpc()),
     ship: () => run("ship", () => escrowIx.ship(prog(), order!).rpc(), { type: EventType.SHIP, payload: { carrier: "DHL", preShipScanCounter: chosen?.counter ?? sellerScanCounter ?? null } }),
-    receipt: () => run("receipt", () => escrowIx.receipt(prog(), order!, chosen!.pda, sealKey!).rpc(), { type: EventType.RECEIVE, payload: { receiptScanCounter: chosen!.counter, preShipScanCounter: sellerScanCounter ?? null } }),
+    receipt: () => run("receipt", () => escrowIx.receipt(prog(), order!, chosen!.pda, sealKey!).rpc(), (after) => ({
+      type: EventType.RECEIVE,
+      payload: { receiptScanCounter: chosen!.counter, preShipScanCounter: sellerScanCounter ?? null, match: after?.state === OrderState.RECEIPT_SCANNED, fillDelta: null },
+    })),
     release: () => run("release", () => escrowIx.release(prog(), order!, wallet.publicKey!, config!.usdcMint).rpc(), { type: EventType.RELEASE, payload: { priceUsdc: order!.priceUsdc, currency: "USDC", to: order!.seller.toBase58(), passportTo: order!.buyer?.toBase58() } }),
     dispute: () => run("dispute", () => escrowIx.dispute(prog(), order!, wallet.publicKey!, config!.usdcMint, seal?.dead && sealKey ? sealKey : null).rpc(), { type: EventType.DISPUTE, payload: { reason: seal?.dead ? "Siegel antwortet nicht" : timeoutReached ? "kein Empfangs-Scan binnen Frist" : order!.state === OrderState.MISMATCH ? "Scans weichen ab" : "Admin" } }),
     cancel: () => run("cancel", () => escrowIx.cancel(prog(), order!).rpc()),

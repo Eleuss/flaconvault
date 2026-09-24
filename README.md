@@ -81,7 +81,7 @@ The seal is a **handling and provenance record, not a damage record**. Say "Sieg
 | Briefing § | State |
 |---|---|
 | 4 data contracts, `packages/proof`, vectors | done — DoD |
-| 5 verification server + simulator | done — DoD (36 tests) |
+| 5 verification server + simulator | done — DoD (45 tests); media + bundles on Arweave via Irys devnet (`FV_ARWEAVE=true`) |
 | 6 Anchor program | done — DoD: deployed on devnet (`7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL`), registry + passports seeded, first live scan anchored |
 | 7 web screens `/`, `/p`, `/t`, `/dev`, `/certify`, `/wallet`, `/market` | done |
 | 8 scan flow | done — DoD (simulator): verified on localnet and devnet; camera/WebNFC path needs the Android device |

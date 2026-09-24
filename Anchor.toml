@@ -7,9 +7,11 @@ skip-lint = false
 
 [programs.localnet]
 flacon = "7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL"
+escrow = "9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL"
 
 [programs.devnet]
 flacon = "7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL"
+escrow = "9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL"
 
 [provider]
 cluster = "localnet"

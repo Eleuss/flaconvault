@@ -1,0 +1,2050 @@
+{
+  "address": "9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL",
+  "metadata": {
+    "name": "escrow",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "FlaconVault — USDC escrow with scan-verified handover (briefing §11)"
+  },
+  "instructions": [
+    {
+      "name": "cancel",
+      "docs": [
+        "Seller cancels a LISTED order (asset returned if deposited)."
+      ],
+      "discriminator": [
+        232,
+        219,
+        223,
+        41,
+        219,
+        236,
+        220,
+        190
+      ],
+      "accounts": [
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.passport",
+                "account": "Order"
+              },
+              {
+                "kind": "account",
+                "path": "order.seller",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "order"
+          ]
+        },
+        {
+          "name": "asset",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "mpl_core_program",
+          "optional": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "close_order",
+      "docs": [
+        "Seller reclaims a terminal order account (allows re-listing the same passport)."
+      ],
+      "discriminator": [
+        90,
+        103,
+        209,
+        28,
+        7,
+        63,
+        168,
+        4
+      ],
+      "accounts": [
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.passport",
+                "account": "Order"
+              },
+              {
+                "kind": "account",
+                "path": "order.seller",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "order"
+          ]
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "deposit_asset",
+      "docs": [
+        "Seller moves the Core asset into escrow custody (optional; LISTED only)."
+      ],
+      "discriminator": [
+        107,
+        93,
+        89,
+        87,
+        226,
+        203,
+        154,
+        19
+      ],
+      "accounts": [
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.passport",
+                "account": "Order"
+              },
+              {
+                "kind": "account",
+                "path": "order.seller",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "order"
+          ]
+        },
+        {
+          "name": "asset",
+          "writable": true
+        },
+        {
+          "name": "mpl_core_program",
+          "address": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "dispute",
+      "docs": [
+        "Refund path (admin / buyer on mismatch, timeout or dead seal)."
+      ],
+      "discriminator": [
+        216,
+        92,
+        128,
+        146,
+        202,
+        85,
+        135,
+        73
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.passport",
+                "account": "Order"
+              },
+              {
+                "kind": "account",
+                "path": "order.seller",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "buyer_token",
+          "docs": [
+            "Buyer's USDC token account (refund destination)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "buyer",
+          "writable": true
+        },
+        {
+          "name": "seller"
+        },
+        {
+          "name": "signer",
+          "docs": [
+            "Admin or buyer (see rules above); pays the Core CPI fee if the asset is returned."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "seal",
+          "docs": [
+            "flacon `Seal` of the order's passport — pass it to dispute on a dead seal."
+          ],
+          "optional": true
+        },
+        {
+          "name": "asset",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "mpl_core_program",
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "init_config",
+      "docs": [
+        "Singleton config; payer becomes admin. `usdc_mint` is passed as an account."
+      ],
+      "discriminator": [
+        23,
+        235,
+        115,
+        232,
+        168,
+        96,
+        1,
+        231
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "docs": [
+            "Payer becomes the escrow admin."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "usdc_mint",
+          "docs": [
+            "The USDC mint (devnet: 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU; localnet: a test mint)."
+          ]
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "dispute_after_s",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "list",
+      "docs": [
+        "Seller lists a (non-void) flacon passport for `price` USDC base units."
+      ],
+      "discriminator": [
+        54,
+        174,
+        193,
+        67,
+        17,
+        41,
+        132,
+        38
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "passport",
+          "docs": [
+            "flacon `Passport` (owner = flacon program, discriminator checked)."
+          ]
+        },
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "passport"
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "price",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "record_pre_ship_scan",
+      "docs": [
+        "Seller links their flacon pre-ship ScanProof."
+      ],
+      "discriminator": [
+        112,
+        252,
+        169,
+        209,
+        191,
+        114,
+        140,
+        158
+      ],
+      "accounts": [
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.passport",
+                "account": "Order"
+              },
+              {
+                "kind": "account",
+                "path": "order.seller",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seller",
+          "signer": true,
+          "relations": [
+            "order"
+          ]
+        },
+        {
+          "name": "scan_proof",
+          "docs": [
+            "flacon `ScanProof` of the seller's pre-ship scan."
+          ]
+        },
+        {
+          "name": "seal",
+          "docs": [
+            "flacon `Seal` the scan was made on."
+          ]
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "record_receipt_scan",
+      "docs": [
+        "Buyer links their receipt ScanProof; compared with the pre-ship scan → RECEIPT_SCANNED or MISMATCH."
+      ],
+      "discriminator": [
+        192,
+        183,
+        232,
+        178,
+        90,
+        45,
+        91,
+        74
+      ],
+      "accounts": [
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.passport",
+                "account": "Order"
+              },
+              {
+                "kind": "account",
+                "path": "order.seller",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "buyer",
+          "signer": true,
+          "relations": [
+            "order"
+          ]
+        },
+        {
+          "name": "scan_proof",
+          "docs": [
+            "flacon `ScanProof` of the buyer's receipt scan."
+          ]
+        },
+        {
+          "name": "seal",
+          "docs": [
+            "flacon `Seal` the receipt scan was made on."
+          ]
+        },
+        {
+          "name": "seller_scan",
+          "docs": [
+            "The seller's pre-ship `ScanProof` recorded on the order."
+          ]
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "release",
+      "docs": [
+        "Permissionless settlement after a matching receipt scan."
+      ],
+      "discriminator": [
+        253,
+        249,
+        15,
+        206,
+        28,
+        127,
+        193,
+        241
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.passport",
+                "account": "Order"
+              },
+              {
+                "kind": "account",
+                "path": "order.seller",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seller_token",
+          "docs": [
+            "Seller's USDC token account (destination)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "buyer",
+          "writable": true
+        },
+        {
+          "name": "caller",
+          "docs": [
+            "Anyone; pays the Core CPI fee if the asset is transferred."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "asset",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "mpl_core_program",
+          "optional": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "reserve",
+      "docs": [
+        "Buyer funds the vault with `price` USDC."
+      ],
+      "discriminator": [
+        92,
+        99,
+        244,
+        209,
+        28,
+        65,
+        213,
+        157
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.passport",
+                "account": "Order"
+              },
+              {
+                "kind": "account",
+                "path": "order.seller",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "buyer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "buyer_token",
+          "docs": [
+            "Buyer's USDC token account (source of `price`)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "usdc_mint"
+        },
+        {
+          "name": "vault",
+          "docs": [
+            "USDC vault owned by the Order PDA; rent paid by the buyer, returned on release/dispute.",
+            "`init_if_needed` so that a second `reserve` on a funded order reaches the state check",
+            "(`InvalidState`) instead of failing with a raw \"account already in use\"; the vault only",
+            "exists while the order is funded, and those states are all rejected below."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "set_dispute_window",
+      "docs": [
+        "Admin only: default dispute window for future orders."
+      ],
+      "discriminator": [
+        125,
+        232,
+        78,
+        47,
+        233,
+        47,
+        47,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "dispute_after_s",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "ship",
+      "docs": [
+        "Seller marks the parcel as shipped (starts the dispute window)."
+      ],
+      "discriminator": [
+        174,
+        78,
+        207,
+        150,
+        205,
+        74,
+        165,
+        217
+      ],
+      "accounts": [
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.passport",
+                "account": "Order"
+              },
+              {
+                "kind": "account",
+                "path": "order.seller",
+                "account": "Order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seller",
+          "signer": true,
+          "relations": [
+            "order"
+          ]
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "EscrowConfig",
+      "discriminator": [
+        138,
+        174,
+        227,
+        187,
+        239,
+        148,
+        1,
+        44
+      ]
+    },
+    {
+      "name": "Order",
+      "discriminator": [
+        134,
+        173,
+        223,
+        185,
+        77,
+        86,
+        28,
+        51
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "AssetDeposited",
+      "discriminator": [
+        97,
+        219,
+        56,
+        126,
+        243,
+        136,
+        59,
+        195
+      ]
+    },
+    {
+      "name": "ConfigInitialized",
+      "discriminator": [
+        181,
+        49,
+        200,
+        156,
+        19,
+        167,
+        178,
+        91
+      ]
+    },
+    {
+      "name": "DisputeWindowUpdated",
+      "discriminator": [
+        217,
+        172,
+        82,
+        208,
+        102,
+        92,
+        69,
+        196
+      ]
+    },
+    {
+      "name": "OrderCancelled",
+      "discriminator": [
+        108,
+        56,
+        128,
+        68,
+        168,
+        113,
+        168,
+        239
+      ]
+    },
+    {
+      "name": "OrderClosed",
+      "discriminator": [
+        237,
+        77,
+        101,
+        123,
+        72,
+        43,
+        149,
+        123
+      ]
+    },
+    {
+      "name": "OrderDisputed",
+      "discriminator": [
+        186,
+        104,
+        120,
+        36,
+        95,
+        130,
+        173,
+        128
+      ]
+    },
+    {
+      "name": "OrderListed",
+      "discriminator": [
+        235,
+        55,
+        154,
+        70,
+        133,
+        71,
+        114,
+        30
+      ]
+    },
+    {
+      "name": "OrderReleased",
+      "discriminator": [
+        171,
+        232,
+        93,
+        217,
+        184,
+        222,
+        234,
+        29
+      ]
+    },
+    {
+      "name": "OrderReserved",
+      "discriminator": [
+        31,
+        26,
+        190,
+        19,
+        176,
+        19,
+        69,
+        154
+      ]
+    },
+    {
+      "name": "OrderShipped",
+      "discriminator": [
+        200,
+        225,
+        83,
+        123,
+        179,
+        86,
+        221,
+        24
+      ]
+    },
+    {
+      "name": "PreShipScanRecorded",
+      "discriminator": [
+        228,
+        148,
+        141,
+        200,
+        112,
+        5,
+        58,
+        250
+      ]
+    },
+    {
+      "name": "ReceiptScanRecorded",
+      "discriminator": [
+        192,
+        0,
+        126,
+        169,
+        221,
+        228,
+        135,
+        157
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidState",
+      "msg": "Order is not in the required state for this instruction"
+    },
+    {
+      "code": 6001,
+      "name": "InvalidPrice",
+      "msg": "price must be > 0"
+    },
+    {
+      "code": 6002,
+      "name": "InvalidDisputeWindow",
+      "msg": "dispute_after_s must be > 0"
+    },
+    {
+      "code": 6003,
+      "name": "PassportVoid",
+      "msg": "Passport is void"
+    },
+    {
+      "code": 6004,
+      "name": "NotSeller",
+      "msg": "Signer is not the order's seller"
+    },
+    {
+      "code": 6005,
+      "name": "NotBuyer",
+      "msg": "Signer is not the order's buyer"
+    },
+    {
+      "code": 6006,
+      "name": "SellerCannotBuy",
+      "msg": "Seller cannot buy their own listing"
+    },
+    {
+      "code": 6007,
+      "name": "Unauthorized",
+      "msg": "Signer is neither the escrow admin nor an entitled party"
+    },
+    {
+      "code": 6008,
+      "name": "WrongMint",
+      "msg": "Token account mint does not match the escrow USDC mint"
+    },
+    {
+      "code": 6009,
+      "name": "ScanSealMismatch",
+      "msg": "ScanProof does not belong to the given seal"
+    },
+    {
+      "code": 6010,
+      "name": "SealPassportMismatch",
+      "msg": "Seal does not belong to the order's passport"
+    },
+    {
+      "code": 6011,
+      "name": "ScanAttesterMismatch",
+      "msg": "ScanProof attester is not the expected party"
+    },
+    {
+      "code": 6012,
+      "name": "SellerScanMismatch",
+      "msg": "Given seller ScanProof is not the one recorded on the order"
+    },
+    {
+      "code": 6013,
+      "name": "ReceiptScanNotNewer",
+      "msg": "Receipt scan on the same seal must have a higher counter than the pre-ship scan"
+    },
+    {
+      "code": 6014,
+      "name": "DisputeWindowNotElapsed",
+      "msg": "Dispute window after shipping has not elapsed yet"
+    },
+    {
+      "code": 6015,
+      "name": "SealNotDead",
+      "msg": "Seal is not dead"
+    },
+    {
+      "code": 6016,
+      "name": "AssetMismatch",
+      "msg": "Asset account does not match the order's asset"
+    },
+    {
+      "code": 6017,
+      "name": "AssetAlreadyDeposited",
+      "msg": "Asset already deposited"
+    },
+    {
+      "code": 6018,
+      "name": "MissingAssetAccounts",
+      "msg": "Asset custody requires the asset and mpl-core program accounts"
+    },
+    {
+      "code": 6019,
+      "name": "InvalidCoreProgram",
+      "msg": "Not the Metaplex Core program"
+    },
+    {
+      "code": 6020,
+      "name": "InvalidAsset",
+      "msg": "Asset account is not owned by Metaplex Core"
+    },
+    {
+      "code": 6021,
+      "name": "MathOverflow",
+      "msg": "Arithmetic overflow"
+    }
+  ],
+  "types": [
+    {
+      "name": "AssetDeposited",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "config",
+            "type": "pubkey"
+          },
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "usdc_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "dispute_after_s",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DisputeWindowUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "dispute_after_s",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EscrowConfig",
+      "docs": [
+        "Seeds `[\"config\"]` — singleton.",
+        "",
+        "Layout (after the 8-byte discriminator): admin @8 (32) · usdc_mint @40 (32)",
+        "· dispute_after_s @72 (i64) · bump @80 (u8) → 81 bytes."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "usdc_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "dispute_after_s",
+            "docs": [
+              "Default window after `ship()` in which the buyer must record a receipt scan."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Order",
+      "docs": [
+        "Seeds `[\"order\", passport, seller]`.",
+        "",
+        "Layout (after the 8-byte discriminator):",
+        "passport @8 (32) · seller @40 (32) · buyer @72 (32, zero until reserved) · asset @104 (32)",
+        "· price @136 (u64) · state @144 (u8) · listed_at @145 (i64) · reserved_at @153 (i64)",
+        "· shipped_at @161 (i64) · seller_scan @169 (32) · buyer_scan @201 (32)",
+        "· dispute_after_s @233 (i64) · asset_deposited @241 (bool) · bump @242 (u8) · vault_bump @243 (u8)",
+        "→ 244 bytes."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "passport",
+            "docs": [
+              "flacon `Passport` PDA."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer",
+            "docs": [
+              "`Pubkey::default()` until `reserve`."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "asset",
+            "docs": [
+              "Metaplex Core asset (copied from `passport.asset` at `list`)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "price",
+            "docs": [
+              "USDC base units (6 dp)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "state",
+            "docs": [
+              "`ORDER_STATE_*`"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "listed_at",
+            "type": "i64"
+          },
+          {
+            "name": "reserved_at",
+            "type": "i64"
+          },
+          {
+            "name": "shipped_at",
+            "type": "i64"
+          },
+          {
+            "name": "seller_scan",
+            "docs": [
+              "flacon `ScanProof` PDA of the seller's pre-ship scan (default until recorded)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer_scan",
+            "docs": [
+              "flacon `ScanProof` PDA of the buyer's receipt scan (default until recorded)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "dispute_after_s",
+            "docs": [
+              "Copied from `EscrowConfig.dispute_after_s` at `list` (fixed for this order)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "asset_deposited",
+            "docs": [
+              "True once the Core asset sits in the Order PDA's custody (`deposit_asset`)."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "docs": [
+              "Bump of the `[\"vault\", order]` token account (set at `reserve`)."
+            ],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderCancelled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderClosed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "final_state",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderDisputed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "by",
+            "type": "pubkey"
+          },
+          {
+            "name": "reason",
+            "docs": [
+              "`DISPUTE_REASON_*`"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "previous_state",
+            "type": "u8"
+          },
+          {
+            "name": "refunded",
+            "type": "u64"
+          },
+          {
+            "name": "asset_returned",
+            "type": "bool"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderListed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "passport",
+            "type": "pubkey"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset",
+            "type": "pubkey"
+          },
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "dispute_after_s",
+            "type": "i64"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderReleased",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "asset_transferred",
+            "type": "bool"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderReserved",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderShipped",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Passport",
+      "docs": [
+        "Seeds: `[\"passport\", serial_hash]` — the bottle's birth certificate."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "serial_hash",
+            "docs": [
+              "sha256(serial, UTF-8)"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "binding_hash",
+            "docs": [
+              "sha256(serial ‖ batch_code ‖ uid_hash_first_seal)"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "asset",
+            "docs": [
+              "Metaplex Core asset (stored only, no CPI in this program)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "issuer",
+            "type": "pubkey"
+          },
+          {
+            "name": "grade",
+            "docs": [
+              "grade enum (constants::GRADE_*)"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "scan_count",
+            "type": "u32"
+          },
+          {
+            "name": "seal_count",
+            "type": "u8"
+          },
+          {
+            "name": "void",
+            "type": "bool"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PreShipScanRecorded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "scan_proof",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u32"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ReceiptScanRecorded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "scan_proof",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u32"
+          },
+          {
+            "name": "matched",
+            "type": "bool"
+          },
+          {
+            "name": "seller_fill",
+            "type": "u8"
+          },
+          {
+            "name": "buyer_fill",
+            "type": "u8"
+          },
+          {
+            "name": "seller_heat",
+            "type": "u8"
+          },
+          {
+            "name": "buyer_heat",
+            "type": "u8"
+          },
+          {
+            "name": "seller_hum",
+            "type": "u8"
+          },
+          {
+            "name": "buyer_hum",
+            "type": "u8"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ScanProof",
+      "docs": [
+        "Seeds: `[\"scan\", seal, counter u32 LE]` — one PDA per accepted scan."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "seal",
+            "type": "pubkey"
+          },
+          {
+            "name": "counter",
+            "type": "u32"
+          },
+          {
+            "name": "tier",
+            "type": "u8"
+          },
+          {
+            "name": "role",
+            "type": "u8"
+          },
+          {
+            "name": "tamper",
+            "type": "u8"
+          },
+          {
+            "name": "uv",
+            "type": "u8"
+          },
+          {
+            "name": "hum",
+            "type": "u8"
+          },
+          {
+            "name": "heat",
+            "type": "u8"
+          },
+          {
+            "name": "heat_levels",
+            "docs": [
+              "6-bit mask, bit i = Thermax field i (29/33/34/37/40/42 °C); bit 4 is decisive."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "fill",
+            "type": "u8"
+          },
+          {
+            "name": "site_id",
+            "docs": [
+              "0 = none; otherwise a registry site (only for role VAULT/PARTNER)."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "media_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bundle_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "attester",
+            "type": "pubkey"
+          },
+          {
+            "name": "server_key_id",
+            "type": "u8"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Seal",
+      "docs": [
+        "Seeds: `[\"seal\", uid_hash]` — one NFC seal (box or neck) pointing at a passport."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "passport",
+            "type": "pubkey"
+          },
+          {
+            "name": "kind",
+            "docs": [
+              "seal_kind enum (constants::SEAL_KIND_*)"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "uid_hash",
+            "docs": [
+              "sha256(uid bytes, 7)"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "last_counter",
+            "type": "u32"
+          },
+          {
+            "name": "dead",
+            "type": "bool"
+          },
+          {
+            "name": "attached_at",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ],
+  "constants": [
+    {
+      "name": "CONFIG_SEED",
+      "type": "bytes",
+      "value": "[99, 111, 110, 102, 105, 103]"
+    },
+    {
+      "name": "DEFAULT_DISPUTE_AFTER_S",
+      "docs": [
+        "Default dispute window after `ship()` without a receipt scan: 7 days."
+      ],
+      "type": "i64",
+      "value": "604800"
+    },
+    {
+      "name": "DISPUTE_REASON_ADMIN",
+      "type": "u8",
+      "value": "0"
+    },
+    {
+      "name": "DISPUTE_REASON_MISMATCH",
+      "type": "u8",
+      "value": "3"
+    },
+    {
+      "name": "DISPUTE_REASON_SEAL_DEAD",
+      "type": "u8",
+      "value": "2"
+    },
+    {
+      "name": "DISPUTE_REASON_TIMEOUT",
+      "type": "u8",
+      "value": "1"
+    },
+    {
+      "name": "FILL_TOLERANCE",
+      "docs": [
+        "`release` requires |fill_buyer − fill_seller| ≤ FILL_TOLERANCE (briefing §11)."
+      ],
+      "type": "u8",
+      "value": "5"
+    },
+    {
+      "name": "MPL_CORE_PROGRAM_ID",
+      "docs": [
+        "Metaplex Core program (asset custody CPI)."
+      ],
+      "type": "pubkey",
+      "value": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
+    },
+    {
+      "name": "ORDER_SEED",
+      "type": "bytes",
+      "value": "[111, 114, 100, 101, 114]"
+    },
+    {
+      "name": "ORDER_STATE_CANCELLED",
+      "type": "u8",
+      "value": "8"
+    },
+    {
+      "name": "ORDER_STATE_DISPUTE",
+      "type": "u8",
+      "value": "7"
+    },
+    {
+      "name": "ORDER_STATE_LISTED",
+      "type": "u8",
+      "value": "0"
+    },
+    {
+      "name": "ORDER_STATE_MISMATCH",
+      "type": "u8",
+      "value": "6"
+    },
+    {
+      "name": "ORDER_STATE_PRESHIP_SCANNED",
+      "type": "u8",
+      "value": "2"
+    },
+    {
+      "name": "ORDER_STATE_RECEIPT_SCANNED",
+      "type": "u8",
+      "value": "4"
+    },
+    {
+      "name": "ORDER_STATE_RELEASED",
+      "type": "u8",
+      "value": "5"
+    },
+    {
+      "name": "ORDER_STATE_RESERVED",
+      "type": "u8",
+      "value": "1"
+    },
+    {
+      "name": "ORDER_STATE_SHIPPED",
+      "type": "u8",
+      "value": "3"
+    },
+    {
+      "name": "VAULT_SEED",
+      "docs": [
+        "USDC vault: SPL token account `[\"vault\", order]`, authority = the Order PDA."
+      ],
+      "type": "bytes",
+      "value": "[118, 97, 117, 108, 116]"
+    }
+  ]
+}

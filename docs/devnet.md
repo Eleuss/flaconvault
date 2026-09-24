@@ -101,3 +101,69 @@ npx tsx scripts/seed-passports.ts
 `/scan` with a simulator tap on `04A1B2C3D4E5F6` (SN-2026-000001), burner wallet `ENUzmguD9tUyqD8Yarhze96KLLbqjBLxtcguXEWz5Thg`, counter 17, grade A:
 https://explorer.solana.com/tx/3RETYHEFCnTtYXYGKDHgFeHyeAKWf1jPhBdFcRT77LtLJLJebyNCPykBwLwmYvx2qtLLbqbKAUHHLh9heZUxKrsh?cluster=devnet
 (Ed25519 verify instruction + `record_scan` in one transaction; the server event was confirmed with this signature.)
+
+---
+
+# `escrow` (briefing §11, demo scene 6)
+
+Program id `9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL` (in `Anchor.toml` localnet + devnet, `declare_id!`, `.env.example` `NEXT_PUBLIC_ESCROW_PROGRAM_ID`). Keypair: `target/deploy/escrow-keypair.json` (git-ignored). **Not yet deployed to devnet** (the coordinator deploys it; then `FV_USDC_MINT=4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU npx tsx scripts/seed-escrow.ts` with `ANCHOR_PROVIDER_URL=https://api.devnet.solana.com` creates the config against real devnet USDC).
+
+## Localnet (validator on http://127.0.0.1:8899, seeded 24.09.2026)
+
+| What | Value |
+|---|---|
+| Escrow config PDA `["config"]` | `CJWph4fTD2sJFZoei1x5xCjq18UEAVyHnLQSnLX7JVa7` (admin = CLI wallet, dispute window 604800 s) |
+| Test USDC mint (6 dp, mint authority = CLI wallet) | `CNbFcFFupJdDeSyzrTAGbCHMxEq3dst6Y2JrUw7sc68y` → `NEXT_PUBLIC_USDC_MINT` / `FV_USDC_MINT` for localnet |
+| Wallet USDC ATA | `7yu9djzfsK9CQ44dy2yE7XvSm5uQhVX3yBvf25AfBhQC` |
+
+```bash
+anchor build && anchor deploy --provider.cluster localnet --program-name escrow   # or anchor localnet --validator legacy (deploys both)
+ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 npx tsx scripts/seed-escrow.ts           # idempotent: mint (if none), init_config(7 d), 1000 USDC to the wallet
+anchor test --validator legacy                                                     # tests/escrow.ts + tests/flacon.ts on a fresh validator
+```
+`scripts/seed-escrow.ts` env: `ANCHOR_PROVIDER_URL` (default localnet), `ANCHOR_WALLET`, `FV_USDC_MINT` (use an existing mint instead of creating one), `FV_DISPUTE_AFTER_S` (default 604800; an existing config is updated to it when the wallet is admin). Mint more test USDC to any wallet with the helpers in `scripts/lib/spl.ts` (`mintTo`, mint authority = CLI wallet).
+
+## Flow
+
+```
+list(price) ─────────────► LISTED ──cancel()──► CANCELLED ──close_order()──► (account closed, re-listable)
+   │ deposit_asset() (optional, Core asset → Order PDA)
+reserve() [buyer, USDC → vault] ─► RESERVED
+record_pre_ship_scan() [seller, flacon ScanProof attested by seller] ─► PRESHIP_SCANNED
+ship() [seller] ─► SHIPPED
+record_receipt_scan() [buyer, ScanProof attested by buyer] ─► heat ==, hum ==, |Δfill| ≤ 5 ? RECEIPT_SCANNED : MISMATCH
+release() [anyone, from RECEIPT_SCANNED] ─► USDC → seller, asset → buyer, RELEASED
+dispute() ─► USDC → buyer, asset → seller, DISPUTE:  admin from RESERVED/PRESHIP_SCANNED/SHIPPED/MISMATCH ·
+             buyer from MISMATCH (= refund_mismatch) · buyer from SHIPPED when clock > shipped_at + dispute_after_s ·
+             buyer from any funded state with a dead flacon Seal passed in
+```
+States (u8, IDL constants `ORDER_STATE_*`): 0 LISTED · 1 RESERVED · 2 PRESHIP_SCANNED · 3 SHIPPED · 4 RECEIPT_SCANNED · 5 RELEASED · 6 MISMATCH · 7 DISPUTE · 8 CANCELLED. Dispute reasons in the `OrderDisputed` event (`DISPUTE_REASON_*`): 0 ADMIN · 1 TIMEOUT · 2 SEAL_DEAD · 3 MISMATCH.
+
+Vault: SPL token account PDA `["vault", order]`, authority = Order PDA, created at `reserve` (rent paid by the buyer) and closed at `release`/`dispute` (rent back to the buyer). flacon accounts are typed via the `flacon` crate (`Account<'info, flacon::Passport|Seal|ScanProof>`: owner + discriminator enforced). Core asset custody: `deposit_asset` (LISTED only) moves the asset to the Order PDA with a hand-rolled mpl-core `TransferV1` CPI; `release`/`dispute`/`cancel` then take the optional `asset` + `mpl_core_program` accounts (pass `null` when nothing was deposited). Metaplex Core must be on the validator for that path (Anchor.toml clones it from devnet for `anchor test`/`anchor localnet`).
+
+## Account layouts (byte offsets after the 8-byte Anchor discriminator)
+
+`EscrowConfig` (81 bytes): `admin` Pubkey @8 · `usdc_mint` Pubkey @40 · `dispute_after_s` i64 LE @72 · `bump` u8 @80.
+
+`Order` (244 bytes): `passport` Pubkey @8 · `seller` @40 · `buyer` @72 (zero until reserved) · `asset` @104 · `price` u64 LE @136 · `state` u8 @144 · `listed_at` i64 @145 · `reserved_at` i64 @153 · `shipped_at` i64 @161 · `seller_scan` Pubkey @169 · `buyer_scan` Pubkey @201 · `dispute_after_s` i64 @233 · `asset_deposited` bool @241 · `bump` u8 @242 · `vault_bump` u8 @243.
+
+Useful `memcmp` filters for `getProgramAccounts(escrow)`: orders of a seller → offset 40; of a buyer → offset 72; for a passport → offset 8; by state → offset 144 (1 byte).
+
+## Instruction accounts (TS names)
+
+| ix | accounts (`accountsStrict`) |
+|---|---|
+| `initConfig(disputeAfterS)` | config, admin (signer), usdcMint, systemProgram |
+| `setDisputeWindow(disputeAfterS)` | config, admin |
+| `list(price)` | config, passport (flacon), order, seller (signer), systemProgram |
+| `depositAsset()` | order, seller, asset, mplCoreProgram, systemProgram |
+| `cancel()` | order, seller, asset?, mplCoreProgram?, systemProgram |
+| `closeOrder()` | order, seller |
+| `reserve()` | config, order, buyer (signer), buyerToken, usdcMint, vault, tokenProgram, systemProgram |
+| `recordPreShipScan()` | order, seller, scanProof (flacon), seal (flacon) |
+| `ship()` | order, seller |
+| `recordReceiptScan()` | order, buyer, scanProof, seal, sellerScan (= order.sellerScan) |
+| `release()` | config, order, vault, sellerToken, buyer, caller (signer), asset?, mplCoreProgram?, tokenProgram, systemProgram |
+| `dispute()` | config, order, vault, buyerToken, buyer, seller, signer, seal?, asset?, mplCoreProgram?, tokenProgram, systemProgram |
+
+IDL + TS types: `packages/proof/src/idl/escrow.json`, `packages/proof/src/idl/escrow.ts`.

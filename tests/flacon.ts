@@ -6,44 +6,34 @@
  */
 import * as anchor from "@anchor-lang/core";
 import { BN, Program } from "@anchor-lang/core";
-import {
-  Ed25519Program,
-  Keypair,
-  LAMPORTS_PER_SOL,
-  PublicKey,
-  SYSVAR_INSTRUCTIONS_PUBKEY,
-  SystemProgram,
-  TransactionInstruction,
-} from "@solana/web3.js";
+import { Keypair, LAMPORTS_PER_SOL, PublicKey, SYSVAR_INSTRUCTIONS_PUBKEY, SystemProgram } from "@solana/web3.js";
 import { expect } from "chai";
 import * as fs from "fs";
 import * as path from "path";
 import nacl from "tweetnacl";
 import type { Flacon } from "../target/types/flacon";
+import {
+  ROOT,
+  SEEDS,
+  SITE_1,
+  SITE_2,
+  buildScanMessage,
+  bytes,
+  ed25519Ix,
+  ensureRegistry,
+  enums,
+  expectAnchorError,
+  heatMask,
+  hex,
+  label32,
+  serverKp,
+  serverPubkey,
+  signMessage,
+  vectors,
+} from "./lib/flacon";
 
-// ---------------------------------------------------------------------------
-// fixtures
-// ---------------------------------------------------------------------------
-
-const ROOT = path.join(__dirname, "..");
-const vectors = JSON.parse(fs.readFileSync(path.join(ROOT, "docs/vectors.json"), "utf8"));
-const enums = JSON.parse(fs.readFileSync(path.join(ROOT, "docs/enums.json"), "utf8"));
-
-const SEEDS = vectors.constants.PDA_SEEDS as Record<string, string>;
 const MSG_PREFIX: string = vectors.constants.MSG_PREFIX;
 const MSG_LEN: number = vectors.constants.MSG_LEN;
-
-const serverKp = nacl.sign.keyPair.fromSeed(Buffer.from(vectors.serverTestKey.seedHex, "hex"));
-const serverPubkey = Buffer.from(vectors.serverTestKey.pubkeyHex, "hex");
-const SERVER_KEY_ID: number = vectors.serverTestKey.keyId;
-
-const hex = (h: string) => Buffer.from(h, "hex");
-const bytes = (b: Buffer | Uint8Array) => Array.from(b);
-const label32 = (s: string): number[] => {
-  const b = Buffer.alloc(32);
-  Buffer.from(s, "utf8").copy(b);
-  return bytes(b);
-};
 
 type ScanInput = {
   serial: string;
@@ -75,42 +65,7 @@ type ScanVector = {
 const scans: ScanVector[] = vectors.scans;
 const scan0 = scans[0];
 
-// ---------------------------------------------------------------------------
-// §4.3 message + §4.5 grade — the same rule as packages/proof, re-implemented
-// here so the test does not depend on the ESM build of packages/proof.
-// ---------------------------------------------------------------------------
-
-interface MsgFields {
-  serialHash: Buffer;
-  uidHash: Buffer;
-  counter: number;
-  tamper: number;
-  uv: number;
-  hum: number;
-  heat: number;
-  fill: number;
-  mediaHash: Buffer;
-  nonce: Buffer;
-  ts: number | bigint;
-}
-function buildScanMessage(f: MsgFields): Buffer {
-  const m = Buffer.alloc(MSG_LEN);
-  m.write(MSG_PREFIX, 0, "ascii");
-  f.serialHash.copy(m, 7);
-  f.uidHash.copy(m, 39);
-  m.writeUInt32LE(f.counter, 71);
-  m[75] = f.tamper;
-  m[76] = f.uv;
-  m[77] = f.hum;
-  m[78] = f.heat;
-  m[79] = f.fill;
-  f.mediaHash.copy(m, 80);
-  f.nonce.copy(m, 112);
-  m.writeBigInt64LE(BigInt(f.ts), 144);
-  return m;
-}
-const heatMask = (levels: number[]) => levels.reduce((m, v, i) => (v ? m | (1 << i) : m), 0);
-
+// §4.5 grade rule in TS (same rule as packages/proof/src/grade.ts)
 const G = enums.grade as Record<string, number>;
 const I = enums.indicator as Record<string, number>;
 const T = enums.tamper as Record<string, number>;
@@ -132,40 +87,6 @@ function gradeRule(i: {
   return G.D;
 }
 
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
-function signMessage(msg: Buffer): Buffer {
-  return Buffer.from(nacl.sign.detached(msg, serverKp.secretKey));
-}
-function ed25519Ix(msg: Buffer, sig: Buffer, publicKey: Buffer = serverPubkey): TransactionInstruction {
-  return Ed25519Program.createInstructionWithPublicKey({ publicKey, message: msg, signature: sig });
-}
-
-/** Asserts that the promise rejects with the given Anchor error code. */
-async function expectAnchorError(p: Promise<unknown>, code: string, idlErrors: { code: number; name: string }[]) {
-  try {
-    await p;
-  } catch (e: any) {
-    let got: string | undefined = e?.error?.errorCode?.code;
-    if (!got) {
-      const logs: string[] = e?.logs ?? e?.transactionLogs ?? [];
-      const m = logs.map((l) => /Error Code: (\w+)/.exec(l)).find(Boolean);
-      if (m) got = m[1];
-    }
-    if (!got) {
-      const m = /custom program error: (0x[0-9a-fA-F]+)/.exec(String(e?.message ?? e));
-      if (m) got = idlErrors.find((x) => x.code === parseInt(m[1], 16))?.name;
-    }
-    expect(got, `expected error ${code}, got: ${e?.message ?? e}`).to.equal(code);
-    return;
-  }
-  expect.fail(`expected transaction to fail with ${code}`);
-}
-
-// ---------------------------------------------------------------------------
-
 describe("flacon", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
@@ -174,6 +95,7 @@ describe("flacon", () => {
   const idlErrors = (program.idl.errors ?? []) as { code: number; name: string }[];
 
   const [registryPda] = PublicKey.findProgramAddressSync([Buffer.from(SEEDS.registry)], program.programId);
+  let SERVER_KEY_ID = vectors.serverTestKey.keyId as number;
   const serialHash = hex(scan0.serialHashHex);
   const uidHash = hex(scan0.uidHashHex);
   const bindingHash = hex(vectors.hashes.binding[0].sha256Hex);
@@ -185,9 +107,6 @@ describe("flacon", () => {
     return PublicKey.findProgramAddressSync([Buffer.from(SEEDS.scan), sealPda.toBuffer(), c], program.programId)[0];
   };
   const asset = Keypair.generate().publicKey;
-
-  const SITE_1 = { id: 1, label: "Parfümerie X, Düsseldorf" };
-  const SITE_2 = { id: 2, label: "FlaconVault Vault, Wickede" };
 
   /** record_scan args from a vector input (heat_levels as 6-bit mask). */
   function argsFrom(v: ScanVector, overrides: Partial<Record<string, any>> = {}) {
@@ -265,24 +184,9 @@ describe("flacon", () => {
   });
 
   it("(a) init registry, server key, partner, 2 sites", async () => {
-    await program.methods
-      .initRegistry()
-      .accountsStrict({ registry: registryPda, authority: wallet, systemProgram: SystemProgram.programId })
-      .rpc();
-    await program.methods
-      .addServerKey(SERVER_KEY_ID, bytes(serverPubkey), new BN(0), new BN(0))
-      .accountsStrict({ registry: registryPda, authority: wallet })
-      .rpc();
-    await program.methods.addPartner(wallet).accountsStrict({ registry: registryPda, authority: wallet }).rpc();
-    await program.methods
-      .addSite(SITE_1.id, label32(SITE_1.label))
-      .accountsStrict({ registry: registryPda, authority: wallet })
-      .rpc();
-    await program.methods
-      .addSite(SITE_2.id, label32(SITE_2.label))
-      .accountsStrict({ registry: registryPda, authority: wallet })
-      .rpc();
-
+    // idempotent: tests/escrow.ts (runs first alphabetically) may already have set this up identically
+    const h = await ensureRegistry(program, wallet);
+    SERVER_KEY_ID = h.serverKeyId;
     const reg = await program.account.registry.fetch(registryPda);
     expect(reg.authority.equals(wallet)).to.be.true;
     expect(reg.serverKeys).to.have.length(1);

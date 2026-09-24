@@ -95,3 +95,9 @@ npx tsx scripts/seed-passports.ts
 ```
 
 3. Switch the apps to devnet: `NEXT_PUBLIC_SOLANA_RPC=https://api.devnet.solana.com` in `apps/web/.env.local`, `FV_SOLANA_RPC=https://api.devnet.solana.com` in `apps/verify/.env`, restart both.
+
+## First live scan on devnet (2026-09-24)
+
+`/scan` with a simulator tap on `04A1B2C3D4E5F6` (SN-2026-000001), burner wallet `ENUzmguD9tUyqD8Yarhze96KLLbqjBLxtcguXEWz5Thg`, counter 17, grade A:
+https://explorer.solana.com/tx/3RETYHEFCnTtYXYGKDHgFeHyeAKWf1jPhBdFcRT77LtLJLJebyNCPykBwLwmYvx2qtLLbqbKAUHHLh9heZUxKrsh?cluster=devnet
+(Ed25519 verify instruction + `record_scan` in one transaction; the server event was confirmed with this signature.)

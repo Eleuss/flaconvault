@@ -7,6 +7,7 @@ const links = [
   { href: "/scan", label: "Siegel prüfen" },
   { href: "/p/SN-2026-000001", label: "Pass" },
   { href: "/certify", label: "Zertifizieren" },
+  { href: "/market", label: "Markt" },
 ];
 
 export function SiteHeader() {

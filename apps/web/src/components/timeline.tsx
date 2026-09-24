@@ -5,6 +5,9 @@ import type { PassportEvent } from "@/lib/api";
 import { eventLine, fmtDate, txUrl } from "@/lib/format";
 import { GradeMark } from "./badges";
 
+/** ar://<id> → a gateway URL a browser can open (Irys devnet data is served by the Irys gateway). */
+const arUrl = (s: string) => (s.startsWith("ar://") ? `https://gateway.irys.xyz/${s.slice(5)}` : s);
+
 const icons: Record<number, LucideIcon> = {
   [EventType.MINT]: Award, [EventType.SEAL_ATTACH]: Stamp, [EventType.SCAN]: Scan, [EventType.LIST]: Coins,
   [EventType.RESERVE]: FileCheck2, [EventType.SHIP]: Truck, [EventType.RECEIVE]: PackageCheck,
@@ -39,8 +42,8 @@ export function Timeline({ events }: { events: PassportEvent[] }) {
             <div className="mt-2 flex items-center gap-3 text-xs">
               {e.gradeAfter != null && <span className="inline-flex items-center gap-1.5 text-muted">Grade <GradeMark grade={e.gradeAfter} size="sm" /></span>}
               {e.txSig && <a href={txUrl(e.txSig)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink">tx <ExternalLink className="h-3 w-3" aria-hidden /></a>}
-              {e.arMedia && <a href={e.arMedia} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink"><Camera className="h-3 w-3" aria-hidden /> Foto</a>}
-              {e.arBundle && <a href={e.arBundle} target="_blank" rel="noreferrer" className="text-muted hover:text-ink">Bündel</a>}
+              {e.arMedia && <a href={arUrl(e.arMedia)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink"><Camera className="h-3 w-3" aria-hidden /> Foto</a>}
+              {e.arBundle && <a href={arUrl(e.arBundle)} target="_blank" rel="noreferrer" className="text-muted hover:text-ink">Bündel</a>}
             </div>
           </li>
         );

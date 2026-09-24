@@ -183,3 +183,8 @@ Order PDA `2cSy9BQac8LcNzb4ir32mRB178SejNbLnf95VdF8PQe2` (state RELEASED). The p
 
 - **Scene 1 (Geburtsurkunde)** from `/certify` with Dev-Wallet A as partner: Metaplex Core asset `FEM7HG84tRevMsUWcazdYJJhDCu2tWDLYpDdFeyKm4xG` minted from the browser (umi), `mint_passport` SN-2026-000005 (Creed · Green Irish Tweed), `attach_seal` 04C33A67DA8B53 — passport page shows the birth certificate with both transactions.
 - **Scene 4 (ausgelöster Indikator)**, software path: `/scan` → simulator tap (counter 20) → **Testbild: 40 °C ausgelöst** (five synthetic frames instead of the camera) → media upload with matching sha256 → reading „Hitze: über 40 °C erfasst“ → tier-2 signature → `record_scan` → **Grade C** with the §16 sentence; the timeline entry reads „Scan Tier 2 · Zähler 20 · Hitze ausgelöst · Grade C“. The physical version needs the printed card and a phone camera.
+
+
+## Arweave (Irys devnet), 2026-09-24
+
+Tier-2 scan counter 21 on SN-2026-000001 with `FV_ARWEAVE=true`: frames → `ar://DZptJtGsi4T63Q9PsQ4gHjzAyP44y8oRYeApuw5bDxcy` (preview https://gateway.irys.xyz/FFULQMh4YP7fonwpVSGWPnxtPRbS62agfthidCLXXHm5), canonical bundle → `ar://CUmyCgM4hEUzN55aEChBpdoJwxWG6oLhBfN6ihz9bXZN`; the bundle fetched from the gateway hashes to the on-chain `bundle_hash` `0xb7327c29…d8da8f`, reconcile reports no mismatch. Irys node funded once with 0.01 SOL (uploads under ~100 KiB are free). Devnet data is pruned after ~60 days.

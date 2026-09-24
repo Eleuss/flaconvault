@@ -294,18 +294,18 @@ export function ScanFlow() {
             <div className="card p-4">
               <p className="flex items-center gap-2 text-sm font-medium"><Nfc className="h-4 w-4 text-amber" aria-hidden /> WebNFC (Android Chrome)</p>
               <button onClick={startNfc} className="btn-outline btn-sm mt-3">NFC-Lesen starten</button>
-              <p className="mt-2 text-xs text-muted">{nfcState || "iPhone: Siegel antippen öffnet die Tag-Landing /t — das reicht für Tier 0."}</p>
+              <p className="mt-2 break-words text-xs text-muted">{nfcState || "iPhone: Siegel antippen öffnet die Tag-Landing /t — das reicht für Tier 0."}</p>
             </div>
             {DEV_SIMULATOR && (
               <div className="card p-4">
                 <p className="flex items-center gap-2 text-sm font-medium"><Zap className="h-4 w-4 text-amber" aria-hidden /> Virtuellen Tap einspielen</p>
                 <ul className="mt-3 divide-y divide-line">
                   {simTags.map((t) => (
-                    <li key={t.uid} className="flex items-center gap-3 py-2 text-sm">
+                    <li key={t.uid} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 text-sm">
                       <Lamp tone={t.alive ? "ok" : "bad"} />
                       <span className="mono">{t.uid}</span>
-                      <span className="flex-1 truncate text-muted">{t.serial ?? "nicht registriert"} · Zähler {t.counter}</span>
-                      <button onClick={() => simTap(t)} disabled={busy !== null} className="btn btn-sm">{busy === `tap-${t.uid}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : "Tap"}</button>
+                      <span className="min-w-0 flex-1 truncate text-muted">{t.serial ?? "nicht registriert"} · Zähler {t.counter}</span>
+                      <button onClick={() => simTap(t)} disabled={busy !== null} className="btn btn-sm ml-auto">{busy === `tap-${t.uid}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : "Tap"}</button>
                     </li>
                   ))}
                   {simTags.length === 0 && <li className="py-2 text-xs text-muted">Keine virtuellen Tags — im <Link href="/dev" className="link">Simulator</Link> anlegen.</li>}

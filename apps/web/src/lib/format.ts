@@ -58,6 +58,7 @@ export function eventLine(e: PassportEvent): { title: string; details: string[] 
   const details: string[] = [];
   switch (e.type) {
     case EventType.MINT:
+      if (!e.actorLabel && str(p.issuerLabel)) details.push(`Partner „${str(p.issuerLabel)}“`);
       if (str(p.batch)) details.push(`Charge ${str(p.batch)}`);
       return { title: "Geburtsurkunde", details };
     case EventType.SEAL_ATTACH:

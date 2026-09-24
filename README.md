@@ -27,7 +27,7 @@ One truth, three parts: **the server is the only place that can check the chip**
 | `programs/flacon` | Anchor program: `Registry`, `Passport`, `Seal`, `ScanProof`; `record_scan` verifies the server signature via the Ed25519 precompile. |
 | `apps/web` | Next.js 14 App Router PWA: landing, public passport, tag landing, scan flow, certification console, simulator console. |
 | `docs/` | Briefing, card layout Rev C (`card/`), `layout.py`, `heat_fields.json`, shared vectors, devnet addresses. |
-| `scripts/` | Devnet seed, tag personalisation. |
+| `scripts/` | Devnet seed (`seed-devnet`, `seed-passports`, `seed-escrow`), `add-partner`, `fund-dev-wallet`, `list-order`, `tunnel.sh`. |
 
 ## Run it
 

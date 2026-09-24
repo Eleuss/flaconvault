@@ -36,7 +36,8 @@ class Settings:
     server_key_id: int = 1
     dev_simulator: bool = True
     nonce_ttl_s: int = 90
-    irys_key: str = ""                                     # unused until week 2
+    irys_key: str = ""                                     # FV_IRYS_KEY — path to a Solana keypair json, or "default"
+    irys_key_json: str = ""                                # FV_IRYS_KEY_JSON — the keypair inline (64-number array) for hosted deployments
     solana_rpc: str = "https://api.devnet.solana.com"
     program_id: str = ""
     db_path: Path = field(default_factory=lambda: _resolve("./data/flaconvault.db"))
@@ -106,6 +107,7 @@ def settings_from_env() -> Settings:
         dev_simulator=_bool(e("FV_DEV_SIMULATOR"), True),
         nonce_ttl_s=int(e("FV_NONCE_TTL_S") or 90),
         irys_key=e("FV_IRYS_KEY") or "",
+        irys_key_json=e("FV_IRYS_KEY_JSON") or "",
         solana_rpc=e("FV_SOLANA_RPC") or "https://api.devnet.solana.com",
         program_id=e("FV_PROGRAM_ID") or "",
         db_path=_resolve(e("FV_DB_PATH") or "./data/flaconvault.db"),

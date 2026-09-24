@@ -35,10 +35,19 @@ class ArweaveError(RuntimeError):
 
 
 def enabled(settings: Settings) -> bool:
-    return bool(settings.arweave and settings.irys_key)
+    return bool(settings.arweave and (settings.irys_key or settings.irys_key_json))
 
 
 def key_path(settings: Settings) -> Path:
+    inline = (settings.irys_key_json or "").strip()
+    if inline:
+        # hosted deployments pass the keypair as an env var; materialise it next to the database (0600)
+        target = Path(settings.db_path).expanduser().resolve().parent / "irys-key.json"
+        if not target.exists() or target.read_text() != inline:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(inline)
+            target.chmod(0o600)
+        return target
     k = (settings.irys_key or "").strip()
     return DEFAULT_KEY if k in ("", "default") else Path(k).expanduser()
 

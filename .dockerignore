@@ -1,0 +1,16 @@
+.git
+node_modules
+**/node_modules
+apps/web
+packages
+programs
+target
+.anchor
+tests
+migrations
+apps/verify/.venv
+apps/verify/data
+apps/verify/.env
+apps/verify/.env.example
+docs/card
+*.log

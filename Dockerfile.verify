@@ -1,0 +1,22 @@
+# apps/verify (FastAPI + SQLite) with the Irys sidecar (Node). Build context = repo root:
+#   docker build -f Dockerfile.verify -t flaconvault-verify .
+FROM python:3.12-slim
+ENV PYTHONUNBUFFERED=1 UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy NODE_VERSION=22.12.0
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates xz-utils && rm -rf /var/lib/apt/lists/*
+# Node for apps/verify/irys (Arweave uploads)
+RUN ARCH=$(uname -m) && case "$ARCH" in x86_64) NARCH=x64 ;; aarch64|arm64) NARCH=arm64 ;; *) echo "unsupported arch $ARCH" && exit 1 ;; esac \
+ && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NARCH}.tar.xz" | tar -xJ -C /usr/local --strip-components=1 \
+ && node --version && npm --version
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+WORKDIR /app/apps/verify
+# python deps first (cache), then the app
+COPY apps/verify/pyproject.toml apps/verify/uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+COPY apps/verify/ ./
+COPY docs/seed /app/docs/seed
+COPY docs/enums.json docs/vectors.json /app/docs/
+RUN uv sync --frozen --no-dev && cd irys && npm ci --omit=dev --no-audit --no-fund
+ENV FV_DB_PATH=/data/flaconvault.db FV_MEDIA_DIR=/data/media FV_NODE_BIN=/usr/local/bin/node PORT=8787
+VOLUME ["/data"]
+EXPOSE 8787
+CMD ["sh", "-c", "mkdir -p /data/media && uv run --no-sync uvicorn fv.main:app --host 0.0.0.0 --port ${PORT:-8787}"]

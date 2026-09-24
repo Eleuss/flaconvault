@@ -89,4 +89,4 @@ The seal is a **handling and provenance record, not a damage record**. Say "Sieg
 | 10 passport timeline + reconcile | done — DoD (reconcile every 60 s, `POST /api/reconcile`) |
 | 11 escrow + `/market` + Blink, 12 reputation view | done — DoD: escrow deployed on devnet, scene 6 played end-to-end (see `docs/devnet.md`); Blink at `/api/actions/verify-buy` |
 
-Devnet addresses: [`docs/devnet.md`](docs/devnet.md). Delivery-day runbook: [`docs/hardware-day.md`](docs/hardware-day.md).
+Devnet addresses: [`docs/devnet.md`](docs/devnet.md). Delivery-day runbook: [`docs/hardware-day.md`](docs/hardware-day.md). Hosting: [`docs/deploy.md`](docs/deploy.md).

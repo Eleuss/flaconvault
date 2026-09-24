@@ -17,6 +17,5 @@ COPY docs/seed /app/docs/seed
 COPY docs/enums.json docs/vectors.json /app/docs/
 RUN uv sync --frozen --no-dev && cd irys && npm ci --omit=dev --no-audit --no-fund
 ENV FV_DB_PATH=/data/flaconvault.db FV_MEDIA_DIR=/data/media FV_NODE_BIN=/usr/local/bin/node PORT=8787
-VOLUME ["/data"]
 EXPOSE 8787
 CMD ["sh", "-c", "mkdir -p /data/media && uv run --no-sync uvicorn fv.main:app --host 0.0.0.0 --port ${PORT:-8787}"]

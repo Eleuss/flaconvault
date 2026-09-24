@@ -135,26 +135,23 @@ export function ScanFlow() {
   const stopCam = () => { stream.current?.getTracks().forEach((t) => t.stop()); stream.current = null; };
   useEffect(() => { if (step === "camera") startCam(); else stopCam(); return stopCam; /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [step]);
 
-  const captureFrames = async () => {
-    if (!video.current || !session) return;
+  /** Frames → JPEG blobs with the nonce code burned in → media hash → indicator reading (briefing §8 steps 4–5). */
+  const processFrames = async (imgs: FrameLike[]) => {
+    if (!session) return;
     setBusy("capture");
     try {
-      const imgs: FrameLike[] = [], blobs: Blob[] = [];
-      for (let i = 0; i < 5; i++) {
-        const f = frameFromSource(video.current, 1600);
-        imgs.push(f);
+      const blobs: Blob[] = [];
+      for (const f of imgs) {
         const c = document.createElement("canvas"); c.width = f.width; c.height = f.height;
         const ctx = c.getContext("2d")!;
         ctx.putImageData(new ImageData(new Uint8ClampedArray(f.data), f.width, f.height), 0, 0);
         // the nonce code is burned into the frame as well, so the photo carries the session
         ctx.font = `bold ${Math.round(f.height / 18)}px sans-serif`; ctx.fillStyle = "rgba(166,101,27,0.95)"; ctx.fillText(nonceCode(session.nonce), 24, Math.round(f.height / 14));
         blobs.push(await new Promise<Blob>((res) => c.toBlob((b) => res(b!), "image/jpeg", 0.9)));
-        await new Promise((r) => setTimeout(r, 300));
       }
       const mediaHash = await sha256Hex(await Promise.all(blobs.map((b) => b.arrayBuffer())));
       setFrames({ img: imgs, blobs, mediaHash });
       setStep("read");
-      // 5. indicator reading on the captured frames
       setBusy("read");
       let best: CardReading | null = null;
       for (const f of imgs) {
@@ -165,6 +162,31 @@ export function ScanFlow() {
       setReading(best);
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(null); }
+  };
+  const captureFrames = async () => {
+    if (!video.current) return;
+    const imgs: FrameLike[] = [];
+    for (let i = 0; i < 5; i++) {
+      imgs.push(frameFromSource(video.current, 1600));
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    await processFrames(imgs);
+  };
+  /** Simulator only: five synthetic card renders instead of camera frames (tests the whole tier-2 path without hardware). */
+  const syntheticFrames = async (triggered: boolean) => {
+    if (!vision.current || !cfg.current) return;
+    setBusy("capture");
+    try {
+      const imgs: FrameLike[] = [];
+      for (let i = 0; i < 5; i++) {
+        imgs.push(await vision.current.synth(cfg.current, {
+          heatLevels: triggered ? [1, 1, 1, 1, 1, 0] : [1, 0, 0, 0, 0, 0], humidityTriggered: false,
+          tilt: 0.05 + i * 0.01, rot: -4 + i * 2, tint: [1.04, 1.0, 0.9], brightness: -15, blurSigma: 0.8, noiseSigma: 4,
+          width: 1280, height: 720, cardPx: 800, seed: 40 + i,
+        }));
+      }
+      await processFrames(imgs);
+    } catch (e) { setError((e as Error).message); setBusy(null); }
   };
   const skipCamera = () => { setFrames(null); setReading(null); setStep("read"); };
 
@@ -324,6 +346,12 @@ export function ScanFlow() {
           <div className="mt-4 flex flex-wrap gap-3">
             <button onClick={captureFrames} disabled={busy !== null} className="btn">{busy === "capture" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Camera className="h-4 w-4" aria-hidden />} 5 Bilder aufnehmen</button>
             {!certified && <button onClick={skipCamera} className="btn-outline">Ohne Foto (Tier 1)</button>}
+            {DEV_SIMULATOR && (
+              <>
+                <button onClick={() => syntheticFrames(false)} disabled={busy !== null} className="btn-outline btn-sm">Testbild: intakt</button>
+                <button onClick={() => syntheticFrames(true)} disabled={busy !== null} className="btn-outline btn-sm">Testbild: 40 °C ausgelöst</button>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -421,7 +449,7 @@ export function ScanFlow() {
 
       {step === "dead" && (
         <div>
-          <StepHeader n={3} title="Kein Siegel gefunden" hint="Siegel beschädigt, entfernt oder nicht in Reichweite. Ein Foto der Stelle dokumentiert es; der Pass bekommt Event SEAL_DEAD und Grade-Vorschau VOID." />
+          <StepHeader n={3} title="Kein Siegel gefunden" hint="Siegel getrennt, entfernt oder nicht in Reichweite. Ein Foto der Stelle dokumentiert es; der Pass bekommt Event SEAL_DEAD und Grade-Vorschau VOID." />
           <div className="mt-6 flex items-center gap-3 text-bad"><ShieldOff className="h-5 w-5" aria-hidden /><span className="font-serif text-2xl">Siegel antwortet nicht</span></div>
           {!(preview?.serial ?? tag?.serial) && (
             <label className="mt-4 block text-sm">Pass-Seriennummer <input value={deadSerial} onChange={(e) => setDeadSerial(e.target.value)} placeholder="SN-2026-000001" className="ml-2 rounded-full border border-line bg-surface px-3 py-0.5 font-mono text-sm" /></label>

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-TABLES = ("passports", "seals", "events", "attesters", "nonces", "taps", "sim_tags")
+TABLES = ("passports", "seals", "events", "attesters", "nonces", "taps", "sim_tags", "media")
 
 
 def now() -> int:
@@ -332,3 +332,23 @@ def find_event(conn, serial: str, type: int, seal_uid_hash: str | None = None) -
 
 def partner_pubkeys(conn) -> list[str]:
     return [r[0] for r in conn.execute("SELECT pubkey FROM attesters WHERE is_partner=1 ORDER BY first_seen").fetchall()]
+
+
+# ---------- media / arweave ----------
+
+def get_media(conn, sha256_hex: str) -> dict | None:
+    return _row(conn.execute("SELECT * FROM media WHERE sha256=?", (sha256_hex.lower(),)).fetchone())
+
+
+def upsert_media(conn, *, sha256_hex: str, bytes_: int, files: int, content_type: str | None, ar: str | None, url: str | None,
+                 ar_preview: str | None, created_at: int) -> dict:
+    conn.execute(
+        """INSERT INTO media(sha256, bytes, files, content_type, ar, url, ar_preview, created_at) VALUES(?,?,?,?,?,?,?,?)
+           ON CONFLICT(sha256) DO UPDATE SET ar=COALESCE(excluded.ar, media.ar), url=COALESCE(excluded.url, media.url),
+             ar_preview=COALESCE(excluded.ar_preview, media.ar_preview), content_type=COALESCE(excluded.content_type, media.content_type)""",
+        (sha256_hex.lower(), bytes_, files, content_type, ar, url, ar_preview, created_at))
+    return get_media(conn, sha256_hex)  # type: ignore[return-value]
+
+
+def set_event_arweave(conn, event_id: int, ar_bundle: str | None, ar_media: str | None) -> None:
+    conn.execute("UPDATE events SET ar_bundle=COALESCE(?, ar_bundle), ar_media=COALESCE(?, ar_media) WHERE id=?", (ar_bundle, ar_media, event_id))

@@ -199,3 +199,12 @@ def build_bundle(*, serial: str, serial_hash_b: bytes, uid_hash_b: bytes, counte
         "server": {"keyId": key_id, "verdict": verdict, "ts": server_ts, "sig": hex0x(sig_b) if sig_b else None},
         "ts": bundle_ts,
     }
+
+
+BUNDLE_KEYS = ("schema", "serial", "serialHash", "uidHash", "counter", "seal", "tamper", "indicators", "heatLevels", "fill",
+               "visual", "location", "media", "logger", "session", "device", "attester", "server", "ts")
+
+
+def bundle_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Strip the server extras (grade, msgHex, bundleHash, reconcile, …) off a stored SCAN payload → pure §4.4 bundle."""
+    return {k: payload[k] for k in BUNDLE_KEYS if k in payload}

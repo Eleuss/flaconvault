@@ -90,3 +90,15 @@ CREATE TABLE IF NOT EXISTS sim_tags (
   serial        TEXT,
   last_url      TEXT
 );
+
+-- Uploaded seal frames: sha256 of the stored file → Arweave links (filled when FV_ARWEAVE=true).
+CREATE TABLE IF NOT EXISTS media (
+  sha256        TEXT PRIMARY KEY,     -- lowercase hex, no 0x
+  bytes         INTEGER NOT NULL,
+  files         INTEGER NOT NULL,
+  content_type  TEXT,
+  ar            TEXT,                 -- ar://<id> of the stored (concatenated) file
+  url           TEXT,                 -- https gateway url of the same
+  ar_preview    TEXT,                 -- https gateway url of a viewable image (first frame) or NULL
+  created_at    INTEGER NOT NULL
+);

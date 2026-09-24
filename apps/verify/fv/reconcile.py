@@ -11,7 +11,7 @@ import json
 import logging
 import time
 
-from fv import proof
+from fv import arweave, proof
 from fv.chain import (Rpc, RpcError, decode_passport, decode_scan_proof, decode_seal, pda_passport, pda_scan, pda_seal,
                       program_pubkey)
 from fv.config import Settings
@@ -86,6 +86,8 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
                             log.warning("reconcile: event %s signatures lookup failed: %s", ev["id"], exc)
                     set_event_status(conn, ev["id"], "confirmed", tx_sig)
                     update_event_payload(conn, ev["id"], {**payload, "reconcile": rec})
+                    if arweave.enabled(settings):
+                        arweave.archive_scan_event(conn, settings, {**ev, "payload_json": json.dumps({**payload, "reconcile": rec})})
                     summary["confirmed"] += 1
                     if mismatch:
                         summary["mismatched"] += 1

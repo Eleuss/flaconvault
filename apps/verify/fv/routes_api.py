@@ -8,13 +8,14 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field, field_validator
+from starlette.concurrency import run_in_threadpool
 
-from fv import proof
+from fv import arweave, proof
 from fv.config import Settings
-from fv.db import (bump_attester, confirm_event, consume_nonce, find_event, get_attester, get_event, get_nonce,
+from fv.db import (bump_attester, confirm_event, consume_nonce, find_event, get_attester, get_event, get_media, get_nonce,
                    get_passport, get_seal_by_hash, insert_event, insert_nonce, insert_tap, list_passports,
                    mark_seal_dead, now, previous_scan_before, purge_nonces, set_passport_grade, update_event_payload,
-                   upsert_attester, upsert_passport, upsert_seal, void_passport, transaction)
+                   upsert_attester, upsert_media, upsert_passport, upsert_seal, void_passport, transaction)
 from fv.deps import get_conn, get_settings
 from fv.enums import EventType, Grade, Indicator, NONCE_INVALID, NO_RESPONSE, SealKind, Tamper, VALID
 from fv.service import check_tap
@@ -184,10 +185,12 @@ def verify(body: VerifyBody, conn=Depends(get_conn), settings: Settings = Depend
                                   heat=heat, fill=body.fill, media_hash=media_hash, nonce=nonce_b, ts=ts)
         sig = proof.sign(settings.server_seed, msg)
         loc = body.location or Location()
+        media_row = get_media(conn, media_hash.hex()) if body.tier >= 2 else None
         bundle = proof.build_bundle(
             serial=serial, serial_hash_b=sh, uid_hash_b=uh, counter=chk.counter, seal_kind=seal["kind"], tamper=tamper,
             heat=heat, hum=hum, uv=uv, heat_levels=body.heatLevels, fill=body.fill, country=loc.country, city=loc.city,
-            media_hash_b=media_hash if body.tier >= 2 else None, media_ar=None, nonce_b=nonce_b, issued_at=n["issued_at"],
+            media_hash_b=media_hash if body.tier >= 2 else None, media_ar=(media_row["ar"] if media_row else None),
+            nonce_b=nonce_b, issued_at=n["issued_at"],
             platform=body.platform, role=body.role, tier=body.tier, attester=body.attester, key_id=settings.server_key_id,
             verdict=VALID, server_ts=ts, sig_b=sig, bundle_ts=ts, note=body.note)
         canonical = proof.canonical_json(bundle)
@@ -219,7 +222,7 @@ def verify(body: VerifyBody, conn=Depends(get_conn), settings: Settings = Depend
 
 @router.post("/api/media")
 async def media(file: list[UploadFile] | None = File(default=None), files: list[UploadFile] | None = File(default=None),
-                settings: Settings = Depends(get_settings)):
+                conn=Depends(get_conn), settings: Settings = Depends(get_settings)):
     uploads = [*(file or []), *(files or [])]
     if not uploads:
         raise HTTPException(422, "no file(s) uploaded (multipart field 'file' or 'files')")
@@ -238,7 +241,33 @@ async def media(file: list[UploadFile] | None = File(default=None), files: list[
         with open(path, "wb") as f:
             for c in chunks:
                 f.write(c)
-    return {"sha256": "0x" + digest, "ar": None, "bytes": total, "files": len(uploads)}
+    content_type = (uploads[0].content_type or "application/octet-stream").split(";")[0].strip().lower()
+
+    def _view(row):
+        return {"sha256": "0x" + digest, "ar": row["ar"], "url": row["url"], "arPreview": row["ar_preview"], "bytes": total, "files": len(uploads)}
+
+    existing = get_media(conn, digest)
+    if existing and existing["ar"]:
+        return _view(existing)              # already archived — never upload the same bytes twice
+
+    ar = url = preview = None
+    if arweave.enabled(settings):
+        res = await run_in_threadpool(arweave.upload_file, path, content_type, settings, {"App-Type": "seal-frames", "FV-Sha256": digest})
+        if res:
+            ar, url = res["ar"], res["url"]
+            if content_type.startswith("image/"):
+                if len(uploads) > 1:        # several frames → the first one alone as a viewable thumbnail
+                    ext = "jpg" if content_type == "image/jpeg" else content_type.split("/", 1)[1]
+                    ppath = settings.media_dir / f"{digest}.preview.{ext}"
+                    ppath.write_bytes(chunks[0])
+                    pres = await run_in_threadpool(arweave.upload_file, ppath, content_type, settings, {"App-Type": "seal-frame-preview", "FV-Sha256": digest})
+                    preview = pres["url"] if pres else None
+                else:
+                    preview = url
+    with transaction(conn):
+        row = upsert_media(conn, sha256_hex=digest, bytes_=total, files=len(uploads), content_type=content_type, ar=ar, url=url,
+                           ar_preview=preview, created_at=now())
+    return _view(row)
 
 
 # ---------- events ----------
@@ -255,13 +284,16 @@ def _event_type(v: int | str) -> int:
 
 
 @router.post("/api/events")
-def events(body: EventBody, conn=Depends(get_conn)):
+def events(body: EventBody, conn=Depends(get_conn), settings: Settings = Depends(get_settings)):
     ts = body.ts or now()
     with transaction(conn):
         if body.eventId is not None:
             if not get_event(conn, body.eventId):
                 raise HTTPException(404, "event not found")
             row = confirm_event(conn, body.eventId, body.txSig, body.status or "confirmed")
+            if row["status"] == "confirmed" and row["type"] == EventType.SCAN:
+                arweave.archive_scan_event(conn, settings, row)   # bundle → ar_bundle, media preview → ar_media (no-op when disabled)
+                row = get_event(conn, body.eventId)
             return event_view(row)  # type: ignore[arg-type]
 
         if not body.serial or body.type is None:

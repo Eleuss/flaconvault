@@ -48,6 +48,10 @@ class Settings:
     port: int = 8787
     reconcile_interval_s: int = 60                         # 0 disables the background loop (manual POST /api/reconcile only)
     reconcile_timeout_s: int = 600                         # SCAN(pending) without ScanProof PDA after this → failed
+    arweave: bool = False                                  # FV_ARWEAVE — upload media/bundles via the Irys sidecar
+    arweave_timeout_s: int = 60                            # FV_ARWEAVE_TIMEOUT_S — sidecar subprocess timeout
+    irys_network: str = "devnet"                           # FV_IRYS_NETWORK — devnet | mainnet
+    node_bin: str = ""                                     # FV_NODE_BIN — node binary for the sidecar (default ~/.local/node/bin/node or PATH)
 
     def __post_init__(self) -> None:
         self.key_mode = self.key_mode.strip().lower()
@@ -74,6 +78,13 @@ class Settings:
         self.db_path = _resolve(self.db_path)
         self.media_dir = _resolve(self.media_dir)
         self.seed_path = Path(self.seed_path)
+
+    @property
+    def solana_rpc_public(self) -> str:
+        """RPC handed to the Irys sidecar: a local validator cannot pay the Irys devnet node, so devnet uploads use public devnet."""
+        if "127.0.0.1" in self.solana_rpc or "localhost" in self.solana_rpc:
+            return "https://api.devnet.solana.com" if self.irys_network == "devnet" else "https://api.mainnet-beta.solana.com"
+        return self.solana_rpc
 
     @property
     def master_key(self) -> bytes:
@@ -106,4 +117,8 @@ def settings_from_env() -> Settings:
         port=int(e("FV_PORT") or 8787),
         reconcile_interval_s=int(e("FV_RECONCILE_INTERVAL_S") or 60),
         reconcile_timeout_s=int(e("FV_RECONCILE_TIMEOUT_S") or 600),
+        arweave=_bool(e("FV_ARWEAVE"), False),
+        arweave_timeout_s=int(e("FV_ARWEAVE_TIMEOUT_S") or 60),
+        irys_network=(e("FV_IRYS_NETWORK") or "devnet").strip().lower(),
+        node_bin=e("FV_NODE_BIN") or "",
     )

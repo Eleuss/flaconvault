@@ -39,7 +39,11 @@ uv run uvicorn fv.main:app --port 8787 --reload
 | `FV_PROGRAM_ID` | — | `flacon` program id; empty = reconcile disabled, `/api/sites` falls back to the seed sites |
 | `FV_RECONCILE_INTERVAL_S` | `60` | seconds between reconcile cycles; `0` = manual `POST /api/reconcile` only |
 | `FV_RECONCILE_TIMEOUT_S` | `600` | a SCAN(pending) without ScanProof PDA after this long → `failed` |
-| `FV_IRYS_KEY` | | week 2 (Arweave) |
+| `FV_ARWEAVE` | `false` | upload seal frames and ScanProof bundles to Arweave via the Irys sidecar |
+| `FV_IRYS_KEY` | — | path to a Solana keypair json, or `default` = `~/.config/solana/id.json` (required for uploads) |
+| `FV_ARWEAVE_TIMEOUT_S` | `60` | sidecar subprocess timeout |
+| `FV_IRYS_NETWORK` | `devnet` | `devnet` \| `mainnet` |
+| `FV_NODE_BIN` | auto | node binary for the sidecar (`~/.local/node/bin/node`, else `PATH`) |
 
 Comments must be on their own lines (python-dotenv treats an inline `# …` after an empty value as the value).
 
@@ -56,7 +60,7 @@ Hashes in responses are `0x` + lowercase hex (32 bytes); in the DB they are stor
 | POST | `/api/session` | `{}` → `{nonce: "0x…", issuedAt, expiresAt, ttl}` (32 random bytes, single use) |
 | POST | `/api/preview` | `{uid, ctr, cmac}` → non-consuming check `{verdict, counter, serial, serialHash, uidHash, sealKind, sealDead, message}` |
 | POST | `/api/verify` | Scan flow step 7 — see below |
-| POST | `/api/media` | multipart `file` (or `files`) → `{sha256: "0x…", ar: null, bytes, files}`; stored at `data/media/<sha256>.bin`. Several files are hashed as one concatenation in upload order |
+| POST | `/api/media` | multipart `file` (or `files`) → `{sha256: "0x…", ar, url, arPreview, bytes, files}`; stored at `data/media/<sha256>.bin`. Several files are hashed as one concatenation in upload order. With `FV_ARWEAVE=true` the stored file is uploaded (`ar`/`url`); several image frames additionally upload the first frame alone as `arPreview` (viewable thumbnail); a single image is its own preview. Same bytes twice → the stored links, no second upload |
 | POST | `/api/events` | `{eventId, txSig}` confirms a pending event · `{serial, type, txSig?, sealUidHash?, actor?, actorLabel?, payload?, location?, ts?}` inserts one (`confirmed` if `txSig`, else `pending`). Side effects: `MINT` creates/updates the passport (`payload.brand`, `payload.name` required for a new serial; `batch`, `asset`, `issuerLabel`, `siteId` optional; `issuer` = `actor`), `SEAL_ATTACH` upserts the seal (`payload.uid` 7-byte hex, `payload.kind` default 1), `SEAL_DEAD` marks the seal dead and voids the passport. MINT and SEAL_ATTACH are idempotent: a second call for the same serial / uid updates `txSig`/`status`/payload of the first event instead of adding a row |
 | GET | `/api/passport/<serial>` | Passport + timeline (shape below), 404 if unknown |
 | GET | `/api/passports` | `[{serial, brand, name, grade, void, scanCount, lastEventTs}]` |
@@ -119,6 +123,35 @@ to `POST /api/events` with the `txSig` after confirmation.
                 "gradeAfter": 0, "location": { "country": "DE", "city": "Düsseldorf" } } ] }
 ```
 
+## Arweave (Irys devnet)
+
+No maintained Python SDK exists for Irys, so `fv/arweave.py` shells out to a tiny Node sidecar in `irys/`
+(`@irys/upload` + `@irys/upload-solana`, own `package.json`, not part of the root workspace):
+
+```bash
+cd apps/verify/irys && npm install                          # once (Node ≥ 20; ~/.local/node/bin/node is used by default)
+node fund.mjs --key default --network devnet --dry-run      # balance vs. price of 1 MB
+node fund.mjs --key default --network devnet                # funds 0.01 SOL only if the balance is below that price (hard cap 0.05)
+node upload.mjs --key default --network devnet --tag Content-Type=image/jpeg frame.jpg
+# → {"id":"…","url":"https://gateway.irys.xyz/<id>","ar":"ar://<id>","bytes":n,…}
+```
+
+Server side, uploads happen only when `FV_ARWEAVE=true` **and** `FV_IRYS_KEY` is set; every failure is logged and
+returns `null` links — the scan flow never breaks because of Arweave:
+
+* `POST /api/media` → stored file (`ar`, `url`) and, for image frames, a viewable first frame (`arPreview`); links are
+  kept in the `media` table (sha256 → links).
+* `POST /api/verify` → `bundle.media[0].ar` is filled from the `media` table, so the `bundleHash` covers the link.
+  The web app must use the `bundleHash` from the response for `record_scan`.
+* `POST /api/events {eventId, txSig}` for a SCAN → the canonical bundle (exactly the bytes whose sha256 is
+  `bundleHash`, tags `App-Type=scanproof-bundle`, `FV-Serial`, `FV-Bundle-Hash`) is uploaded as
+  `application/json` → `events.ar_bundle`; the media preview/url is copied to `events.ar_media`. The passport
+  timeline exposes them as `arBundle` / `arMedia`. The reconcile job does the same when it confirms a scan.
+
+The sidecar is handed the public devnet RPC when `FV_SOLANA_RPC` points at a local validator (a local validator
+cannot pay the Irys devnet node). **Irys devnet uploads are pruned after ~60 days**; uploads under ~100 KiB are
+currently free, larger ones are paid from the funded Irys balance (~0.0005 SOL per MB).
+
 ## Reconcile job (briefing §10)
 
 Runs in the FastAPI lifespan every `FV_RECONCILE_INTERVAL_S` (first cycle 5 s after start) when `FV_PROGRAM_ID` is
@@ -179,6 +212,7 @@ fv/sdm.py         SUN CMAC check + generation, AN10922 diversification   fv/serv
 fv/db.py          sqlite3 repository, fv/schema.sql                      fv/views.py       JSON shapes for the web app
 fv/enums.py       enums from fv/enums.json (synced from docs/enums.json) fv/strings.py     UI wording (briefing §16)
 fv/seed.py        docs/seed/passports.json → DB                          fv/routes_chain.py /api/reconcile /api/registry /api/sites
+fv/arweave.py     Irys sidecar wrapper, bundle archiving                    irys/             Node sidecar (upload.mjs, fund.mjs)
 fv/chain.py       PDAs (solders), Anchor account decoders, JSON-RPC       fv/reconcile.py   §10 reconcile cycle
 config.py         SDMMAC_PARAM for libsdm                                libsdm/           vendored icedevml/sdm-backend (MIT)
                                                                          tests/            pytest suite

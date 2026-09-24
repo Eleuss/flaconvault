@@ -22,6 +22,7 @@ export class DevWalletAdapter extends BaseSignerWalletAdapter {
   }
   get publicKey(): PublicKey | null { return this.keypair?.publicKey ?? null; }
   get connecting() { return this._connecting; }
+  // Loadable (not Installed): with Installed the provider never reports `connected` for this adapter.
   get readyState() { return typeof window === "undefined" ? WalletReadyState.Unsupported : WalletReadyState.Loadable; }
 
   private load(): Keypair {
@@ -34,10 +35,17 @@ export class DevWalletAdapter extends BaseSignerWalletAdapter {
     return kp;
   }
   async connect(): Promise<void> {
-    if (this.connected || this._connecting) return;
+    if (this._connecting) return;
     this._connecting = true;
-    try { this.keypair = this.load(); this.emit("connect", this.keypair.publicKey); }
-    finally { this._connecting = false; }
+    try {
+      // Always emit, even when already connected: React Strict Mode detaches and re-attaches the
+      // provider's listeners after the first connect, and a silent early return leaves the UI on "Connect".
+      if (!this.keypair) this.keypair = this.load();
+      this.emit("connect", this.keypair.publicKey);
+    } catch (e) {
+      console.error("[dev-wallet] connect failed", e);
+      throw e;
+    } finally { this._connecting = false; }
   }
   async disconnect(): Promise<void> { this.keypair = null; this.emit("disconnect"); }
   async signTransaction<T extends Transaction | VersionedTransaction>(tx: T): Promise<T> {

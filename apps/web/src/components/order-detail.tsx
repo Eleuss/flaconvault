@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey } from "@solana/web3.js";
@@ -23,6 +23,8 @@ export function OrderDetail({ serial }: { serial: string }) {
   const anchorWallet = useAnchorWallet();
   const [passport, setPassport] = useState<Passport | null>(null);
   const [order, setOrder] = useState<OrderView | null | undefined>(undefined);
+  const orderRef = useRef<OrderView | null | undefined>(undefined);
+  useEffect(() => { orderRef.current = order; }, [order]);
   const [config, setConfig] = useState<EscrowConfigView | null>(null);
   const [scanChoice, setScanChoice] = useState<string>("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -59,11 +61,19 @@ export function OrderDetail({ serial }: { serial: string }) {
   const run = async (label: string, fn: () => Promise<string>, event?: { type: number; payload?: Record<string, unknown> }) => {
     if (!wallet.publicKey) return;
     setBusy(label); setError(null);
+    const before = order ? `${order.state}:${order.buyer?.toBase58() ?? ""}:${order.sellerScan?.toBase58() ?? ""}:${order.buyerScan?.toBase58() ?? ""}` : "";
     try {
       const sig = await fn();
       setLastTx(sig);
       if (event) await api.events({ serial, type: event.type, txSig: sig, actor: wallet.publicKey.toBase58(), payload: event.payload ?? {} });
-      await load();
+      // public RPCs are load-balanced: a read right after confirmation can lag — poll until the order changed
+      for (let i = 0; i < 8; i++) {
+        await load();
+        const o = orderRef.current;
+        const after = o ? `${o.state}:${o.buyer?.toBase58() ?? ""}:${o.sellerScan?.toBase58() ?? ""}:${o.buyerScan?.toBase58() ?? ""}` : "";
+        if (after !== before) break;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
     } catch (e) { setError((e as Error).message); } finally { setBusy(null); }
   };
   const prog = () => escrowProgram(connection, anchorWallet!);

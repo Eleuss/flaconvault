@@ -1,0 +1,13 @@
+.anchor
+target
+node_modules
+apps/verify
+programs
+tests
+migrations
+docs/card
+**/.next
+**/.next-build
+*.log
+Dockerfile.verify
+railway.json

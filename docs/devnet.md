@@ -177,3 +177,9 @@ Scene 6 played end-to-end in the browser with two persistent dev wallets (A sell
 list → reserve (vault funded) → seller scan (counter 18) → record_pre_ship_scan → ship → buyer scan (counter 19) → record_receipt_scan (match: heat/hum equal, Δfill 0) → release.
 Release tx: https://explorer.solana.com/tx/2oEXVqFVJ6kg6ubCrLFVGFzGV6QB67WMPVzhij99aT8RBsVoWbw1UfkcvxzP83gcrU4xx4iXpHAwwcw18sJFBLhv?cluster=devnet
 Order PDA `2cSy9BQac8LcNzb4ir32mRB178SejNbLnf95VdF8PQe2` (state RELEASED). The passport timeline shows LIST/SHIP/RECEIVE/RELEASE with their signatures.
+
+
+## Scenes 1 and 4 on devnet (2026-09-24)
+
+- **Scene 1 (Geburtsurkunde)** from `/certify` with Dev-Wallet A as partner: Metaplex Core asset `FEM7HG84tRevMsUWcazdYJJhDCu2tWDLYpDdFeyKm4xG` minted from the browser (umi), `mint_passport` SN-2026-000005 (Creed · Green Irish Tweed), `attach_seal` 04C33A67DA8B53 — passport page shows the birth certificate with both transactions.
+- **Scene 4 (ausgelöster Indikator)**, software path: `/scan` → simulator tap (counter 20) → **Testbild: 40 °C ausgelöst** (five synthetic frames instead of the camera) → media upload with matching sha256 → reading „Hitze: über 40 °C erfasst“ → tier-2 signature → `record_scan` → **Grade C** with the §16 sentence; the timeline entry reads „Scan Tier 2 · Zähler 20 · Hitze ausgelöst · Grade C“. The physical version needs the printed card and a phone camera.

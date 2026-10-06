@@ -55,3 +55,12 @@ With `NEXT_PUBLIC_DEV_SIMULATOR=true` the wallet menu offers **Dev-Wallet A (Ver
 ## Devnet budget
 
 Wallet `Bsy5DFxtugs5PGqjF8ADrPYm7kt89dFpwEe9hTZokpFy`. flacon deployed (≈1.3 SOL rent). Escrow deploy needs ≈2.3 SOL. Each scan ≈0.002 SOL + rent for the ScanProof (≈0.003). Top up via https://faucet.solana.com when below 1 SOL.
+
+
+## iPhone path (no WebNFC)
+
+Since 2026-10-06 the whole flow runs on an iPhone: a tap opens `/t` in Safari; if a `/scan` session is running in that browser, `/t` hands the tap over (localStorage) instead of consuming it and the scan tab continues automatically (preview → camera → signature). `/t` also remembers the last verified chip UID, and `/certify` offers „UID vom letzten Tap übernehmen“. Signing on iPhone uses **Dev-Wallet A** (browser keypair, whitelisted as partner) because Phantom cannot be driven from Safari.
+
+## Tag programming (what finally worked)
+
+NXP TagWriter placed the SDMMAC at offset 7 (over `https://`) in every mode we tried — do not use it for NTAG 424 DNA SUN. Use the **NFC Developer App** (Android/iOS): URL `https://flaconvault.vercel.app/t`, custom data empty, master key = `FV_MASTER_KEY` of the verifier (`FV_KEY_MODE=sdmbackend`, `FV_SDM_DERIVE=legacy`). The tag then sends `picc_data`/`cmac` (encrypted PICC data); the verifier decrypts. Verified live 2026-10-06 with chip `0438380ABD2390` → passport SN-2026-000006.

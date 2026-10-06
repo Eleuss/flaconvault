@@ -279,7 +279,7 @@ def list_sim_tags(conn) -> list[dict]:
 def upsert_sim_tag(conn, *, uid_hex: str, key_hex: str, counter: int, alive: bool, created_at: int, serial: str | None) -> dict:
     conn.execute(
         """INSERT INTO sim_tags(uid_hex, key_hex, counter, alive, created_at, serial) VALUES(?,?,?,?,?,?)
-           ON CONFLICT(uid_hex) DO UPDATE SET serial=COALESCE(excluded.serial, sim_tags.serial)""",
+           ON CONFLICT(uid_hex) DO UPDATE SET serial=COALESCE(excluded.serial, sim_tags.serial), key_hex=excluded.key_hex""",
         (uid_hex.upper(), key_hex, counter, int(alive), created_at, serial))
     return get_sim_tag(conn, uid_hex)  # type: ignore[return-value]
 

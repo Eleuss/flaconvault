@@ -3,6 +3,8 @@ Shared tap check used by GET /t, POST /api/preview and POST /api/verify (briefin
 """
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass
 
 from fv import proof
@@ -31,7 +33,20 @@ class TapCheck:
         return bool(self.seal and self.seal["dead"])
 
 
+_TW = re.compile(r"^([0-9a-fA-F]{14})x([0-9a-fA-F]{6})x([0-9a-fA-F]{16})$")
+
+
+def split_tagwriter(uid: str | None, ctr: str | int | None, cmac: str | None) -> tuple[str | None, str | int | None, str | None]:
+    """NXP TagWriter writes its SDM mirrors as `uid=<UID>x<CTR>x<MAC>`; split that into the three parameters."""
+    m = _TW.match((uid or "").strip())
+    if not m:
+        return uid, ctr, cmac
+    zero = lambda v: v is None or str(v).strip("0") == ""  # noqa: E731
+    return m.group(1), (m.group(2) if zero(ctr) else ctr), (m.group(3) if zero(cmac) else cmac)
+
+
 def check_tap(conn, settings: Settings, uid: str | None, ctr: str | int | None, cmac: str | None, *, consume: bool) -> TapCheck:
+    uid, ctr, cmac = split_tagwriter(uid, ctr, cmac)
     """CMAC → counter → seal lookup. With consume=True the seal's last_counter is advanced on a genuine, fresh tap."""
     if uid is None or ctr is None or cmac is None:
         return TapCheck(INVALID, uid_hex=(uid or None), error="missing uid/ctr/cmac")

@@ -38,7 +38,9 @@ export const api = {
 export function parseTagUrl(url: string): { uid: string; ctr: string; cmac: string } | null {
   try {
     const u = new URL(url);
-    const uid = u.searchParams.get("uid"), ctr = u.searchParams.get("ctr"), cmac = u.searchParams.get("cmac");
+    let uid = u.searchParams.get("uid"), ctr = u.searchParams.get("ctr"), cmac = u.searchParams.get("cmac");
+    const tw = /^([0-9a-f]{14})x([0-9a-f]{6})x([0-9a-f]{16})$/i.exec(uid ?? ""); // NXP TagWriter: uid=<UID>x<CTR>x<MAC>
+    if (tw) { uid = tw[1]; ctr = tw[2]; cmac = tw[3]; }
     return uid && ctr && cmac ? { uid: uid.toUpperCase(), ctr: ctr.toUpperCase(), cmac: cmac.toUpperCase() } : null;
   } catch { return null; }
 }

@@ -11,7 +11,11 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Siegel geprüft" };
 
 export default async function TagLanding({ searchParams }: { searchParams: Record<string, string | undefined> }) {
-  const { uid, ctr, cmac, tap } = searchParams;
+  let { uid, ctr, cmac } = searchParams;
+  const { tap } = searchParams;
+  // NXP TagWriter writes its SDM mirrors as uid=<UID>x<CTR>x<MAC>
+  const tw = /^([0-9a-f]{14})x([0-9a-f]{6})x([0-9a-f]{16})$/i.exec(uid ?? "");
+  if (tw) { uid = tw[1]; ctr = tw[2]; cmac = tw[3]; }
   if (!tap && uid && ctr && cmac) {
     // A tag pointed at the web host: let the verifier consume the tap exactly once, it redirects back with ?tap=<id>.
     redirect(`${VERIFY_URL}/t?uid=${encodeURIComponent(uid)}&ctr=${encodeURIComponent(ctr)}&cmac=${encodeURIComponent(cmac)}`);

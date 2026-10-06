@@ -7,7 +7,7 @@ import { ArrowRight, Camera, Loader2, Nfc, RefreshCw, ShieldOff, Zap } from "luc
 import { Grade, Indicator, Role, Tier, NONCE_TTL_S } from "@flaconvault/proof";
 import type { CardReading, FrameLike, HeatFieldsConfig } from "@flaconvault/vision";
 import { VisionClient, frameFromSource } from "@/vision/client";
-import { api, parseTagUrl, sha256Hex, type Preview, type Session, type SimTag } from "@/lib/verify-api";
+import { api, parseTagUrl, sha256Hex, type Preview, type Session, type SimTag, type TagParams } from "@/lib/verify-api";
 import { buildRecordScanTx, flaconProgram, type VerifyResponse } from "@/lib/flacon";
 import { DEV_SIMULATOR, PROGRAM_ID } from "@/lib/config";
 import { gradeLetter, gradeSentence, indicatorText, txUrl, verdictText } from "@/lib/format";
@@ -15,7 +15,7 @@ import { GradeMark, Lamp, Pill } from "./badges";
 import { WalletButton } from "./wallet-button";
 
 type Step = "session" | "tap" | "preview" | "camera" | "read" | "verify" | "tx" | "done" | "dead";
-interface Tag { uid: string; ctr: string; cmac: string; source: "nfc" | "simulator"; serial?: string | null }
+interface Tag extends TagParams { source: "nfc" | "simulator"; serial?: string | null }
 const platform = () => (typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent) ? "ANDROID_WEB" : typeof navigator !== "undefined" && /iPhone|iPad/i.test(navigator.userAgent) ? "IOS_WEB" : "DESKTOP_WEB");
 const nonceCode = (nonce: string) => nonce.replace(/^0x/, "").slice(0, 6).toUpperCase();
 
@@ -86,7 +86,7 @@ export function ScanFlow() {
   const onTag = useCallback(async (t: Tag) => {
     setTag(t); setBusy("preview");
     try {
-      const p = await api.preview(t.uid, t.ctr, t.cmac);
+      const p = await api.preview(t);
       setPreview(p);
       setStep(p.verdict === "NO_RESPONSE" ? "dead" : "preview");
     } catch (e) { setError((e as Error).message); }
@@ -116,7 +116,7 @@ export function ScanFlow() {
           if (rec.recordType === "url" && rec.data) {
             const url = new TextDecoder().decode(rec.data);
             const parsed = parseTagUrl(url);
-            if (parsed) { setNfcState(`Gelesen: …${parsed.uid.slice(-4)} · Zähler ${parseInt(parsed.ctr, 16)}`); onTag({ ...parsed, source: "nfc" }); return; }
+            if (parsed) { setNfcState(parsed.piccData ? "Gelesen: verschlüsselter Tap" : `Gelesen: …${parsed.uid.slice(-4)} · Zähler ${parseInt(parsed.ctr, 16)}`); onTag({ ...parsed, source: "nfc" }); return; }
           }
         }
         setNfcState("Kein FlaconVault-Siegel (keine SUN-URL)");
@@ -203,7 +203,7 @@ export function ScanFlow() {
       }
       const r = reading && reading.found ? reading : null;
       const body = {
-        uid: tag.uid, ctr: tag.ctr, cmac: tag.cmac, nonce: session.nonce, role, tier,
+        uid: tag.uid || undefined, ctr: tag.ctr || undefined, cmac: tag.cmac, piccData: tag.piccData, enc: tag.enc, nonce: session.nonce, role, tier,
         indicators: { heat: r ? r.heat : Indicator.MISSING, humidity: r ? r.humidity : Indicator.MISSING, uv: Indicator.MISSING },
         heatLevels: r ? r.heatLevels : [0, 0, 0, 0, 0, 0], fill, mediaHash,
         serial: preview?.serial ?? undefined, location: { country: country || null, city: city || null },

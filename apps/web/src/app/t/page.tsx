@@ -12,7 +12,11 @@ export const metadata: Metadata = { title: "Siegel geprüft" };
 
 export default async function TagLanding({ searchParams }: { searchParams: Record<string, string | undefined> }) {
   let { uid, ctr, cmac } = searchParams;
-  const { tap } = searchParams;
+  const { tap, picc_data, enc } = searchParams;
+  if (!tap && picc_data && cmac) {
+    // NFC Developer App (encrypted SUN): picc_data + cmac [+ enc] — the verifier decrypts and consumes the tap once
+    redirect(`${VERIFY_URL}/t?picc_data=${encodeURIComponent(picc_data)}&cmac=${encodeURIComponent(cmac)}${enc ? `&enc=${encodeURIComponent(enc)}` : ""}`);
+  }
   // NXP TagWriter writes its SDM mirrors as uid=<UID>x<CTR>x<MAC>
   const tw = /^([0-9a-f]{14})x([0-9a-f]{6})x([0-9a-f]{16})$/i.exec(uid ?? "");
   if (tw) { uid = tw[1]; ctr = tw[2]; cmac = tw[3]; }

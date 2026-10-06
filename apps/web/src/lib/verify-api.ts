@@ -22,7 +22,7 @@ export const api = {
   session: () => post<Session>("/api/session", {}),
   simTags: () => get<SimTag[]>("/api/dev/tags"),
   simTap: (uid: string) => post<TapResult>("/api/dev/tap", { uid }),
-  preview: (uid: string, ctr: string, cmac: string) => post<Preview>("/api/preview", { uid, ctr, cmac }),
+  preview: (t: TagParams) => post<Preview>("/api/preview", { uid: t.uid || undefined, ctr: t.ctr || undefined, cmac: t.cmac, piccData: t.piccData, enc: t.enc }),
   verify: (body: Record<string, unknown>) => post<VerifyResponse>("/api/verify", body),
   events: (body: Record<string, unknown>) => post<Record<string, unknown>>("/api/events", body),
   async media(blobs: Blob[]): Promise<{ sha256: string; ar: string | null; bytes: number }> {
@@ -35,9 +35,12 @@ export const api = {
 };
 
 /** Parse uid/ctr/cmac out of a SUN URL (tag or simulator). */
-export function parseTagUrl(url: string): { uid: string; ctr: string; cmac: string } | null {
+export interface TagParams { uid: string; ctr: string; cmac: string; piccData?: string; enc?: string }
+export function parseTagUrl(url: string): TagParams | null {
   try {
     const u = new URL(url);
+    const piccData = u.searchParams.get("picc_data"), enc = u.searchParams.get("enc"), cmacEnc = u.searchParams.get("cmac");
+    if (piccData && cmacEnc) return { uid: "", ctr: "", cmac: cmacEnc.toUpperCase(), piccData: piccData.toUpperCase(), enc: enc?.toUpperCase() };
     let uid = u.searchParams.get("uid"), ctr = u.searchParams.get("ctr"), cmac = u.searchParams.get("cmac");
     const tw = /^([0-9a-f]{14})x([0-9a-f]{6})x([0-9a-f]{16})$/i.exec(uid ?? ""); // NXP TagWriter: uid=<UID>x<CTR>x<MAC>
     if (tw) { uid = tw[1]; ctr = tw[2]; cmac = tw[3]; }

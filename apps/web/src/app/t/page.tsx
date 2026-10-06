@@ -1,11 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import { ArrowRight } from "lucide-react";
 import { getTap } from "@/lib/api";
-import { VERIFY_URL } from "@/lib/config";
 import { verdictText } from "@/lib/format";
 import { Lamp } from "@/components/badges";
+import { RememberTap, TapGate } from "@/components/tap-gate";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Siegel geprüft" };
@@ -13,17 +12,11 @@ export const metadata: Metadata = { title: "Siegel geprüft" };
 export default async function TagLanding({ searchParams }: { searchParams: Record<string, string | undefined> }) {
   let { uid, ctr, cmac } = searchParams;
   const { tap, picc_data, enc } = searchParams;
-  if (!tap && picc_data && cmac) {
-    // NFC Developer App (encrypted SUN): picc_data + cmac [+ enc] — the verifier decrypts and consumes the tap once
-    redirect(`${VERIFY_URL}/t?picc_data=${encodeURIComponent(picc_data)}&cmac=${encodeURIComponent(cmac)}${enc ? `&enc=${encodeURIComponent(enc)}` : ""}`);
-  }
   // NXP TagWriter writes its SDM mirrors as uid=<UID>x<CTR>x<MAC>
   const tw = /^([0-9a-f]{14})x([0-9a-f]{6})x([0-9a-f]{16})$/i.exec(uid ?? "");
   if (tw) { uid = tw[1]; ctr = tw[2]; cmac = tw[3]; }
-  if (!tap && uid && ctr && cmac) {
-    // A tag pointed at the web host: let the verifier consume the tap exactly once, it redirects back with ?tap=<id>.
-    redirect(`${VERIFY_URL}/t?uid=${encodeURIComponent(uid)}&ctr=${encodeURIComponent(ctr)}&cmac=${encodeURIComponent(cmac)}`);
-  }
+  if (!tap && picc_data && cmac) return <TapGate params={{ uid: "", ctr: "", cmac, piccData: picc_data, enc }} />;
+  if (!tap && uid && ctr && cmac) return <TapGate params={{ uid, ctr, cmac }} />;
   const t = tap ? await getTap(tap) : null;
   if (!t) {
     return (
@@ -36,9 +29,11 @@ export default async function TagLanding({ searchParams }: { searchParams: Recor
     );
   }
   const v = verdictText(t.verdict, t.counter);
+  const remember = <RememberTap uid={t.uid ?? null} serial={t.serial} counter={t.counter} />;
   const toneClass = { ok: "text-ok", warn: "text-warn", bad: "text-bad", none: "text-muted" }[v.tone];
   return (
     <div className="page-in container-page flex min-h-[70vh] flex-col justify-center py-16">
+      {remember}
       <p className="eyebrow">Siegel geprüft</p>
       <div className="mt-4 flex items-center gap-3">
         <Lamp tone={v.tone} className="h-3.5 w-3.5" />

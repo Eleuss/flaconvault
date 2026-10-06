@@ -10,6 +10,7 @@ import { api, type SimTag } from "@/lib/verify-api";
 import { DEV_SIMULATOR, PROGRAM_ID, PUBLIC_VERIFY_URL, SOLANA_RPC } from "@/lib/config";
 import { txUrl } from "@/lib/format";
 import { cardSvgForSerial } from "@/lib/card";
+import { lastTap } from "@/lib/handoff";
 import { Lamp, Pill } from "./badges";
 import { WalletButton } from "./wallet-button";
 
@@ -24,6 +25,8 @@ export function CertifyConsole() {
   const [registry, setRegistry] = useState<Registry | null | undefined>(undefined);
   const [form, setForm] = useState({ serial: "SN-2026-000004", brand: "", name: "", batch: "", siteId: 1, kind: 1, uid: "", useCore: true });
   const [simTags, setSimTags] = useState<SimTag[]>([]);
+  const [recent, setRecent] = useState<{ uid: string; counter: number | null } | null>(null);
+  useEffect(() => { const t = lastTap.get(); if (t) setRecent({ uid: t.uid, counter: t.counter }); }, []);
   const [asset, setAsset] = useState<string | null>(null);
   const [txs, setTxs] = useState<{ core?: string; mint?: string; seal?: string }>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -170,6 +173,7 @@ export function CertifyConsole() {
               {field("uid", "Chip-UID (7 Byte hex)", { placeholder: "04A1B2C3D4E5F6" })}
               <div className="mt-2 flex flex-wrap gap-2">
                 <button onClick={readNfc} className="btn-outline btn-sm">UID per NFC lesen</button>
+                {recent && <button onClick={() => setForm({ ...form, uid: recent.uid })} className="btn-outline btn-sm">UID vom letzten Tap: <span className="mono">{recent.uid}</span></button>}
                 {DEV_SIMULATOR && <button onClick={newSimTag} disabled={busy !== null} className="btn-outline btn-sm">Neuen virtuellen Tag anlegen</button>}
                 {DEV_SIMULATOR && simTags.filter((t) => !t.serial).map((t) => <button key={t.uid} onClick={() => setForm({ ...form, uid: t.uid })} className="btn-outline btn-sm mono">{t.uid}</button>)}
               </div>

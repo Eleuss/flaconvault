@@ -8,6 +8,7 @@ import { Grade, Indicator, Role, Tier, NONCE_TTL_S } from "@flaconvault/proof";
 import type { CardReading, FrameLike, HeatFieldsConfig } from "@flaconvault/vision";
 import { VisionClient, frameFromSource } from "@/vision/client";
 import { api, parseTagUrl, sha256Hex, type Preview, type Session, type SimTag, type TagParams } from "@/lib/verify-api";
+import { scanSession, tapHandoff } from "@/lib/handoff";
 import { buildRecordScanTx, flaconProgram, type VerifyResponse } from "@/lib/flacon";
 import { DEV_SIMULATOR, PROGRAM_ID } from "@/lib/config";
 import { gradeLetter, gradeSentence, indicatorText, txUrl, verdictText } from "@/lib/format";
@@ -66,6 +67,7 @@ export function ScanFlow() {
     setError(null); setTag(null); setPreview(null); setFrames(null); setReading(null); setVerify(null); setTxSig(null);
     try {
       const s = await api.session();
+      scanSession.set({ nonce: s.nonce, expiresAt: s.expiresAt });
       setSession(s); setLeft(s.ttl ?? NONCE_TTL_S); setStep("tap");
       if (DEV_SIMULATOR) api.simTags().then(setSimTags).catch(() => setSimTags([]));
     } catch (e) { setError(`Server nicht erreichbar: ${(e as Error).message}`); }
@@ -81,6 +83,7 @@ export function ScanFlow() {
     return () => clearInterval(id);
   }, [session, step]);
   const expired = session != null && left <= 0 && step !== "done" && step !== "dead";
+  useEffect(() => { if (step === "done" || step === "dead" || expired) scanSession.clear(); }, [step, expired]);
 
   // ---- 2. tap -----------------------------------------------------------
   const onTag = useCallback(async (t: Tag) => {
@@ -92,6 +95,16 @@ export function ScanFlow() {
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(null); }
   }, []);
+  // iPhone path: a tap that opened /t in another tab is handed over through localStorage
+  useEffect(() => {
+    if (step !== "tap") return;
+    const pick = () => { const h = tapHandoff.take(); if (h) { setNfcState("Tap aus dem Browser übernommen"); onTag({ uid: h.uid, ctr: h.ctr, cmac: h.cmac, piccData: h.piccData, enc: h.enc, source: "nfc" }); } };
+    pick();
+    const id = setInterval(pick, 1000);
+    const onStorage = (e: StorageEvent) => { if (e.key === tapHandoff.key) pick(); };
+    window.addEventListener("storage", onStorage);
+    return () => { clearInterval(id); window.removeEventListener("storage", onStorage); };
+  }, [step, onTag]);
   const simTap = async (t: SimTag) => {
     setBusy(`tap-${t.uid}`);
     try {
@@ -294,7 +307,7 @@ export function ScanFlow() {
             <div className="card p-4">
               <p className="flex items-center gap-2 text-sm font-medium"><Nfc className="h-4 w-4 text-amber" aria-hidden /> WebNFC (Android Chrome)</p>
               <button onClick={startNfc} className="btn-outline btn-sm mt-3">NFC-Lesen starten</button>
-              <p className="mt-2 break-words text-xs text-muted">{nfcState || "iPhone: Siegel antippen öffnet die Tag-Landing /t — das reicht für Tier 0."}</p>
+              <p className="mt-2 break-words text-xs text-muted">{nfcState || "iPhone: Sitzung läuft — jetzt einfach das Siegel antippen. Safari öffnet /t, der Tap wird hierher übergeben; dann zurück zu diesem Tab."}</p>
             </div>
             {DEV_SIMULATOR && (
               <div className="card p-4">

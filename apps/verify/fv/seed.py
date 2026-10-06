@@ -155,7 +155,7 @@ def run_seed(db: Database, settings: Settings, path: Path | None = None, *, wipe
 
         for t in data.get("simTags", []):
             uid = bytes.fromhex(t["uid"])
-            key = key_for_uid(settings.key_mode, settings.master_key, uid)
+            key = key_for_uid(settings.key_mode, settings.master_key, uid, settings.sdm_derive)
             upsert_sim_tag(conn, uid_hex=t["uid"].upper(), key_hex=key.hex(), counter=t.get("counter", 0),
                            alive=bool(t.get("alive", True)), created_at=_ts(data["passports"][0]["createdAt"]), serial=t.get("serial"))
             conn.execute("UPDATE sim_tags SET counter=?, alive=? WHERE uid_hex=?", (t.get("counter", 0), int(bool(t.get("alive", True))), t["uid"].upper()))

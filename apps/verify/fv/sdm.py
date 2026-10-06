@@ -11,7 +11,9 @@ from __future__ import annotations
 from Crypto.Cipher import AES
 from Crypto.Hash import CMAC
 
-from libsdm.sdm import InvalidMessage, ParamMode, calculate_sdmmac, validate_plain_sun
+from libsdm import derive as _derive_standard
+from libsdm import legacy_derive as _derive_legacy
+from libsdm.sdm import InvalidMessage, ParamMode, calculate_sdmmac, decrypt_sun_message, validate_plain_sun
 
 FACTORY_KEY = bytes(16)
 KEY_DIV_APP_ID = bytes.fromhex("D2760000850101")     # vectors.json constants.KEY_DIV_APP_ID_HEX
@@ -106,9 +108,59 @@ def diversify(master: bytes, uid: bytes, aid: bytes, sysid: bytes) -> bytes:
     return c.digest()
 
 
-def key_for_uid(mode: str, master: bytes, uid: bytes) -> bytes:
+KEY_MODES = ("factory", "diversified", "sdmbackend")
+# sdm-backend ships DERIVE_MODE="legacy" (libsdm/legacy_derive.py: pbkdf2-sha512, "compatible with NFC Developer App");
+# "standard" is libsdm/derive.py (HMAC/CMAC based, 2023+). Both yield null keys for an all-zero master key.
+SDM_DERIVE_MODES = ("legacy", "standard")
+
+
+def _derive(derive: str):
+    if derive == "legacy":
+        return _derive_legacy
+    if derive == "standard":
+        return _derive_standard
+    raise ValueError(f"unknown FV_SDM_DERIVE {derive!r}")
+
+
+def key_for_uid(mode: str, master: bytes, uid: bytes, derive: str = "legacy") -> bytes:
+    """SDM file read key (CMAC key) for a tag. sdmbackend = NFC Developer App / icedevml sdm-backend: key #2, UID-diversified."""
     if mode == "factory":
         return FACTORY_KEY
     if mode == "diversified":
         return diversify(master, uid, KEY_DIV_APP_ID, KEY_DIV_SYS_ID)
+    if mode == "sdmbackend":
+        return _derive(derive).derive_tag_key(master, uid, 2)
     raise ValueError(f"unknown key mode {mode!r}")
+
+
+def meta_read_key(mode: str, master: bytes, derive: str = "legacy") -> bytes:
+    """SDM meta read key (decrypts picc_data in encrypted SUN mode). sdmbackend: key #1, not UID-diversified."""
+    if mode == "sdmbackend":
+        return _derive(derive).derive_undiversified_key(master, 1)
+    return FACTORY_KEY   # factory / diversified: plain mirror tags; encrypted vectors use null keys (AN12196)
+
+
+def parse_hex_len(value: str, length: int, what: str) -> bytes:
+    try:
+        b = bytes.fromhex(value.strip().removeprefix("0x"))
+    except (ValueError, AttributeError) as exc:
+        raise TagParamError(f"{what}: not hex") from exc
+    if len(b) != length:
+        raise TagParamError(f"{what}: expected {length} bytes, got {len(b)}")
+    return b
+
+
+def decrypt_tap(mode: str, master: bytes, picc_data: bytes, cmac: bytes, enc: bytes | None, derive: str = "legacy") -> tuple[bytes, int] | None:
+    """
+    Encrypted SUN (sdm-backend `/tag` and `/tagtt`): picc_data (16 B AES / 24 B LRP) ‖ cmac (8 B) [‖ enc (16·n B)].
+    Returns (uid, read_ctr) or None when the MAC/decryption fails. `enc` is only decrypted, never interpreted.
+    """
+    try:
+        res = decrypt_sun_message(param_mode=ParamMode.SEPARATED, sdm_meta_read_key=meta_read_key(mode, master, derive),
+                                  sdm_file_read_key=lambda uid: key_for_uid(mode, master, uid, derive),
+                                  picc_enc_data=picc_data, sdmmac=cmac, enc_file_data=enc or None)
+    except (InvalidMessage, ValueError):
+        return None
+    if res.get("uid") is None or res.get("read_ctr") is None:
+        return None
+    return res["uid"], int(res["read_ctr"])

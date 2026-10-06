@@ -41,15 +41,19 @@ class Location(BaseModel):
 
 
 class PreviewBody(BaseModel):
-    uid: str
-    ctr: str | int
+    uid: str | None = None
+    ctr: str | int | None = None
     cmac: str
+    piccData: str | None = None      # encrypted SUN (NFC Developer App): 16/24 byte hex; uid/ctr not needed then
+    enc: str | None = None           # SDMENCFileData (TagTamper `/tagtt`), decrypted and ignored
 
 
 class VerifyBody(BaseModel):
-    uid: str
-    ctr: str | int
+    uid: str | None = None
+    ctr: str | int | None = None
     cmac: str
+    piccData: str | None = None
+    enc: str | None = None
     nonce: str
     role: int = Field(ge=0, le=4)
     tier: int = Field(ge=0, le=4)
@@ -108,7 +112,7 @@ def session(conn=Depends(get_conn), settings: Settings = Depends(get_settings)):
 
 def _tap_fields(chk) -> dict:
     return {
-        "verdict": chk.verdict, "counter": chk.counter,
+        "verdict": chk.verdict, "counter": chk.counter, "uid": chk.uid_hex,
         "serial": chk.serial,
         "serialHash": proof.hex0x(proof.serial_hash(chk.serial)) if chk.serial else None,
         "uidHash": ("0x" + chk.uid_hash_hex) if chk.uid_hash_hex else None,
@@ -119,7 +123,7 @@ def _tap_fields(chk) -> dict:
 
 @router.post("/api/preview")
 def preview(body: PreviewBody, conn=Depends(get_conn), settings: Settings = Depends(get_settings)):
-    chk = check_tap(conn, settings, body.uid, body.ctr, body.cmac, consume=False)
+    chk = check_tap(conn, settings, body.uid, body.ctr, body.cmac, consume=False, picc_data=body.piccData, enc=body.enc)
     out = _tap_fields(chk)
     if chk.verdict == VALID and chk.seal_dead:
         out["verdict"] = NO_RESPONSE
@@ -162,7 +166,7 @@ def verify(body: VerifyBody, conn=Depends(get_conn), settings: Settings = Depend
             return {**base, "verdict": NONCE_INVALID, "counter": None, "serial": None, "serialHash": None, "uidHash": None,
                     "sealKind": None, "sealDead": None, "grade": g, "message": tap_message(NONCE_INVALID)}
         # 2.–5. key, CMAC, counter (advances), seal
-        chk = check_tap(conn, settings, body.uid, body.ctr, body.cmac, consume=True)
+        chk = check_tap(conn, settings, body.uid, body.ctr, body.cmac, consume=True, picc_data=body.piccData, enc=body.enc)
         verdict = chk.verdict
         if verdict == VALID and chk.seal_dead:
             verdict = NO_RESPONSE

@@ -48,7 +48,7 @@ def create_tag(body: TagBody, conn=Depends(get_conn), settings: Settings = Depen
     ts = now()
     uid_b = parse_uid(body.uid) if body.uid else (b"\x04" + os.urandom(6))
     uid_hex = uid_b.hex().upper()
-    key = key_for_uid(settings.key_mode, settings.master_key, uid_b)
+    key = key_for_uid(settings.key_mode, settings.master_key, uid_b, settings.sdm_derive)
     with transaction(conn):
         if body.serial and not get_passport(conn, body.serial):
             raise HTTPException(404, "passport not found")

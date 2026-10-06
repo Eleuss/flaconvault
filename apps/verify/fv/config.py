@@ -31,7 +31,8 @@ def _resolve(p: str | Path) -> Path:
 @dataclass
 class Settings:
     master_key_hex: str = "00000000000000000000000000000000"
-    key_mode: str = "factory"                              # factory | diversified
+    key_mode: str = "factory"                              # factory | diversified | sdmbackend
+    sdm_derive: str = "legacy"                             # FV_SDM_DERIVE for sdmbackend: legacy (NFC Developer App, sdm-backend default) | standard (derive.py)
     server_seed_hex: str = ""                              # 32 byte hex, REQUIRED
     server_key_id: int = 1
     dev_simulator: bool = True
@@ -56,8 +57,11 @@ class Settings:
 
     def __post_init__(self) -> None:
         self.key_mode = self.key_mode.strip().lower()
-        if self.key_mode not in ("factory", "diversified"):
-            raise ValueError(f"FV_KEY_MODE must be factory|diversified, got {self.key_mode!r}")
+        if self.key_mode not in ("factory", "diversified", "sdmbackend"):
+            raise ValueError(f"FV_KEY_MODE must be factory|diversified|sdmbackend, got {self.key_mode!r}")
+        self.sdm_derive = (self.sdm_derive or "legacy").strip().lower()
+        if self.sdm_derive not in ("legacy", "standard"):
+            raise ValueError(f"FV_SDM_DERIVE must be legacy|standard, got {self.sdm_derive!r}")
         mk = self.master_key_hex.strip().lower().removeprefix("0x")
         if len(mk) != 32 or any(c not in "0123456789abcdef" for c in mk):
             raise ValueError("FV_MASTER_KEY must be 16 bytes hex")
@@ -102,6 +106,7 @@ def settings_from_env() -> Settings:
     return Settings(
         master_key_hex=e("FV_MASTER_KEY") or "00000000000000000000000000000000",
         key_mode=e("FV_KEY_MODE") or "factory",
+        sdm_derive=e("FV_SDM_DERIVE") or "legacy",
         server_seed_hex=e("FV_SERVER_ED25519_SEED") or "",
         server_key_id=int(e("FV_SERVER_KEY_ID") or 1),
         dev_simulator=_bool(e("FV_DEV_SIMULATOR"), True),

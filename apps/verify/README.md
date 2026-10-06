@@ -26,7 +26,8 @@ uv run uvicorn fv.main:app --port 8787 --reload
 | Key | Default | Meaning |
 |---|---|---|
 | `FV_MASTER_KEY` | `00…00` (16 B hex) | Master key; factory mode ignores it |
-| `FV_KEY_MODE` | `factory` | `factory` = all-zero key · `diversified` = AN10922 `CMAC(K, 0x01‖UID‖APP_ID‖SYS_ID)` |
+| `FV_KEY_MODE` | `factory` | `factory` = all-zero key (plain mirror) · `diversified` = AN10922 `CMAC(K, 0x01‖UID‖APP_ID‖SYS_ID)` (plain mirror) · `sdmbackend` = encrypted SUN as written by the **NFC Developer App** / icedevml sdm-backend: meta read key `derive_undiversified_key(K, 1)`, file read key `derive_tag_key(K, uid, 2)` |
+| `FV_SDM_DERIVE` | `legacy` | sdmbackend derivation: `legacy` (`legacy_derive.py`, NFC Developer App) \| `standard` (`derive.py`) |
 | `FV_SERVER_ED25519_SEED` | — (required) | 32 B hex seed of the signing key |
 | `FV_SERVER_KEY_ID` | `1` | `key_id` in bundles / on-chain registry |
 | `FV_DEV_SIMULATOR` | `true` | enables `/api/dev/*` (404 otherwise) |
@@ -55,7 +56,7 @@ Hashes in responses are `0x` + lowercase hex (32 bytes); in the DB they are stor
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | `{ok, keyId, pubkeyHex, simulator, programId}` |
-| GET | `/t?uid&ctr&cmac` | Real tag landing. Checks CMAC + counter (**consumes**: advances `seals.last_counter`), logs a Tier-0 SCAN event when VALID and a `taps` row for every hit. `Accept: application/json` or `&format=json` → tap JSON; otherwise `302 → ${FV_WEB_URL}/t?tap=<tapId>` |
+| GET | `/t?uid&ctr&cmac` or `/t?picc_data&cmac[&enc]` | Real tag landing (plain mirror, or encrypted SUN from the NFC Developer App — `enc` is decrypted and ignored). Checks CMAC + counter (**consumes**: advances `seals.last_counter`), logs a Tier-0 SCAN event when VALID and a `taps` row for every hit. `Accept: application/json` or `&format=json` → tap JSON; otherwise `302 → ${FV_WEB_URL}/t?tap=<tapId>` |
 | GET | `/api/tap/<tapId>` | Stored tap `{tapId, ts, verdict, counter, uid, serial, serialHash, uidHash, sealKind, sealDead, message}` — the web `/t` page reads this, no second validation |
 | POST | `/api/session` | `{}` → `{nonce: "0x…", issuedAt, expiresAt, ttl}` (32 random bytes, single use) |
 | POST | `/api/preview` | `{uid, ctr, cmac}` → non-consuming check `{verdict, counter, serial, serialHash, uidHash, sealKind, sealDead, message}` |
@@ -85,7 +86,7 @@ Request:
   "attester": "<base58 pubkey>", "platform": "ANDROID_WEB" }
 ```
 
-`ctr` may be the 3-byte hex from the URL or an int. `indicators.uv` is forced to 3 (MISSING). `indicators.heat`
+`ctr` may be the 3-byte hex from the URL or an int. Encrypted tags send `piccData` (+ optional `enc`) and `cmac` instead of `uid`/`ctr` (same for `/api/preview`); the response then carries the decrypted `uid` and `counter`. `indicators.uv` is forced to 3 (MISSING). `indicators.heat`
 must equal `heatLevels[4]` when it is 0/1 (2 UNREADABLE / 3 MISSING are trusted as sent). `mediaHash` is
 required for tier ≥ 2 and ignored (zero hash) below. Optional: `tamper` (default 3), `note`.
 
@@ -122,6 +123,21 @@ to `POST /api/events` with the `txSig` after confirmation.
                 "status": "confirmed", "sealUidHash": null, "payload": { … }, "arBundle": null, "arMedia": null,
                 "gradeAfter": 0, "location": { "country": "DE", "city": "Düsseldorf" } } ] }
 ```
+
+## Hardware tags with the NFC Developer App
+
+NXP TagWriter cannot place the SDMMAC correctly, so tags are programmed with the **NFC Developer App**
+(nfcdeveloper.com, by the sdm-backend author) in its encrypted SUN mode:
+
+* URL to be programmed: `https://flaconvault.vercel.app/t` (the app appends `?picc_data=…&cmac=…`, with TagTamper `&enc=…`)
+* master key in the app = `FV_MASTER_KEY`, and `FV_KEY_MODE=sdmbackend` on the server. Tag keys are derived like
+  sdm-backend's `/tag` handler: meta read key = `derive_undiversified_key(K, 1)`, file read key = `derive_tag_key(K, uid, 2)`.
+  `FV_SDM_DERIVE` picks the derivation: `legacy` (default — `libsdm/legacy_derive.py`, pbkdf2-sha512, what the NFC
+  Developer App and sdm-backend's shipped `DERIVE_MODE="legacy"` use) or `standard` (`libsdm/derive.py`, 2023+).
+  If a real tag comes back INVALID, switch the derivation first. With an all-zero master key both derive null keys.
+
+The server accepts both tag URL forms on `GET /t`, and `piccData`/`enc`/`cmac` on `/api/preview` and `/api/verify`.
+Replay, seal lookup, verdicts and wording are identical to the plain-mirror path.
 
 ## Arweave (Irys devnet)
 

@@ -24,10 +24,12 @@ def _wants_json(request: Request) -> bool:
 
 @router.get("/t")
 def tag_landing(request: Request, uid: str | None = None, ctr: str | None = None, cmac: str | None = None,
+                picc_data: str | None = None, enc: str | None = None,
                 conn=Depends(get_conn), settings: Settings = Depends(get_settings)):
+    """Plain mirror: ?uid&ctr&cmac — encrypted SUN (NFC Developer App / sdm-backend `/tag`, `/tagtt`): ?picc_data&cmac[&enc]."""
     ts = now()
     with transaction(conn):
-        chk = check_tap(conn, settings, uid, ctr, cmac, consume=True)
+        chk = check_tap(conn, settings, uid, ctr, cmac, consume=True, picc_data=picc_data, enc=enc)
         message = tap_message(chk.verdict, chk.counter)
         tap = insert_tap(conn, ts=ts, source="t", uid_hex=chk.uid_hex, ctr=chk.counter, cmac=chk.cmac_hex,
                          verdict=chk.verdict, serial=chk.serial, message=message)

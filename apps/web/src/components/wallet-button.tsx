@@ -9,7 +9,7 @@ const MultiButton = dynamic(async () => (await import("@solana/wallet-adapter-re
 
 /** On Android, offer the Phantom app directly (Mobile Wallet Adapter deep link) next to the standard modal button. */
 export function WalletButton() {
-  const { wallets, select, connect, connected, wallet } = useWallet();
+  const { wallets, select, connected, wallet } = useWallet();
   const [android, setAndroid] = useState(false);
   useEffect(() => { setAndroid(/Android/i.test(navigator.userAgent)); }, []);
   const mwa = wallets.find((w) => w.adapter.name === SolanaMobileWalletAdapterWalletName);

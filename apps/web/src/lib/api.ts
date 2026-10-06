@@ -23,7 +23,7 @@ export interface Passport {
 export interface PassportListItem { serial: string; brand: string; name: string; grade: number; void: boolean; scanCount: number; lastEventTs: number | null }
 export interface Tap {
   tapId: number; verdict: string; counter: number | null; serial: string | null; serialHash: Hex32 | null;
-  uidHash: Hex32 | null; sealKind: number | null; sealDead: boolean; message: string; ts?: number;
+  uidHash: Hex32 | null; sealKind: number | null; sealDead: boolean; message: string; ts?: number; uid?: string | null;
 }
 
 async function get<T>(path: string): Promise<T | null> {

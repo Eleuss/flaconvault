@@ -40,6 +40,9 @@ export default async function TagLanding({ searchParams }: { searchParams: Recor
       {t.serial && (
         <p className="mt-2 text-sm text-muted">Pass <span className="mono text-ink">{t.serial}</span>{t.counter != null && <> · Zähler <span className="tabular text-ink">{t.counter}</span></>}</p>
       )}
+      {t.uid && (
+        <p className="mt-2 text-sm text-muted">Chip-UID <span className="mono select-all text-ink">{t.uid.toUpperCase()}</span>{t.verdict === "UNREGISTERED" && <> — in <Link href="/certify" className="link">/certify</Link> unter „Chip-UID“ eintragen</>}</p>
+      )}
       <div className="mt-8 flex flex-wrap gap-3">
         {t.serial && <Link href={`/p/${t.serial}`} className="btn">Pass mit Geschichte ansehen <ArrowRight className="h-4 w-4" aria-hidden /></Link>}
         {t.verdict === "VALID" && <Link href="/scan" className="btn-outline">Scan mit Foto bezeugen</Link>}

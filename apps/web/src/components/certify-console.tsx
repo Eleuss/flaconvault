@@ -18,6 +18,16 @@ interface Site { siteId: number; label: string }
 interface Registry { authority: string; partners: string[]; sites: Site[] }
 const labelOf = (bytes: number[]) => new TextDecoder().decode(new Uint8Array(bytes)).replace(/\0+$/, "");
 
+function friendly(e: unknown): string {
+  const m = (e as Error)?.message ?? String(e);
+  if (/prior credit|insufficient|0x1\b/i.test(m)) return "Diese Wallet hat kein SOL auf Devnet. Adresse (oben) an den Betreiber schicken oder „1 SOL Airdrop (Test)“ drücken.";
+  if (/rejected|declined|cancel|abgelehnt/i.test(m)) return "Signatur in der Wallet-App abgelehnt oder abgebrochen. Noch einmal drücken und in Phantom bestätigen.";
+  if (/not connected|wallet.*connect|No wallet/i.test(m)) return "Wallet ist nicht mehr verbunden. Oben neu verbinden.";
+  if (/ChunkLoadError|Loading chunk|dynamically imported module/i.test(m)) return "Seite ist veraltet (neue Version online). Seite neu laden und wiederholen.";
+  if (/429|Too Many Requests/i.test(m)) return "Devnet-RPC überlastet (429). 10 Sekunden warten, noch einmal drücken.";
+  return m;
+}
+
 export function CertifyConsole() {
   const { connection } = useConnection();
   const wallet = useWallet();
@@ -63,7 +73,7 @@ export function CertifyConsole() {
       const sig = Buffer.from(res.signature).toString("base64");
       setAsset(signer.publicKey.toString()); setTxs((t) => ({ ...t, core: sig }));
       note(`Core-Asset ${signer.publicKey.toString()} gemintet`);
-    } catch (e) { setError(`Core-Mint fehlgeschlagen (auf localnet fehlt das Core-Programm): ${(e as Error).message}`); }
+    } catch (e) { setError(`Core-Mint fehlgeschlagen: ${friendly(e)}`); }
     finally { setBusy(null); }
   };
   const airdrop = async () => {
@@ -86,7 +96,7 @@ export function CertifyConsole() {
       setTxs((t) => ({ ...t, mint: sig }));
       await api.events({ serial: form.serial, type: 0, txSig: sig, actor: wallet.publicKey.toBase58(), payload: { brand: form.brand, name: form.name, batch: form.batch, asset, issuerLabel: site?.label ?? null, siteId: form.siteId, bindingHash: bytesToHex(bh, true) } });
       note(`mint_passport ${form.serial} · ${sig.slice(0, 12)}…`);
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { setError(friendly(e)); }
     finally { setBusy(null); }
   };
 
@@ -102,7 +112,7 @@ export function CertifyConsole() {
       setTxs((t) => ({ ...t, seal: sig }));
       await api.events({ serial: form.serial, type: 1, txSig: sig, actor: wallet.publicKey.toBase58(), payload: { uid: form.uid.toUpperCase(), kind: form.kind, siteId: form.siteId } });
       note(`attach_seal ${form.uid.toUpperCase()} · ${sig.slice(0, 12)}…`);
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { setError(friendly(e)); }
     finally { setBusy(null); }
   };
 
@@ -111,7 +121,7 @@ export function CertifyConsole() {
     try {
       const t = await fetch(`${PUBLIC_VERIFY_URL}/api/dev/tag`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: form.kind }) }).then((r) => r.json());
       setForm((f) => ({ ...f, uid: t.uid })); setSimTags((s) => [...s, t]); note(`virtueller Tag ${t.uid}`);
-    } catch (e) { setError((e as Error).message); } finally { setBusy(null); }
+    } catch (e) { setError(friendly(e)); } finally { setBusy(null); }
   };
   const readNfc = async () => {
     const w = window as unknown as { NDEFReader?: new () => { scan: () => Promise<void>; onreading: ((ev: { serialNumber?: string }) => void) | null } };
@@ -128,7 +138,7 @@ export function CertifyConsole() {
       const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
       const a = document.createElement("a"); a.href = url; a.download = `Einlegekarte_${form.serial}.svg`; a.click();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
-    } catch (e) { setError((e as Error).message); } finally { setBusy(null); }
+    } catch (e) { setError(friendly(e)); } finally { setBusy(null); }
   };
 
   const field = (k: keyof typeof form, label: string, extra?: React.InputHTMLAttributes<HTMLInputElement>) => (
@@ -187,6 +197,9 @@ export function CertifyConsole() {
               <button onClick={usePlaceholder} className="btn-outline btn-sm">Platzhalter (localnet)</button>
               {asset && <span className="mono text-xs text-muted">Asset {asset.slice(0, 10)}…</span>}
             </div>
+            {!wallet.connected && <p className="mt-2 text-xs text-muted">Erst oben die Wallet verbinden, dann wird der Knopf aktiv.</p>}
+            {busy === "core" && <p className="mt-2 text-xs text-muted">Warte auf Bestätigung in der Wallet-App … Falls Phantom nicht von selbst aufgeht: App öffnen, Anfrage bestätigen, zurück zu Chrome.</p>}
+            {error && busy === null && <p className="mt-3 rounded-xl border border-bad/40 px-3 py-2 text-xs text-bad">{error}</p>}
           </section>
           <section className="card p-5">
             <p className="text-sm font-medium">2 · Pass anlegen (mint_passport)</p>

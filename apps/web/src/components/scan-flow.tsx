@@ -10,6 +10,7 @@ import { VisionClient, frameFromSource } from "@/vision/client";
 import { api, parseTagUrl, sha256Hex, type Preview, type Session, type SimTag, type TagParams } from "@/lib/verify-api";
 import { scanSession, tapHandoff } from "@/lib/handoff";
 import { buildRecordScanTx, flaconProgram, type VerifyResponse } from "@/lib/flacon";
+import { sendAsV0 } from "@/lib/send-tx";
 import { DEV_SIMULATOR, PROGRAM_ID } from "@/lib/config";
 import { gradeLetter, gradeSentence, indicatorText, txUrl, verdictText } from "@/lib/format";
 import { GradeMark, Lamp, Pill } from "./badges";
@@ -236,8 +237,7 @@ export function ScanFlow() {
     try {
       const program = flaconProgram(connection, anchorWallet);
       const { tx } = await buildRecordScanTx(program, wallet.publicKey, verify, { tier, role, siteId });
-      const sig = await wallet.sendTransaction(tx, connection);
-      await connection.confirmTransaction(sig, "confirmed");
+      const sig = await sendAsV0(wallet, connection, tx);
       setTxSig(sig);
       await api.events({ eventId: verify.eventId, txSig: sig, serial: verify.serial, type: 2 });
       setStep("done");

@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { Keypair, PublicKey, SystemProgram, type Transaction } from "@solana/web3.js";
+import { sendAsV0 } from "@/lib/send-tx";
 import { ArrowRight, Loader2, Printer, ShieldCheck } from "lucide-react";
 import { bindingHash, bytesToHex, serialHash, uidHash } from "@flaconvault/proof";
 import { flaconProgram, passportPda, registryPda, sealPda } from "@/lib/flacon";
@@ -84,17 +85,7 @@ export function CertifyConsole() {
   };
   const usePlaceholder = () => { const k = Keypair.generate().publicKey.toBase58(); setAsset(k); note(`Platzhalter-Asset ${k.slice(0, 8)}…`); };
 
-  // Mobile wallets (Solflare/Phantom via Mobile Wallet Adapter) sign and send in one step; Anchor's rpc() signs first and
-  // serialises afterwards, which came back without the signature on Android ("Missing signature for public key").
-  const sendViaWallet = async (tx: Transaction): Promise<string> => {
-    if (!wallet.publicKey) throw new Error("Wallet nicht verbunden");
-    tx.feePayer = wallet.publicKey;
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
-    tx.recentBlockhash = blockhash;
-    const sig = await wallet.sendTransaction(tx, connection, { preflightCommitment: "confirmed" });
-    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
-    return sig;
-  };
+  const sendViaWallet = (tx: Transaction) => sendAsV0(wallet, connection, tx);
 
   const mintPassport = async () => {
     if (!anchorWallet || !wallet.publicKey || !asset) return;

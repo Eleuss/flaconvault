@@ -91,6 +91,7 @@ export function CertifyConsole() {
     if (!anchorWallet || !wallet.publicKey || !asset) return;
     setBusy("mint"); setError(null);
     try {
+      if (!form.serial.trim() || !form.brand.trim() || !form.name.trim()) throw new Error("Seriennummer, Marke und Name müssen ausgefüllt sein (stehen im Pass)");
       if (!/^[0-9A-Fa-f]{14}$/.test(form.uid)) throw new Error("UID des ersten Siegels (7 Byte hex) wird für den binding_hash gebraucht");
       const program = flaconProgram(connection, anchorWallet);
       const sh = serialHash(form.serial), uh = uidHash(form.uid);

@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import { Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { ArrowRight, Loader2, Printer, ShieldCheck } from "lucide-react";
 import { bindingHash, bytesToHex, serialHash, uidHash } from "@flaconvault/proof";
 import { flaconProgram, passportPda, registryPda, sealPda } from "@/lib/flacon";
@@ -84,6 +84,18 @@ export function CertifyConsole() {
   };
   const usePlaceholder = () => { const k = Keypair.generate().publicKey.toBase58(); setAsset(k); note(`Platzhalter-Asset ${k.slice(0, 8)}…`); };
 
+  // Mobile wallets (Solflare/Phantom via Mobile Wallet Adapter) sign and send in one step; Anchor's rpc() signs first and
+  // serialises afterwards, which came back without the signature on Android ("Missing signature for public key").
+  const sendViaWallet = async (tx: Transaction): Promise<string> => {
+    if (!wallet.publicKey) throw new Error("Wallet nicht verbunden");
+    tx.feePayer = wallet.publicKey;
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+    tx.recentBlockhash = blockhash;
+    const sig = await wallet.sendTransaction(tx, connection, { preflightCommitment: "confirmed" });
+    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+    return sig;
+  };
+
   const mintPassport = async () => {
     if (!anchorWallet || !wallet.publicKey || !asset) return;
     setBusy("mint"); setError(null);
@@ -91,8 +103,9 @@ export function CertifyConsole() {
       if (!/^[0-9A-Fa-f]{14}$/.test(form.uid)) throw new Error("UID des ersten Siegels (7 Byte hex) wird für den binding_hash gebraucht");
       const program = flaconProgram(connection, anchorWallet);
       const sh = serialHash(form.serial), uh = uidHash(form.uid), bh = bindingHash(form.serial, form.batch, uh);
-      const sig = await program.methods.mintPassport(Array.from(sh), Array.from(bh), new PublicKey(asset))
-        .accountsStrict({ registry: registryPda(), passport: passportPda(sh), issuer: wallet.publicKey, systemProgram: SystemProgram.programId }).rpc();
+      const tx = await program.methods.mintPassport(Array.from(sh), Array.from(bh), new PublicKey(asset))
+        .accountsStrict({ registry: registryPda(), passport: passportPda(sh), issuer: wallet.publicKey, systemProgram: SystemProgram.programId }).transaction();
+      const sig = await sendViaWallet(tx);
       setTxs((t) => ({ ...t, mint: sig }));
       await api.events({ serial: form.serial, type: 0, txSig: sig, actor: wallet.publicKey.toBase58(), payload: { brand: form.brand, name: form.name, batch: form.batch, asset, issuerLabel: site?.label ?? null, siteId: form.siteId, bindingHash: bytesToHex(bh, true) } });
       note(`mint_passport ${form.serial} · ${sig.slice(0, 12)}…`);
@@ -107,8 +120,9 @@ export function CertifyConsole() {
       if (!/^[0-9A-Fa-f]{14}$/.test(form.uid)) throw new Error("UID muss 7 Byte hex sein");
       const program = flaconProgram(connection, anchorWallet);
       const sh = serialHash(form.serial), uh = uidHash(form.uid);
-      const sig = await program.methods.attachSeal(Array.from(uh), form.kind)
-        .accountsStrict({ registry: registryPda(), passport: passportPda(sh), seal: sealPda(uh), signer: wallet.publicKey, systemProgram: SystemProgram.programId }).rpc();
+      const tx = await program.methods.attachSeal(Array.from(uh), form.kind)
+        .accountsStrict({ registry: registryPda(), passport: passportPda(sh), seal: sealPda(uh), signer: wallet.publicKey, systemProgram: SystemProgram.programId }).transaction();
+      const sig = await sendViaWallet(tx);
       setTxs((t) => ({ ...t, seal: sig }));
       await api.events({ serial: form.serial, type: 1, txSig: sig, actor: wallet.publicKey.toBase58(), payload: { uid: form.uid.toUpperCase(), kind: form.kind, siteId: form.siteId } });
       note(`attach_seal ${form.uid.toUpperCase()} · ${sig.slice(0, 12)}…`);

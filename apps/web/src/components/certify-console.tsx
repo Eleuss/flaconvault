@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { Keypair, PublicKey, SystemProgram, type Transaction } from "@solana/web3.js";
-import { sendAsV0 } from "@/lib/send-tx";
+import { creatingSignature, sendAsV0 } from "@/lib/send-tx";
 import { ArrowRight, Loader2, Printer, ShieldCheck } from "lucide-react";
 import { bindingHash, bytesToHex, serialHash, uidHash } from "@flaconvault/proof";
 import { flaconProgram, passportPda, registryPda, sealPda } from "@/lib/flacon";
@@ -93,13 +93,26 @@ export function CertifyConsole() {
     try {
       if (!/^[0-9A-Fa-f]{14}$/.test(form.uid)) throw new Error("UID des ersten Siegels (7 Byte hex) wird für den binding_hash gebraucht");
       const program = flaconProgram(connection, anchorWallet);
-      const sh = serialHash(form.serial), uh = uidHash(form.uid), bh = bindingHash(form.serial, form.batch, uh);
-      const tx = await program.methods.mintPassport(Array.from(sh), Array.from(bh), new PublicKey(asset))
-        .accountsStrict({ registry: registryPda(), passport: passportPda(sh), issuer: wallet.publicKey, systemProgram: SystemProgram.programId }).transaction();
-      const sig = await sendViaWallet(tx);
+      const sh = serialHash(form.serial), uh = uidHash(form.uid);
+      let bh = bindingHash(form.serial, form.batch, uh);
+      const pda = passportPda(sh);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const existing = (await (program.account as any).passport.fetchNullable(pda)) as { issuer: PublicKey; asset: PublicKey; bindingHash: number[] } | null;
+      let sig: string, usedAsset = asset, recovered = false;
+      if (existing) {
+        // The passport is already on chain (e.g. the wallet app sent it but the answer never reached this page).
+        if (existing.issuer.toBase58() !== wallet.publicKey.toBase58()) throw new Error(`Pass ${form.serial} existiert bereits und gehört einer anderen Wallet (${existing.issuer.toBase58().slice(0, 8)}…)`);
+        usedAsset = existing.asset.toBase58(); bh = Uint8Array.from(existing.bindingHash);
+        sig = (await creatingSignature(connection, pda)) ?? "";
+        recovered = true; setAsset(usedAsset);
+      } else {
+        const tx = await program.methods.mintPassport(Array.from(sh), Array.from(bh), new PublicKey(asset))
+          .accountsStrict({ registry: registryPda(), passport: pda, issuer: wallet.publicKey, systemProgram: SystemProgram.programId }).transaction();
+        sig = await sendViaWallet(tx);
+      }
       setTxs((t) => ({ ...t, mint: sig }));
-      await api.events({ serial: form.serial, type: 0, txSig: sig, actor: wallet.publicKey.toBase58(), payload: { brand: form.brand, name: form.name, batch: form.batch, asset, issuerLabel: site?.label ?? null, siteId: form.siteId, bindingHash: bytesToHex(bh, true) } });
-      note(`mint_passport ${form.serial} · ${sig.slice(0, 12)}…`);
+      await api.events({ serial: form.serial, type: 0, txSig: sig, actor: wallet.publicKey.toBase58(), payload: { brand: form.brand, name: form.name, batch: form.batch, asset: usedAsset, issuerLabel: site?.label ?? null, siteId: form.siteId, bindingHash: bytesToHex(bh, true) } });
+      note(recovered ? `Pass ${form.serial} war schon auf der Chain · Protokoll nachgetragen (${sig.slice(0, 12)}…)` : `mint_passport ${form.serial} · ${sig.slice(0, 12)}…`);
     } catch (e) { setError(friendly(e)); }
     finally { setBusy(null); }
   };
@@ -111,12 +124,21 @@ export function CertifyConsole() {
       if (!/^[0-9A-Fa-f]{14}$/.test(form.uid)) throw new Error("UID muss 7 Byte hex sein");
       const program = flaconProgram(connection, anchorWallet);
       const sh = serialHash(form.serial), uh = uidHash(form.uid);
-      const tx = await program.methods.attachSeal(Array.from(uh), form.kind)
-        .accountsStrict({ registry: registryPda(), passport: passportPda(sh), seal: sealPda(uh), signer: wallet.publicKey, systemProgram: SystemProgram.programId }).transaction();
-      const sig = await sendViaWallet(tx);
+      const pda = sealPda(uh);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const existing = (await (program.account as any).seal.fetchNullable(pda)) as { passport: PublicKey } | null;
+      let sig: string, recovered = false;
+      if (existing) {
+        if (existing.passport.toBase58() !== passportPda(sh).toBase58()) throw new Error(`Dieses Siegel hängt schon an einem anderen Pass (${existing.passport.toBase58().slice(0, 8)}…)`);
+        sig = (await creatingSignature(connection, pda)) ?? ""; recovered = true;
+      } else {
+        const tx = await program.methods.attachSeal(Array.from(uh), form.kind)
+          .accountsStrict({ registry: registryPda(), passport: passportPda(sh), seal: pda, signer: wallet.publicKey, systemProgram: SystemProgram.programId }).transaction();
+        sig = await sendViaWallet(tx);
+      }
       setTxs((t) => ({ ...t, seal: sig }));
       await api.events({ serial: form.serial, type: 1, txSig: sig, actor: wallet.publicKey.toBase58(), payload: { uid: form.uid.toUpperCase(), kind: form.kind, siteId: form.siteId } });
-      note(`attach_seal ${form.uid.toUpperCase()} · ${sig.slice(0, 12)}…`);
+      note(recovered ? `Siegel war schon auf der Chain · Protokoll nachgetragen (${sig.slice(0, 12)}…)` : `attach_seal ${form.uid.toUpperCase()} · ${sig.slice(0, 12)}…`);
     } catch (e) { setError(friendly(e)); }
     finally { setBusy(null); }
   };

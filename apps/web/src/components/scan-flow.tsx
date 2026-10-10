@@ -126,14 +126,19 @@ export function ScanFlow() {
       setNfcState("Bereit — Siegel ans Handy halten …");
       reader.onreadingerror = () => setNfcState("Lesefehler — nochmal antippen");
       reader.onreading = (ev) => {
+        const seen: string[] = [];
         for (const rec of ev.message.records) {
-          if (rec.recordType === "url" && rec.data) {
-            const url = new TextDecoder().decode(rec.data);
-            const parsed = parseTagUrl(url);
+          if (!rec.data) { seen.push(rec.recordType); continue; }
+          // Any record type: decode as text and look for the sticker link (url / absolute-url / text / mime / unknown).
+          const text = new TextDecoder().decode(rec.data).replace(/\0/g, "");
+          seen.push(`${rec.recordType}: ${text.slice(0, 60)}`);
+          const candidates = [text, ...(text.match(/https?:\/\/[^\s"'<>]+/gi) ?? []), ...(/^[\w.-]+\.[a-z]{2,}\//i.test(text) ? [`https://${text}`] : [])];
+          for (const c of candidates) {
+            const parsed = parseTagUrl(c);
             if (parsed) { setNfcState(parsed.piccData ? "Gelesen: verschlüsselter Tap" : `Gelesen: …${parsed.uid.slice(-4)} · Zähler ${parseInt(parsed.ctr, 16)}`); onTag({ ...parsed, source: "nfc" }); return; }
           }
         }
-        setNfcState("Kein FlaconVault-Siegel (keine SUN-URL)");
+        setNfcState(seen.length ? `Kein FlaconVault-Siegel (keine SUN-URL). Gelesen: ${seen.join(" | ")}` : "Kein FlaconVault-Siegel (leerer NDEF)");
       };
     } catch (e) { setNfcState(`NFC: ${(e as Error).message}`); }
   };

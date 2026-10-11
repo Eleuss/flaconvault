@@ -78,3 +78,11 @@ iOS has no Mobile Wallet Adapter and Safari gets no injected wallet, so a Safari
 - The scan reaches step 8 in Safari (tap + camera + server signature), then offers **„In Phantom/Solflare fortsetzen“**. The state step 8 needs (`VerifyResponse`, tier, role, site) travels in `/scan?resume=<base64url>` because the wallet browser has its own storage (`apps/web/src/lib/wallet-links.ts`). Verified 2026-10-11 end to end (resume → sign → record_scan).
 - The same links appear on the wallet button of every page on iPhone (certify, market) when no wallet is injected.
 - Dev-Wallet A/B stay available for demos. A Safari Web Extension wallet (Glow, Nightly) would sign directly in Safari; Phantom/Solflare do not ship one.
+
+### One tap, then the scan (iPhone)
+
+A background NFC read lands on `/t?tap=<id>` ("Siegel echt · Tap N"). The button **„Zustand prüfen · Karte fotografieren“** opens `/scan?adopt=<id>`: the scan starts a session and **adopts that tap** (`POST /api/verify` with `tapId`; the server accepts it once, within 3 minutes, source `/t`, verdict VALID — `fv.service.adopt_tap`). No second tap. Scan steps are now 1 Sitzung · 2 Siegel · 3 Siegel geprüft · 4 Karte · 5 Indikatoren · 6 Verankern · 7 Fertig.
+
+### WalletConnect (sign from Safari without leaving it)
+
+`@solana/wallet-adapter-walletconnect` is wired in `solana-providers.tsx` and appears as "WalletConnect" once `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` (Reown Cloud project id, free at https://cloud.reown.com) is set on Vercel (`vercel env add NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID production`, then redeploy). On the phone the WalletConnect modal deep-links into Phantom/Solflare/Backpack, the user approves there, iOS returns to Safari and the signature arrives through the relay. Without the id the entry is simply absent; the "In Phantom/Solflare fortsetzen" links remain.

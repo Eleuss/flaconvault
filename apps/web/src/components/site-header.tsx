@@ -12,7 +12,7 @@ const links = [
 
 export function SiteHeader() {
   return (
-    <header className="border-b border-line bg-bg/80 backdrop-blur">
+    <header className="relative z-40 border-b border-line bg-bg/80 backdrop-blur">
       <div className="container-page flex h-14 items-center justify-between gap-3">
         <Link href="/" className="flex shrink-0 items-center gap-2.5 font-semibold tracking-tight" aria-label="FlaconVault Startseite">
           <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-ink">
@@ -25,10 +25,11 @@ export function SiteHeader() {
           {DEV_SIMULATOR && <Link href="/dev" className="rounded-full border border-line px-3 py-1 text-xs hover:border-ink hover:text-ink">Simulator</Link>}
           <WalletButton />
         </nav>
-        {/* mobile: compact menu, wallet inside */}
+        {/* mobile: compact menu, wallet inside. The header's backdrop-blur makes a stacking context; it must sit above
+            <main> (whose page-in animation makes one too), or the dropdown paints underneath and cannot be tapped. */}
         <details className="relative md:hidden">
           <summary className="btn-outline btn-sm list-none cursor-pointer" aria-label="Menü"><Menu className="h-4 w-4" aria-hidden /> Menü</summary>
-          <div className="absolute right-0 top-11 z-20 w-56 rounded-2xl border border-line bg-surface p-2 shadow-soft">
+          <div className="absolute right-0 top-11 z-50 w-56 rounded-2xl border border-line bg-surface p-2 shadow-soft">
             {links.map((l) => <Link key={l.href} href={l.href} className="block rounded-xl px-3 py-2 text-sm hover:bg-bg">{l.label}</Link>)}
             {DEV_SIMULATOR && <Link href="/dev" className="block rounded-xl px-3 py-2 text-sm hover:bg-bg">Simulator</Link>}
             {DEV_SIMULATOR && <Link href="/dev/vision" className="block rounded-xl px-3 py-2 text-sm hover:bg-bg">Indikatorlesung</Link>}

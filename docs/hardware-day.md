@@ -68,3 +68,13 @@ Since 2026-10-06 the whole flow runs on an iPhone: a tap opens `/t` in Safari; i
 ## Tag programming (what finally worked)
 
 NXP TagWriter placed the SDMMAC at offset 7 (over `https://`) in every mode we tried — do not use it for NTAG 424 DNA SUN. Use the **NFC Developer App** (Android/iOS): URL `https://flaconvault.vercel.app/t`, custom data empty, master key = `FV_MASTER_KEY` of the verifier (`FV_KEY_MODE=sdmbackend`, `FV_SDM_DERIVE=legacy`). The tag then sends `picc_data`/`cmac` (encrypted PICC data); the verifier decrypts. Verified live 2026-10-06 with chip `0438380ABD2390` → passport SN-2026-000006.
+
+
+## 9. iPhone wallet path (production)
+
+iOS has no Mobile Wallet Adapter and Safari gets no injected wallet, so a Safari page cannot ask Phantom/Solflare to sign. Both wallets document a **browse** universal link that opens a URL inside the wallet app's own browser, where `@solana/wallet-adapter` sees the injected wallet and signs natively:
+
+- Phantom: `https://phantom.com/ul/browse/<url>?ref=<ref>` · Solflare: `https://solflare.com/ul/v1/browse/<url>?ref=<ref>` (both URL-encoded, opened by a user tap).
+- The scan reaches step 8 in Safari (tap + camera + server signature), then offers **„In Phantom/Solflare fortsetzen“**. The state step 8 needs (`VerifyResponse`, tier, role, site) travels in `/scan?resume=<base64url>` because the wallet browser has its own storage (`apps/web/src/lib/wallet-links.ts`). Verified 2026-10-11 end to end (resume → sign → record_scan).
+- The same links appear on the wallet button of every page on iPhone (certify, market) when no wallet is injected.
+- Dev-Wallet A/B stay available for demos. A Safari Web Extension wallet (Glow, Nightly) would sign directly in Safari; Phantom/Solflare do not ship one.

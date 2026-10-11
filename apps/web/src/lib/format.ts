@@ -21,7 +21,14 @@ export const tierLabel: Record<number, string> = { [Tier.SIGHTING]: "Sichtung", 
 
 /** UI wording, briefing §16 — never "beschädigt", "zerstört", "NFT". */
 export function indicatorText(kind: "heat" | "humidity" | "uv", code: number): { label: string; detail: string | null; tone: "ok" | "warn" | "bad" | "none" } {
-  if (kind === "uv") return { label: "Licht", detail: "nicht bestückt (Rev D)", tone: "none" };
+  if (kind === "uv") {
+    switch (code) {
+      case Indicator.INTACT: return { label: "Licht", detail: "keine UV-Belastung erfasst", tone: "ok" };
+      case Indicator.TRIGGERED: return { label: "Licht", detail: "UV-Belastung erfasst — Duftstoffe altern unter Licht", tone: "warn" };
+      case Indicator.UNREADABLE: return { label: "Licht", detail: "nicht lesbar — Prüfung empfohlen", tone: "none" };
+      default: return { label: "Licht", detail: "nicht bestückt", tone: "none" };
+    }
+  }
   const name = kind === "heat" ? "Hitze" : "Feuchte";
   switch (code) {
     case Indicator.INTACT: return { label: name, detail: kind === "heat" ? "unter 40 °C" : "unter 60 % rF", tone: "ok" };

@@ -243,7 +243,7 @@ export function ScanFlow() {
       const r = reading && reading.found ? reading : null;
       const body = {
         uid: tag.uid || undefined, ctr: tag.ctr || undefined, cmac: tag.cmac, piccData: tag.piccData, enc: tag.enc, nonce: session.nonce, role, tier,
-        indicators: { heat: r ? r.heat : Indicator.MISSING, humidity: r ? r.humidity : Indicator.MISSING, uv: Indicator.MISSING },
+        indicators: { heat: r ? r.heat : Indicator.MISSING, humidity: r ? r.humidity : Indicator.MISSING, uv: r ? r.uv : Indicator.MISSING },
         heatLevels: r ? r.heatLevels : [0, 0, 0, 0, 0, 0], fill, mediaHash,
         serial: preview?.serial ?? undefined, location: { country: country || null, city: city || null },
         attester: wallet.publicKey?.toBase58() ?? null, platform: tag.source === "simulator" ? "SIMULATOR" : platform(),
@@ -405,7 +405,7 @@ export function ScanFlow() {
             <div className="mt-6 flex flex-wrap gap-2">
               <Pill tone={heatTxt.tone}>{heatTxt.label}: {heatTxt.detail}</Pill>
               <Pill tone={humTxt.tone}>{humTxt.label}: {humTxt.detail}</Pill>
-              <Pill tone="none">Licht: nicht bestückt (Rev D)</Pill>
+              {reading.uv === Indicator.MISSING ? <Pill tone="none">Licht: nicht bestückt</Pill> : <Pill tone={indicatorText("uv", reading.uv).tone}>{indicatorText("uv", reading.uv).label}: {indicatorText("uv", reading.uv).detail}</Pill>}
               {(reading.heat === Indicator.UNREADABLE || reading.humidity === Indicator.UNREADABLE) && <Pill tone="none">Prüfung empfohlen</Pill>}
             </div>
           )}

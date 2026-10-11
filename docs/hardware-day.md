@@ -40,6 +40,10 @@ Sticker on the **back** of the card (carrier-label position), card in the housin
 
 Photograph the strip on the card (daylight + artificial light) → `/dev/vision` → upload → compare the six ROIs in the warped card with the real fields → adjust `docs/heat_fields.json` (`fields[i].roi_mm`, `reference_colors`) → `node apps/web/scripts/copy-vendor.mjs` (or restart dev) → 10× series must agree 10/10. Check whether the 29 °C field is already dark (cosmetic only; the decision is field index 4 = 40 °C).
 
+### 6b. Physical card in the 3D-printed holder (no marker)
+
+The delivered Rev C card has no ArUco marker and no reference patches. `readCard` falls back to **frame mode** (`frame` section in `docs/heat_fields.json`): the holder's window (62.5 × 30.5 mm) gives the coarse homography, the blue heat label (seen through its 11 × 25.5 mm window) refines it on the card plane (the card sits ~1.8 mm below the holder face, so the window alone is parallax-shifted at oblique angles), white = card, black = ring around the humidity dot. Calibrate from phone photos: `sips -s format png --resampleWidth 1600 IMG.jpg --out a.png`, then `node packages/vision/scripts/calibrate.ts a.png` → prints the reading and writes `a.warped.png` with the ROIs drawn. Verified 2026-10-11 on three photos (daylight, room light, oblique): heat levels [1,1,1,0,0,0], 40 °C field intact, confidence ≈ 1.
+
 ## 7. Humidity dot
 
 Punch Ø 9 mm, stick it into the circle, check blue/pink against the printed patches in `/dev/vision` (ΔE values are shown).

@@ -17,6 +17,23 @@ export interface HeatFieldsConfig {
   qr_symbol?: { x: number; y: number; size: number; modules: number };
   patches_mm: { size: number; gap: number; y: number; groups: Record<"heat" | "uv" | "hum", number>; order: string[] };
   fields: Array<{ index: number; temp_c: number; decisive: boolean; roi_mm: RoiMm }>;
+  /** Physical Rev C card in its 3D-printed holder: the holder's window outline is the fiducial (no marker, no patches). */
+  frame?: FrameLayout;
+}
+export interface FrameLayout {
+  /** the visible card rectangle (holder window) in card mm, origin = card top-left */
+  window_mm: RoiMm;
+  /** the blue heat label as seen through its window (on the card plane; used as the main anchor) */
+  strip_mm: RoiMm;
+  /** per-layout overrides of reference_colors (e.g. this card's humidity dot colours) */
+  reference_colors?: Record<string, string>;
+  /** plain white card area used as the white reference */
+  white_ref_mm: RoiMm;
+  /** black reference: the printed ring around the humidity dot (annulus r0..r1 around its centre) */
+  black_ref: { cx: number; cy: number; r0: number; r1: number };
+  humidity_mm: { cx: number; cy: number; r: number; roi_r: number };
+  uv_mm: RoiMm;
+  fields: Array<{ index: number; temp_c: number; decisive: boolean; roi_mm: RoiMm }>;
 }
 
 export type Rgb = [number, number, number];
@@ -36,9 +53,11 @@ export interface CardReading {
   heat: number;
   humidity: number;
   humidityField: FieldReading | null;
-  uv: 3;
+  /** 0 INTACT · 1 TRIGGERED · 2 UNREADABLE · 3 MISSING (3 unless the layout carries a UV field) */
+  uv: number;
+  uvField?: FieldReading | null;
   confidence: { heat: number; humidity: number };
-  quality: { markerPx: number; qrUsed: boolean; anchors: string[]; groups: Record<"heat" | "hum", { greyL: number; whiteL: number; ok: boolean }> };
+  quality: { markerPx: number; qrUsed: boolean; anchors: string[]; groups: Record<"heat" | "hum", { greyL: number; whiteL: number; ok: boolean }>; mode?: "marker" | "frame" };
   homography: number[] | null;
   /** 660×340 RGBA card image when opts.preview is set */
   warped: FrameLike | null;

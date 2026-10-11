@@ -318,7 +318,7 @@ export function ScanFlow() {
             <div className="card p-4">
               <p className="flex items-center gap-2 text-sm font-medium"><Nfc className="h-4 w-4 text-amber" aria-hidden /> WebNFC (Android Chrome)</p>
               <button onClick={startNfc} className="btn-outline btn-sm mt-3">NFC-Lesen starten</button>
-              <p className="mt-2 break-words text-xs text-muted">{nfcState || "iPhone: Sitzung läuft — jetzt einfach das Siegel antippen. Safari öffnet /t, der Tap wird hierher übergeben; dann zurück zu diesem Tab."}</p>
+              <p className="mt-2 break-words text-xs text-muted">{nfcState || "Sitzung läuft — Siegel einfach ans Handy halten. Das Handy öffnet den Siegel-Link, der Tap wird hierher übergeben; dann zurück zu diesem Tab."}</p>
             </div>
             {DEV_SIMULATOR && (
               <div className="card p-4">

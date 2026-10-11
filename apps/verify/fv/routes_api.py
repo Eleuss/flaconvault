@@ -144,7 +144,7 @@ def verify(body: VerifyBody, conn=Depends(get_conn), settings: Settings = Depend
     heat = body.indicators.heat
     if heat in (Indicator.INTACT, Indicator.TRIGGERED) and heat != body.heatLevels[proof.HEAT_DECISIVE_INDEX]:
         raise HTTPException(422, "indicators.heat must equal heatLevels[4] (the 40 °C field)")
-    hum, uv, tamper = body.indicators.humidity, Indicator.MISSING, body.tamper
+    hum, uv, tamper = body.indicators.humidity, body.indicators.uv, body.tamper   # uv: read from the card since frame mode (Rev C holder)
     if body.tier >= 2:
         if not body.mediaHash:
             raise HTTPException(422, "mediaHash required for tier ≥ 2")

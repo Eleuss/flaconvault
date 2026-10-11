@@ -190,7 +190,7 @@ export function VisionLab() {
             <div className="flex flex-wrap gap-2">
               <Pill tone={heat.tone}>{heat.label}: {heat.detail}</Pill>
               <Pill tone={hum.tone}>{hum.label}: {hum.detail}</Pill>
-              <Pill tone="none">Licht: nicht bestückt (Rev D)</Pill>
+              <Pill tone="none">Licht: {reading?.found && reading.uv !== 3 ? indicatorText("uv", reading.uv).detail : "nicht bestückt"}</Pill>
             </div>
             <div className="mt-4 grid grid-cols-6 gap-2">
               {HEAT_FIELDS_C.map((c, i) => {

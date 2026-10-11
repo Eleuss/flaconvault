@@ -366,7 +366,10 @@ export function ScanFlow() {
           <div className="mt-6 grid gap-6 md:grid-cols-2">
             <div className="card p-4">
               <p className="flex items-center gap-2 text-sm font-medium"><Nfc className="h-4 w-4 text-amber" aria-hidden /> WebNFC (Android Chrome)</p>
-              <button onClick={startNfc} className="btn-outline btn-sm mt-3">NFC-Lesen starten</button>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button onClick={startNfc} className="btn-outline btn-sm">NFC-Lesen starten</button>
+                <button onClick={() => { nfcAbort.current?.abort(); setTag(null); setStep("dead"); }} className="btn-outline btn-sm" title="Siegel getrennt oder entfernt — als SEAL_DEAD melden"><ShieldOff className="h-3.5 w-3.5" aria-hidden /> Siegel antwortet nicht</button>
+              </div>
               <p className="mt-2 break-words text-xs text-muted">{nfcState || "Sitzung läuft — Siegel einfach ans Handy halten. Das Handy öffnet den Siegel-Link, der Tap wird hierher übergeben; dann zurück zu diesem Tab."}</p>
             </div>
             {DEV_SIMULATOR && (

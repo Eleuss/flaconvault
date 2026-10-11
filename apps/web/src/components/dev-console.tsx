@@ -41,27 +41,27 @@ export function DevConsole() {
 
   async function run(label: string, fn: () => Promise<void>) {
     setBusy(label);
-    try { await fn(); } catch (e) { push(`Fehler: ${(e as Error).message}`, "bad"); } finally { setBusy(null); await refresh(); }
+    try { await fn(); } catch (e) { push(`Error: ${(e as Error).message}`, "bad"); } finally { setBusy(null); await refresh(); }
   }
   const createTag = () => run("create", async () => {
     const t = await api<SimTag>("/api/dev/tag", { serial: serial || undefined, kind });
-    push(`Tag ${t.uid} angelegt${t.serial ? ` · Siegel an ${t.serial}` : " · nicht registriert"}`, "ok");
+    push(`Tag ${t.uid} created${t.serial ? ` · seal on ${t.serial}` : " · unregistered"}`, "ok");
   });
   const tap = (uid: string) => run(`tap-${uid}`, async () => {
     const r = await api<TapResult>("/api/dev/tap", { uid });
-    if (r.responds) push(`Tap ${uid} · Zähler ${r.ctr} · CMAC ${r.cmac}`, "ok", r.url);
-    else push(`Tap ${uid} · Siegel antwortet nicht`, "bad", r.url);
+    if (r.responds) push(`Tap ${uid} · counter ${r.ctr} · CMAC ${r.cmac}`, "ok", r.url);
+    else push(`Tap ${uid} · seal not responding`, "bad", r.url);
   });
-  const kill = (uid: string) => run(`kill-${uid}`, async () => { await api("/api/dev/kill", { uid }); push(`Antenne von ${uid} getrennt`, "bad"); });
-  const revive = (uid: string) => run(`revive-${uid}`, async () => { await api("/api/dev/revive", { uid }); push(`${uid} antwortet wieder`, "ok"); });
-  const reset = () => run("reset", async () => { await api("/api/dev/reset", {}); setLog([]); push("Datenbank zurückgesetzt und neu geseedet", "none"); });
+  const kill = (uid: string) => run(`kill-${uid}`, async () => { await api("/api/dev/kill", { uid }); push(`Antenna of ${uid} separated`, "bad"); });
+  const revive = (uid: string) => run(`revive-${uid}`, async () => { await api("/api/dev/revive", { uid }); push(`${uid} responds again`, "ok"); });
+  const reset = () => run("reset", async () => { await api("/api/dev/reset", {}); setLog([]); push("Database reset and re-seeded", "none"); });
 
-  if (health === undefined) return <p className="mt-8 flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Verbinde mit {PUBLIC_VERIFY_URL} …</p>;
+  if (health === undefined) return <p className="mt-8 flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Connecting to {PUBLIC_VERIFY_URL} …</p>;
   if (health === null) return (
     <div className="card mt-8 p-5 text-sm">
-      <p className="font-medium text-bad">Verifikationsserver nicht erreichbar</p>
-      <p className="mt-1 text-muted">{PUBLIC_VERIFY_URL} — starten mit <code className="mono">cd apps/verify && uv run uvicorn fv.main:app --port 8787</code>{error ? ` (${error})` : ""}</p>
-      <button onClick={refresh} className="btn-outline btn-sm mt-3">Erneut versuchen</button>
+      <p className="font-medium text-bad">Verification server unreachable</p>
+      <p className="mt-1 text-muted">{PUBLIC_VERIFY_URL} — start it with <code className="mono">cd apps/verify && uv run uvicorn fv.main:app --port 8787</code>{error ? ` (${error})` : ""}</p>
+      <button onClick={refresh} className="btn-outline btn-sm mt-3">Try again</button>
     </div>
   );
 
@@ -69,16 +69,16 @@ export function DevConsole() {
     <div className="mt-8 grid gap-8 lg:grid-cols-[1fr_380px]">
       <div>
         <div className="card p-4">
-          <p className="text-sm font-medium">Neues virtuelles Siegel</p>
+          <p className="text-sm font-medium">New virtual seal</p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <select value={serial} onChange={(e) => setSerial(e.target.value)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
-              <option value="">— nicht registriert —</option>
+              <option value="">— unregistered —</option>
               {passports.map((p) => <option key={p.serial} value={p.serial}>{p.serial} · {p.brand} {p.name}</option>)}
             </select>
             <select value={kind} onChange={(e) => setKind(Number(e.target.value))} className="rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
-              <option value={1}>Hals</option><option value={0}>Packung</option>
+              <option value={1}>Neck</option><option value={0}>Box</option>
             </select>
-            <button onClick={createTag} disabled={busy !== null} className="btn btn-sm"><Plus className="h-3.5 w-3.5" aria-hidden /> Anlegen</button>
+            <button onClick={createTag} disabled={busy !== null} className="btn btn-sm"><Plus className="h-3.5 w-3.5" aria-hidden /> Create</button>
           </div>
         </div>
 
@@ -88,35 +88,35 @@ export function DevConsole() {
               <Lamp tone={t.alive ? "ok" : "bad"} />
               <span className="mono w-32">{t.uid}</span>
               <span className="min-w-0 flex-1 text-sm text-muted">
-                {t.serial ? <Link href={`/p/${t.serial}`} className="link text-ink">{t.serial}</Link> : "nicht registriert"}
-                {t.kind != null && <> · {t.kind === 0 ? "Packung" : "Hals"}</>} · Zähler <span className="tabular">{t.counter}</span>
+                {t.serial ? <Link href={`/p/${t.serial}`} className="link text-ink">{t.serial}</Link> : "unregistered"}
+                {t.kind != null && <> · {t.kind === 0 ? "Box" : "Neck"}</>} · counter <span className="tabular">{t.counter}</span>
               </span>
               <span className="flex gap-1.5">
                 <button onClick={() => tap(t.uid)} disabled={busy !== null} className="btn btn-sm"><Zap className="h-3.5 w-3.5" aria-hidden /> Tap</button>
                 {t.alive
-                  ? <button onClick={() => kill(t.uid)} disabled={busy !== null} className="btn-outline btn-sm" title="Antenne reißt = mechanischer Tamper"><Skull className="h-3.5 w-3.5" aria-hidden /> Kill</button>
+                  ? <button onClick={() => kill(t.uid)} disabled={busy !== null} className="btn-outline btn-sm" title="Antenna tears = mechanical tamper"><Skull className="h-3.5 w-3.5" aria-hidden /> Kill</button>
                   : <button onClick={() => revive(t.uid)} disabled={busy !== null} className="btn-outline btn-sm"><Sparkles className="h-3.5 w-3.5" aria-hidden /> Revive</button>}
               </span>
             </li>
           ))}
-          {tags.length === 0 && <li className="py-6 text-sm text-muted">Noch keine virtuellen Tags.</li>}
+          {tags.length === 0 && <li className="py-6 text-sm text-muted">No virtual tags yet.</li>}
         </ul>
         <div className="mt-4 flex items-center justify-between text-xs text-muted">
-          <span>Server-Key #{health.keyId} · <span className="mono">{health.pubkeyHex.slice(0, 16)}…</span> · Programm {health.programId ? <span className="mono">{health.programId.slice(0, 8)}…</span> : "nicht gesetzt"}</span>
+          <span>Server-Key #{health.keyId} · <span className="mono">{health.pubkeyHex.slice(0, 16)}…</span> · program {health.programId ? <span className="mono">{health.programId.slice(0, 8)}…</span> : "not set"}</span>
           <button onClick={reset} disabled={busy !== null} className="btn-outline btn-sm"><RotateCcw className="h-3.5 w-3.5" aria-hidden /> Reset + Seed</button>
         </div>
       </div>
 
       <aside>
-        <p className="eyebrow">Letzte Taps</p>
+        <p className="eyebrow">Recent taps</p>
         <ol className="mt-3 space-y-3">
-          {log.length === 0 && <li className="text-sm text-muted">Ein Tap erzeugt hier eine SUN-URL. „Im /t öffnen“ ruft sie so auf, wie ein Handy es täte.</li>}
+          {log.length === 0 && <li className="text-sm text-muted">A tap creates a SUN URL here. “Open in /t” calls it the way a phone would.</li>}
           {log.map((l) => (
             <li key={l.t} className="card p-3 text-xs">
               <div className="flex items-center gap-2"><Lamp tone={l.tone} /><span className="break-all">{l.text}</span></div>
               {l.url && (
                 <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <a href={l.url} className="btn btn-sm">Im /t öffnen</a>
+                  <a href={l.url} className="btn btn-sm">Open in /t</a>
                   <span className="mono break-all text-muted">{l.url.replace(/^https?:\/\/[^/]+/, "")}</span>
                 </div>
               )}

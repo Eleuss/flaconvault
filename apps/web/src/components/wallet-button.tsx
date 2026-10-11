@@ -28,12 +28,12 @@ export function WalletButton() {
     <span className="inline-flex flex-wrap items-center gap-2">
       <MultiButton />
       {android && mwa && !connected && wallet?.adapter.name !== mwa.adapter.name && (
-        <button onClick={viaApp} className="btn btn-sm">Phantom-App</button>
+        <button onClick={viaApp} className="btn btn-sm">Phantom app</button>
       )}
       {iosLinks && (
         <>
-          <a href={iosLinks.phantom} className="btn btn-sm">In Phantom öffnen</a>
-          <a href={iosLinks.solflare} className="btn-outline btn-sm">In Solflare öffnen</a>
+          <a href={iosLinks.phantom} className="btn btn-sm">Open in Phantom</a>
+          <a href={iosLinks.solflare} className="btn-outline btn-sm">Open in Solflare</a>
         </>
       )}
     </span>

@@ -5,10 +5,10 @@ from fv import strings
 
 
 def test_tap_messages():
-    assert strings.tap_message("VALID", 14) == "Siegel echt · Tap 14"
-    assert strings.tap_message("NO_RESPONSE") == "Siegel antwortet nicht"
-    assert strings.HEAT_TRIGGERED.startswith("Hitze: über 40 °C erfasst")
-    assert strings.HUMIDITY_TRIGGERED.startswith("Feuchte: über 60 % rF erfasst")
+    assert strings.tap_message("VALID", 14) == "Seal genuine · tap 14"
+    assert strings.tap_message("NO_RESPONSE") == "Seal not responding"
+    assert strings.HEAT_TRIGGERED.startswith("Heat: above 40 °C recorded")
+    assert strings.HUMIDITY_TRIGGERED.startswith("Humidity: above 60 % RH recorded")
 
 
 def test_no_forbidden_words():

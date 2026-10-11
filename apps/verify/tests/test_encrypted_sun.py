@@ -81,7 +81,7 @@ def test_t_preview_verify_with_picc_data(client, vectors):
     r = client.get(f"/t?picc_data={SUN2['picc']}&enc={SUN2['enc']}&cmac={SUN2['cmac']}", headers={"Accept": "application/json"}).json()
     assert r["verdict"] == "UNREGISTERED" and r["counter"] == 8 and r["uid"] == "04958CAA5C5E80"
     r = client.get(f"/t?picc_data={SUN1['picc']}&cmac={SUN1['cmac']}", headers={"Accept": "application/json"}).json()
-    assert r["verdict"] == "VALID" and r["counter"] == 61 and r["serial"] == "SN-2026-000002" and r["message"] == "Siegel echt · Tap 61"
+    assert r["verdict"] == "VALID" and r["counter"] == 61 and r["serial"] == "SN-2026-000002" and r["message"] == "Seal genuine · tap 61"
     r2 = client.get(f"/t?picc_data={SUN1['picc']}&cmac={SUN1['cmac']}&format=json").json()
     assert r2["verdict"] == "REPLAY" and r2["counter"] == 61
     r3 = client.get(f"/t?picc_data={SUN1['picc']}&cmac={SUN1['cmac']}", follow_redirects=False)

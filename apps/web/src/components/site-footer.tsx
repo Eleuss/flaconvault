@@ -2,8 +2,8 @@ export function SiteFooter() {
   return (
     <footer className="hairline mt-16">
       <div className="container-page flex flex-col gap-2 py-8 text-xs text-muted sm:flex-row sm:items-center sm:justify-between">
-        <p>FlaconVault · Handhabungs- und Herkunftsnachweis für Parfümflakons · Solana Devnet</p>
-        <p>Der Chip beweist Echtheit. Die Kette macht es übertragbar.</p>
+        <p>FlaconVault · Handling and provenance record for perfume bottles · Solana Devnet</p>
+        <p>The chip proves authenticity. The chain makes it transferable.</p>
       </div>
     </footer>
   );

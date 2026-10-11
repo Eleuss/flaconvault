@@ -15,7 +15,7 @@ const icons: Record<number, LucideIcon> = {
 };
 
 export function Timeline({ events }: { events: PassportEvent[] }) {
-  if (events.length === 0) return <p className="text-sm text-muted">Noch keine Einträge.</p>;
+  if (events.length === 0) return <p className="text-sm text-muted">No entries yet.</p>;
   return (
     <ol className="relative border-l border-line pl-6">
       {events.map((e) => {
@@ -30,7 +30,7 @@ export function Timeline({ events }: { events: PassportEvent[] }) {
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
               <span className="tabular text-xs text-muted">{fmtDate(e.ts)}</span>
               <span className="font-medium">{title}</span>
-              {e.status !== "confirmed" && <span className="rounded-full border border-line px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted">{e.status === "pending" ? "wartet auf Bestätigung" : "fehlgeschlagen"}</span>}
+              {e.status !== "confirmed" && <span className="rounded-full border border-line px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted">{e.status === "pending" ? "awaiting confirmation" : "failed"}</span>}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
               {details.map((d, i) => <span key={i}>{i > 0 && <span className="mr-2 opacity-50">·</span>}{d}</span>)}
@@ -42,8 +42,8 @@ export function Timeline({ events }: { events: PassportEvent[] }) {
             <div className="mt-2 flex items-center gap-3 text-xs">
               {e.gradeAfter != null && <span className="inline-flex items-center gap-1.5 text-muted">Grade <GradeMark grade={e.gradeAfter} size="sm" /></span>}
               {e.txSig && <a href={txUrl(e.txSig)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink">tx <ExternalLink className="h-3 w-3" aria-hidden /></a>}
-              {e.arMedia && <a href={arUrl(e.arMedia)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink"><Camera className="h-3 w-3" aria-hidden /> Foto</a>}
-              {e.arBundle && <a href={arUrl(e.arBundle)} target="_blank" rel="noreferrer" className="text-muted hover:text-ink">Bündel</a>}
+              {e.arMedia && <a href={arUrl(e.arMedia)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink"><Camera className="h-3 w-3" aria-hidden /> Photo</a>}
+              {e.arBundle && <a href={arUrl(e.arBundle)} target="_blank" rel="noreferrer" className="text-muted hover:text-ink">Bundle</a>}
             </div>
           </li>
         );

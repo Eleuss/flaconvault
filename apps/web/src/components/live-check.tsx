@@ -23,7 +23,7 @@ function decodePassport(data: Uint8Array, pda: string): OnChain {
 export function LiveCheck({ serialHashHex, serverGrade, serverScanCount }: { serialHashHex: string; serverGrade: number; serverScanCount: number }) {
   const [state, setState] = useState<{ status: "idle" | "loading" | "ok" | "missing" | "error"; data?: OnChain; error?: string }>({ status: "idle" });
   if (!PROGRAM_ID) {
-    return <p className="text-xs text-muted">Live-Prüfung: Programm noch nicht auf Devnet deployt.</p>;
+    return <p className="text-xs text-muted">Live check: program not yet deployed to devnet.</p>;
   }
   async function run() {
     setState({ status: "loading" });
@@ -43,18 +43,18 @@ export function LiveCheck({ serialHashHex, serverGrade, serverScanCount }: { ser
     <div className="flex flex-col gap-2">
       <button onClick={run} className="btn-outline btn-sm self-start" disabled={state.status === "loading"}>
         {state.status === "loading" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <CircleDashed className="h-3.5 w-3.5" aria-hidden />}
-        Live on-chain prüfen
+        Check live on-chain
       </button>
       {state.status === "ok" && d && (
         <p className="flex flex-wrap items-center gap-x-2 text-xs text-muted">
           <CheckCircle2 className="h-3.5 w-3.5 text-ok" aria-hidden />
-          Passport-PDA gelesen: Grade {GradeName[d.grade]} · {d.scanCount} Scans · {d.sealCount} Siegel{d.void ? " · VOID" : ""}
-          {d.grade === serverGrade && d.scanCount === serverScanCount ? " · stimmt mit dem Server überein" : " · weicht vom Server ab"}
+          Passport PDA read: Grade {GradeName[d.grade]} · {d.scanCount} scans · {d.sealCount} seals{d.void ? " · VOID" : ""}
+          {d.grade === serverGrade && d.scanCount === serverScanCount ? " · matches the server" : " · differs from the server"}
           <a className="link" href={addrUrl(d.pda)} target="_blank" rel="noreferrer">Explorer</a>
         </p>
       )}
-      {state.status === "missing" && d && <p className="text-xs text-muted">Kein Passport-Konto unter <span className="mono">{d.pda}</span> — dieser Pass ist noch nicht on-chain.</p>}
-      {state.status === "error" && <p className="text-xs text-bad">RPC-Fehler: {state.error}</p>}
+      {state.status === "missing" && d && <p className="text-xs text-muted">No passport account at <span className="mono">{d.pda}</span> — this passport is not on-chain yet.</p>}
+      {state.status === "error" && <p className="text-xs text-bad">RPC error: {state.error}</p>}
     </div>
   );
 }

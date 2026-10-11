@@ -63,7 +63,7 @@ def test_full_simulated_flow(client, vectors, monkeypatch):
     assert b["seal"] == {"kind": "NECK", "uidHash": v["uidHash"]} and b["attester"] == {"role": 1, "tier": 2, "pubkey": SELLER}
     assert b["media"][0]["sha256"] == MEDIA and b["session"]["nonce"] == nonce and b["indicators"]["uv"] == 3
     assert proof.bundle_hash(proof.canonical_json(b)).hex() == v["bundleHash"][2:]
-    assert v["message"] == "Siegel echt · Tap 1"
+    assert v["message"] == "Seal genuine · tap 1"
 
     # same tap again → REPLAY, unsigned, HTTP 200
     r = client.post("/api/verify", json=_body(tap, _nonce(client)))
@@ -120,14 +120,14 @@ def test_full_simulated_flow(client, vectors, monkeypatch):
     nr = client.post("/api/dev/tap", json={"uid": tag["uid"]}).json()
     assert nr["responds"] is False and nr["url"] == f"http://web.test/t?tap={nr['tapId']}"
     t = client.get(f"/api/tap/{nr['tapId']}").json()
-    assert t["verdict"] == "NO_RESPONSE" and t["serial"] == SERIAL and t["message"] == "Siegel antwortet nicht"
+    assert t["verdict"] == "NO_RESPONSE" and t["serial"] == SERIAL and t["message"] == "Seal not responding"
     assert client.post("/api/dev/revive", json={"uid": tag["uid"]}).json()["alive"] is True
 
     # /t with a valid URL (json) → VALID + counter; same URL again → REPLAY; HTML → 302 to the web app
     tap3 = client.post("/api/dev/tap", json={"uid": tag["uid"]}).json()
     r = client.get(tap3["url"], headers={"Accept": "application/json"})
     assert r.status_code == 200 and r.json()["verdict"] == "VALID" and r.json()["counter"] == tap3["ctr"]
-    assert r.json()["serial"] == SERIAL and r.json()["message"] == f"Siegel echt · Tap {tap3['ctr']}"
+    assert r.json()["serial"] == SERIAL and r.json()["message"] == f"Seal genuine · tap {tap3['ctr']}"
     assert client.get(f"/api/tap/{r.json()['tapId']}").json() == r.json()
     r2 = client.get(tap3["url"] + "&format=json")
     assert r2.json()["verdict"] == "REPLAY"

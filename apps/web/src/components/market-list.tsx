@@ -49,27 +49,27 @@ export function MarketList() {
 
   return (
     <div className="page-in container-page py-10">
-      <p className="eyebrow">Markt · Escrow auf Devnet-USDC</p>
-      <h1 className="mt-3 font-serif text-4xl">Handover mit Escrow</h1>
-      <p className="mt-2 max-w-2xl text-sm text-muted">Listing → Reservierung (USDC im Vault) → Versand-Scan → Versand → Empfangs-Scan → Freigabe. Geld fließt erst, wenn Verkäufer-Scan vor Versand und Käufer-Scan nach Empfang übereinstimmen.</p>
-      {configOk === false && <p className="mt-4 rounded-xl border border-line px-4 py-3 text-sm text-muted">Escrow-Konfiguration fehlt auf dieser Cluster — <code className="mono">scripts/seed-escrow.ts</code> ausführen.</p>}
+      <p className="eyebrow">Market · escrow in devnet USDC</p>
+      <h1 className="mt-3 font-serif text-4xl">Handover with escrow</h1>
+      <p className="mt-2 max-w-2xl text-sm text-muted">Listing → reservation (USDC in the vault) → shipping scan → shipped → receiving scan → release. Money only moves when the seller’s scan before shipping and the buyer’s scan after receipt agree.</p>
+      {configOk === false && <p className="mt-4 rounded-xl border border-line px-4 py-3 text-sm text-muted">Escrow config missing on this cluster — run <code className="mono">scripts/seed-escrow.ts</code>.</p>}
       {error && <p className="mt-4 rounded-xl border border-bad/40 px-4 py-3 text-sm text-bad">{error}</p>}
 
       <section className="card mt-8 p-5">
-        <p className="flex items-center gap-2 text-sm font-medium"><Tag className="h-4 w-4 text-amber" aria-hidden /> Listing anlegen (Verkäufer)</p>
+        <p className="flex items-center gap-2 text-sm font-medium"><Tag className="h-4 w-4 text-amber" aria-hidden /> Create listing (seller)</p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <select value={form.serial} onChange={(e) => setForm({ ...form, serial: e.target.value })} className="rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
-            <option value="">— Pass wählen —</option>
+            <option value="">— Choose passport —</option>
             {passports.filter((p) => !p.void).map((p) => <option key={p.serial} value={p.serial}>{p.serial} · {p.brand} {p.name}</option>)}
           </select>
-          <label className="text-sm text-muted">Preis <input value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} inputMode="decimal" className="ml-1 w-24 rounded-full border border-line bg-surface px-3 py-1.5 text-sm tabular" /> USDC</label>
-          {wallet.connected ? <button onClick={list} disabled={busy || !form.serial || configOk === false} className="btn btn-sm">{busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Listen</button> : <WalletButton />}
+          <label className="text-sm text-muted">Price <input value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} inputMode="decimal" className="ml-1 w-24 rounded-full border border-line bg-surface px-3 py-1.5 text-sm tabular" /> USDC</label>
+          {wallet.connected ? <button onClick={list} disabled={busy || !form.serial || configOk === false} className="btn btn-sm">{busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} List</button> : <WalletButton />}
         </div>
       </section>
 
       <section className="mt-8">
-        <p className="eyebrow">Angebote</p>
-        {orders === null ? <p className="mt-3 flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Lade Orders …</p> : orders.length === 0 ? <p className="mt-3 text-sm text-muted">Noch keine Listings.</p> : (
+        <p className="eyebrow">Offers</p>
+        {orders === null ? <p className="mt-3 flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Loading orders …</p> : orders.length === 0 ? <p className="mt-3 text-sm text-muted">No listings yet.</p> : (
           <ul className="mt-3 divide-y divide-line border-y border-line">
             {orders.map((o) => {
               const p = serialByPassport.get(o.passport.toBase58());
@@ -80,9 +80,9 @@ export function MarketList() {
                     <GradeMark grade={p ? (p.void ? 4 : p.grade) : null} size="sm" />
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-medium">{p ? `${p.brand} · ${p.name}` : short(o.passport.toBase58())}</p>
-                      <p className="mono text-muted">{serial} · Verkäufer {short(o.seller.toBase58())}{o.buyer ? ` · Käufer ${short(o.buyer.toBase58())}` : ""}</p>
+                      <p className="mono text-muted">{serial} · seller {short(o.seller.toBase58())}{o.buyer ? ` · buyer ${short(o.buyer.toBase58())}` : ""}</p>
                     </div>
-                    <p className="tabular text-sm">{o.priceUsdc.toLocaleString("de-DE")} USDC</p>
+                    <p className="tabular text-sm">{o.priceUsdc.toLocaleString("en-US")} USDC</p>
                     <Pill tone={orderStateTone(o.state)}>{orderStateLabel[o.state]}</Pill>
                     <ArrowRight className="h-4 w-4 text-muted" aria-hidden />
                   </Link>

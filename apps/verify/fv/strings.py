@@ -1,30 +1,35 @@
 """
 UI strings (briefing §16, binding). The seal is a handling and provenance record, not a damage
-record — never "beschädigt", "zerstört", "ruiniert", "NFT", "tokenisiert".
+record — never "damaged", "destroyed", "ruined", "NFT", "tokenized" (nor the German equivalents
+"beschädigt", "zerstört", "ruiniert", "tokenisiert").
 """
 from __future__ import annotations
 
 from fv.enums import INVALID, NONCE_INVALID, NO_RESPONSE, REPLAY, UNREGISTERED, VALID
 
-SEAL_VALID = "Siegel echt · Tap {n}"
-SEAL_NO_RESPONSE = "Siegel antwortet nicht"
-SEAL_REPLAY = "Tap bereits verwendet · Zähler {n}"
-SEAL_INVALID = "Siegel nicht bestätigt"
-SEAL_UNREGISTERED = "Chip echt · Siegel nicht registriert · Tap {n}"
-SESSION_INVALID = "Sitzung abgelaufen · bitte neu starten"
+SEAL_VALID = "Seal genuine · tap {n}"
+SEAL_NO_RESPONSE = "Seal not responding"
+SEAL_REPLAY = "Repeated tap · counter {n}"
+SEAL_INVALID = "Seal not confirmed"
+SEAL_UNREGISTERED = "Chip genuine · seal not assigned to any passport · tap {n}"
+SESSION_INVALID = "Session expired · please start again"
 
-HEAT_TRIGGERED = "Hitze: über 40 °C erfasst"
-HEAT_TRIGGERED_LONG = ("Hitze: über 40 °C erfasst — die Temperatur, bei der Kosmetik und Pharma "
-                       "beschleunigte Alterung prüfen")
-HUMIDITY_TRIGGERED = "Feuchte: über 60 % rF erfasst"
-HUMIDITY_TRIGGERED_LONG = "Feuchte: über 60 % rF erfasst — Grenze für Karton und Etikett"
-UV_MISSING = "Licht: nicht bestückt (Rev D)"
-NOT_OPENED = "Seit der Zertifizierung nicht geöffnet"
-ORIGIN_DOCUMENTED = "Herkunft ab Quelle dokumentiert"
-WITNESSED = "Bezeugt von {n} Wallets, davon {c} zertifiziert"
-GRADE_CD_NOTE = "Der Indikator dokumentiert die Handhabung, nicht den Zustand des Inhalts."
+HEAT_TRIGGERED = "Heat: above 40 °C recorded"
+HEAT_TRIGGERED_LONG = ("Heat: above 40 °C recorded — the temperature at which cosmetics and pharma "
+                       "test for accelerated ageing")
+HUMIDITY_TRIGGERED = "Humidity: above 60 % RH recorded"
+HUMIDITY_TRIGGERED_LONG = "Humidity: above 60 % RH recorded — the limit for carton and label"
+UV_MISSING = "Light: not fitted (Rev D)"
+NOT_OPENED = "Not opened since certification"
+ORIGIN_DOCUMENTED = "Origin documented from source"
+WITNESSED = "Witnessed by {n} wallets, {c} of them certified"
+GRADE_CD_NOTE = "The indicator documents the handling, not the condition of the contents."
 
-FORBIDDEN_WORDS = ("beschädigt", "zerstört", "ruiniert", "NFT", "tokenisiert", "Duft verändert",
+# Guard list, not user-facing. English terms plus the German originals, because the seed data
+# (docs/seed/passports.json) is checked against this list too.
+FORBIDDEN_WORDS = ("damaged", "destroyed", "ruined", "NFT", "tokenized", "tokenised", "scent altered",
+                   "tamper-proof through blockchain", "The blockchain proves authenticity",
+                   "beschädigt", "zerstört", "ruiniert", "tokenisiert", "Duft verändert",
                    "fälschungssicher durch Blockchain", "Die Blockchain beweist Echtheit")
 
 

@@ -8,7 +8,7 @@ import type { WalletContextState } from "@solana/wallet-adapter-react";
  * "sign and send" reported "something went wrong" even when the transaction had landed.)
  */
 export async function sendAsV0(wallet: WalletContextState, connection: Connection, tx: Transaction): Promise<string> {
-  if (!wallet.publicKey) throw new Error("Wallet nicht verbunden");
+  if (!wallet.publicKey) throw new Error("Wallet not connected");
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
   const message = new TransactionMessage({ payerKey: wallet.publicKey, recentBlockhash: blockhash, instructions: tx.instructions }).compileToV0Message();
   const vtx = new VersionedTransaction(message);

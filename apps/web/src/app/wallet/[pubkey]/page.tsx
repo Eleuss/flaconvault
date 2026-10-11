@@ -20,17 +20,17 @@ export default async function WalletPage({ params }: { params: { pubkey: string 
       {a ? (
         <dl className="mt-8 grid grid-cols-2 gap-6 sm:grid-cols-3">
           {[
-            ["Dabei seit", a.firstSeen ? fmtDate(a.firstSeen) : "–"], ["Scans", a.scanCount], ["Zertifizierte Scans", a.certifiedCount],
-            ["Übereinstimmungsquote", a.agreeRate == null ? "–" : `${Math.round(a.agreeRate * 100)} % (${a.agreeCount}/${a.compareCount})`],
-            ["Escrows ohne Dispute", `${a.escrowsOk} / ${a.escrowsOk + a.escrowsDisputed}`], ["Rolle geprüft", a.isPartner ? "✓ Partner" : "–"],
+            ["Since", a.firstSeen ? fmtDate(a.firstSeen) : "–"], ["Scans", a.scanCount], ["Certified scans", a.certifiedCount],
+            ["Agreement rate", a.agreeRate == null ? "–" : `${Math.round(a.agreeRate * 100)} % (${a.agreeCount}/${a.compareCount})`],
+            ["Escrows without dispute", `${a.escrowsOk} / ${a.escrowsOk + a.escrowsDisputed}`], ["Role verified", a.isPartner ? "✓ Partner" : "–"],
           ].map(([k, v]) => (
             <div key={String(k)}><dt className="text-xs text-muted">{k}</dt><dd className="mt-1 font-serif text-3xl tabular">{v}</dd></div>
           ))}
         </dl>
-      ) : <p className="mt-6 text-muted">Für diese Wallet liegen noch keine Kennzahlen vor.</p>}
+      ) : <p className="mt-6 text-muted">No metrics for this wallet yet.</p>}
       {a && a.recentSerials.length > 0 && (
         <div className="mt-8">
-          <p className="eyebrow">Zuletzt bezeugt</p>
+          <p className="eyebrow">Recently witnessed</p>
           <ul className="mt-2 space-y-1">{a.recentSerials.map((s) => <li key={s}><a className="link mono" href={`/p/${s}`}>{s}</a></li>)}</ul>
         </div>
       )}

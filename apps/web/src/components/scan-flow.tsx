@@ -26,7 +26,7 @@ const nonceCode = (nonce: string) => nonce.replace(/^0x/, "").slice(0, 6).toUppe
 function StepHeader({ n, title, hint }: { n: number; title: string; hint?: string }) {
   return (
     <div>
-      <p className="eyebrow">Schritt {n} von 7</p>
+      <p className="eyebrow">Step {n} of 7</p>
       <h1 className="mt-2 font-serif text-3xl sm:text-4xl">{title}</h1>
       {hint && <p className="mt-2 max-w-lg text-sm text-muted">{hint}</p>}
     </div>
@@ -75,7 +75,7 @@ export function ScanFlow() {
       scanSession.set({ nonce: s.nonce, expiresAt: s.expiresAt, ttl: s.ttl, issuedAt: s.issuedAt });
       setSession(s); setLeft(s.ttl ?? NONCE_TTL_S); setStep("tap");
       if (DEV_SIMULATOR) api.simTags().then(setSimTags).catch(() => setSimTags([]));
-    } catch (e) { setError(`Server nicht erreichbar: ${(e as Error).message}`); }
+    } catch (e) { setError(`Server unreachable: ${(e as Error).message}`); }
   }, []);
   useEffect(() => {
     vision.current = new VisionClient();
@@ -110,7 +110,7 @@ export function ScanFlow() {
     if (!s) return;
     setSession({ nonce: s.nonce, expiresAt: s.expiresAt, ttl: s.ttl ?? NONCE_TTL_S, issuedAt: s.issuedAt });
     setLeft(Math.max(0, Math.round(s.expiresAt - Date.now() / 1000)));
-    setNfcState("Sitzung wiederaufgenommen");
+    setNfcState("Session resumed");
     setStep("tap");
     if (DEV_SIMULATOR) api.simTags().then(setSimTags).catch(() => setSimTags([]));
   }, [step]);
@@ -122,7 +122,7 @@ export function ScanFlow() {
     if (!r) return;
     resumedTx.current = true;
     const st = resumeState.decode(r);
-    if (!st) { setError("Wiederaufnahme-Link ungültig"); return; }
+    if (!st) { setError("Resume link invalid"); return; }
     setVerify(st.v); setRole(st.role); setTierOverride(st.tier);
     setStep("tx");
   }, [params]);
@@ -138,18 +138,18 @@ export function ScanFlow() {
         const [s, t] = await Promise.all([api.session(), api.tap(id)]);
         scanSession.set({ nonce: s.nonce, expiresAt: s.expiresAt, ttl: s.ttl, issuedAt: s.issuedAt });
         setSession(s); setLeft(s.ttl ?? NONCE_TTL_S);
-        if (Date.now() / 1000 - t.ts > 170) { setPreview({ ...t, verdict: "REPLAY" }); setStep("preview"); setNfcState("Tap ist älter als 3 Minuten — bitte neu antippen"); return; }
+        if (Date.now() / 1000 - t.ts > 170) { setPreview({ ...t, verdict: "REPLAY" }); setStep("preview"); setNfcState("Tap is older than 3 minutes — please tap again"); return; }
         setTag({ uid: t.uid ?? "", ctr: t.counter != null ? t.counter.toString(16).padStart(6, "0").toUpperCase() : "", cmac: "", source: "nfc", serial: t.serial ?? undefined, tapId: t.tapId });
         setPreview({ verdict: t.verdict, counter: t.counter, serial: t.serial, serialHash: t.serialHash, uidHash: t.uidHash, sealKind: t.sealKind, sealDead: !!t.sealDead });
-        setNfcState("Tap übernommen");
+        setNfcState("Tap handed over");
         setStep("preview");
-      } catch (e) { setError(`Tap konnte nicht übernommen werden: ${(e as Error).message}`); }
+      } catch (e) { setError(`Tap could not be handed over: ${(e as Error).message}`); }
     })();
   }, [params]);
   // Tap handoff: a tap that opened /t (other tab, or this tab before the reload) is handed over through localStorage
   useEffect(() => {
     if (step !== "tap") return;
-    const pick = () => { const h = tapHandoff.take(); if (h) { setNfcState("Tap aus dem Browser übernommen"); onTag({ uid: h.uid, ctr: h.ctr, cmac: h.cmac, piccData: h.piccData, enc: h.enc, source: "nfc" }); } };
+    const pick = () => { const h = tapHandoff.take(); if (h) { setNfcState("Tap handed over from the browser"); onTag({ uid: h.uid, ctr: h.ctr, cmac: h.cmac, piccData: h.piccData, enc: h.enc, source: "nfc" }); } };
     pick();
     const id = setInterval(pick, 1000);
     const onStorage = (e: StorageEvent) => { if (e.key === tapHandoff.key) pick(); };
@@ -162,21 +162,21 @@ export function ScanFlow() {
       const r = await api.simTap(t.uid);
       if (!r.responds || !r.url) { setTag({ uid: t.uid, ctr: "", cmac: "", source: "simulator", serial: t.serial }); setDeadSerial(t.serial ?? ""); setStep("dead"); return; }
       const parsed = parseTagUrl(r.url);
-      if (!parsed) throw new Error("Simulator-URL unlesbar");
+      if (!parsed) throw new Error("Simulator URL unreadable");
       await onTag({ ...parsed, source: "simulator", serial: t.serial });
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(null); }
   };
   const startNfc = async () => {
     const w = window as unknown as { NDEFReader?: new () => { scan: (o?: { signal: AbortSignal }) => Promise<void>; onreading: ((ev: { message: { records: Array<{ recordType: string; data?: DataView; encoding?: string }> } }) => void) | null; onreadingerror: (() => void) | null } };
-    if (!w.NDEFReader) { setNfcState("WebNFC nur in Android Chrome. iPhone: Siegel antippen öffnet /t."); return; }
+    if (!w.NDEFReader) { setNfcState("WebNFC only in Android Chrome. iPhone: tapping the seal opens /t."); return; }
     try {
       const reader = new w.NDEFReader();
       nfcAbort.current?.abort();
       const ctrl = new AbortController(); nfcAbort.current = ctrl;
       await reader.scan({ signal: ctrl.signal });
-      setNfcState("Bereit — Siegel ans Handy halten …");
-      reader.onreadingerror = () => setNfcState("Lesefehler — nochmal antippen");
+      setNfcState("Ready — hold the seal to the phone …");
+      reader.onreadingerror = () => setNfcState("Read error — tap again");
       reader.onreading = (ev) => {
         const seen: string[] = [];
         for (const rec of ev.message.records) {
@@ -187,13 +187,13 @@ export function ScanFlow() {
           const candidates = [text, ...(text.match(/https?:\/\/[^\s"'<>]+/gi) ?? []), ...(/^[\w.-]+\.[a-z]{2,}\//i.test(text) ? [`https://${text}`] : [])];
           for (const c of candidates) {
             const parsed = parseTagUrl(c);
-            if (parsed) { setNfcState(parsed.piccData ? "Gelesen: verschlüsselter Tap" : `Gelesen: …${parsed.uid.slice(-4)} · Zähler ${parseInt(parsed.ctr, 16)}`); onTag({ ...parsed, source: "nfc" }); ctrl.abort(); nfcAbort.current = null; return; }
+            if (parsed) { setNfcState(parsed.piccData ? "Read: encrypted tap" : `Read: …${parsed.uid.slice(-4)} · counter ${parseInt(parsed.ctr, 16)}`); onTag({ ...parsed, source: "nfc" }); ctrl.abort(); nfcAbort.current = null; return; }
           }
         }
         // Chrome's WebNFC hands some NTAG 424 DNA messages over as an empty record. Release the reader so the next tap goes
         // to Android, which opens the sticker link; /t then hands the tap over to this session.
         ctrl.abort(); nfcAbort.current = null;
-        setNfcState(`Chrome konnte den Chip nicht lesen (${seen.join(" | ") || "leer"}). NFC-Leser gestoppt — Siegel jetzt einfach ans Handy halten: Android öffnet den Link, „Tap übernommen“, dann zurück zu diesem Tab.`);
+        setNfcState(`Chrome could not read the chip (${seen.join(" | ") || "empty"}). NFC reader stopped — now simply hold the seal to the phone: Android opens the link, “Tap handed over”, then return to this tab.`);
       };
     } catch (e) { setNfcState(`NFC: ${(e as Error).message}`); }
   };
@@ -204,7 +204,7 @@ export function ScanFlow() {
       const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
       stream.current = s;
       if (video.current) { video.current.srcObject = s; await video.current.play(); }
-    } catch (e) { setError(`Kamera: ${(e as Error).message}`); }
+    } catch (e) { setError(`Camera: ${(e as Error).message}`); }
   };
   const stopCam = () => { stream.current?.getTracks().forEach((t) => t.stop()); stream.current = null; };
   useEffect(() => { if (step === "camera") startCam(); else stopCam(); return stopCam; /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [step]);
@@ -272,7 +272,7 @@ export function ScanFlow() {
       let mediaHash: string | undefined;
       if (frames) {
         const m = await api.media(frames.blobs);
-        if (m.sha256.toLowerCase() !== frames.mediaHash.toLowerCase()) throw new Error("Medien-Hash weicht vom Server ab");
+        if (m.sha256.toLowerCase() !== frames.mediaHash.toLowerCase()) throw new Error("Media hash differs from the server");
         mediaHash = m.sha256;
       }
       const r = reading && reading.found ? reading : null;
@@ -317,8 +317,8 @@ export function ScanFlow() {
     setBusy("dead");
     try {
       const serial = preview?.serial ?? tag?.serial ?? deadSerial;
-      if (!serial) throw new Error("Seriennummer des Passes angeben");
-      await api.events({ serial, type: 9, actor: wallet.publicKey?.toBase58() ?? null, payload: { source: tag?.source ?? "manual", uid: tag?.uid ?? null, note: "Siegel antwortet nicht" } });
+      if (!serial) throw new Error("Enter the passport serial number");
+      await api.events({ serial, type: 9, actor: wallet.publicKey?.toBase58() ?? null, payload: { source: tag?.source ?? "manual", uid: tag?.uid ?? null, note: "Seal not responding" } });
       setDeadSerial(serial);
       setStep("done");
     } catch (e) { setError((e as Error).message); }
@@ -336,55 +336,55 @@ export function ScanFlow() {
       {/* countdown */}
       {session && step !== "done" && (
         <div className="mb-6 flex items-center justify-between text-xs text-muted">
-          <span>Sitzung <span className="mono text-ink">{nonceCode(session.nonce)}</span></span>
-          <span className={`tabular ${left <= 15 ? "text-bad" : ""}`}>{expired ? "abgelaufen" : `${left} s`}</span>
+          <span>Session <span className="mono text-ink">{nonceCode(session.nonce)}</span></span>
+          <span className={`tabular ${left <= 15 ? "text-bad" : ""}`}>{expired ? "expired" : `${left} s`}</span>
         </div>
       )}
       {expired && (
         <div className="card mb-6 p-4 text-sm">
-          <p className="font-medium">Sitzung abgelaufen</p>
-          <p className="mt-1 text-muted">Tap bis Transaktion müssen innerhalb von 90 Sekunden liegen. Bitte neu starten.</p>
-          <button onClick={startSession} className="btn btn-sm mt-3"><RefreshCw className="h-3.5 w-3.5" aria-hidden /> Neu starten</button>
+          <p className="font-medium">Session expired</p>
+          <p className="mt-1 text-muted">Tap through transaction must happen within 90 seconds. Please restart.</p>
+          <button onClick={startSession} className="btn btn-sm mt-3"><RefreshCw className="h-3.5 w-3.5" aria-hidden /> Restart</button>
         </div>
       )}
       {error && <p className="mb-6 rounded-xl border border-bad/40 px-4 py-3 text-sm text-bad">{error}</p>}
 
       {step === "session" && (
         <div>
-          <StepHeader n={1} title="Scan bezeugen" hint="Tap, Foto der Karte, Serversignatur, Transaktion. Alles in einer Sitzung von 90 Sekunden; der Sitzungscode wird ins Foto eingeblendet." />
+          <StepHeader n={1} title="Witness a scan" hint="Tap, photo of the card, server signature, transaction. All in one 90-second session; the session code is overlaid on the photo." />
           <div className="mt-6 flex flex-wrap items-center gap-3">
-            <button onClick={startSession} className="btn">Sitzung starten <ArrowRight className="h-4 w-4" aria-hidden /></button>
+            <button onClick={startSession} className="btn">Start session <ArrowRight className="h-4 w-4" aria-hidden /></button>
             <WalletButton />
           </div>
-          {!PROGRAM_ID && <p className="mt-4 text-xs text-muted">Hinweis: keine Programm-ID gesetzt — die Transaktion (Schritt 8) ist deaktiviert.</p>}
+          {!PROGRAM_ID && <p className="mt-4 text-xs text-muted">Note: no program ID set — the transaction (step 8) is disabled.</p>}
         </div>
       )}
 
       {step === "tap" && !expired && (
         <div>
-          <StepHeader n={2} title="Siegel antippen" hint="Der Chip liefert eine URL mit UID, Zähler und Prüfsumme. Nur der Server kann die Prüfsumme prüfen." />
+          <StepHeader n={2} title="Tap the seal" hint="The chip returns a URL with UID, counter and checksum. Only the server can verify the checksum." />
           <div className="mt-6 grid gap-6 md:grid-cols-2">
             <div className="card p-4">
               <p className="flex items-center gap-2 text-sm font-medium"><Nfc className="h-4 w-4 text-amber" aria-hidden /> WebNFC (Android Chrome)</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                <button onClick={startNfc} className="btn-outline btn-sm">NFC-Lesen starten</button>
-                <button onClick={() => { nfcAbort.current?.abort(); setTag(null); setStep("dead"); }} className="btn-outline btn-sm" title="Siegel getrennt oder entfernt — als SEAL_DEAD melden"><ShieldOff className="h-3.5 w-3.5" aria-hidden /> Siegel antwortet nicht</button>
+                <button onClick={startNfc} className="btn-outline btn-sm">Start NFC reading</button>
+                <button onClick={() => { nfcAbort.current?.abort(); setTag(null); setStep("dead"); }} className="btn-outline btn-sm" title="Seal separated or removed — report as SEAL_DEAD"><ShieldOff className="h-3.5 w-3.5" aria-hidden /> Seal not responding</button>
               </div>
-              <p className="mt-2 break-words text-xs text-muted">{nfcState || "Sitzung läuft — Siegel einfach ans Handy halten. Das Handy öffnet den Siegel-Link, der Tap wird hierher übergeben; dann zurück zu diesem Tab."}</p>
+              <p className="mt-2 break-words text-xs text-muted">{nfcState || "Session running — simply hold the seal to the phone. The phone opens the seal link and the tap is handed over here; then return to this tab."}</p>
             </div>
             {DEV_SIMULATOR && (
               <div className="card p-4">
-                <p className="flex items-center gap-2 text-sm font-medium"><Zap className="h-4 w-4 text-amber" aria-hidden /> Virtuellen Tap einspielen</p>
+                <p className="flex items-center gap-2 text-sm font-medium"><Zap className="h-4 w-4 text-amber" aria-hidden /> Inject a virtual tap</p>
                 <ul className="mt-3 divide-y divide-line">
                   {simTags.map((t) => (
                     <li key={t.uid} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 text-sm">
                       <Lamp tone={t.alive ? "ok" : "bad"} />
                       <span className="mono">{t.uid}</span>
-                      <span className="min-w-0 flex-1 truncate text-muted">{t.serial ?? "nicht registriert"} · Zähler {t.counter}</span>
+                      <span className="min-w-0 flex-1 truncate text-muted">{t.serial ?? "not registered"} · counter {t.counter}</span>
                       <button onClick={() => simTap(t)} disabled={busy !== null} className="btn btn-sm ml-auto">{busy === `tap-${t.uid}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : "Tap"}</button>
                     </li>
                   ))}
-                  {simTags.length === 0 && <li className="py-2 text-xs text-muted">Keine virtuellen Tags — im <Link href="/dev" className="link">Simulator</Link> anlegen.</li>}
+                  {simTags.length === 0 && <li className="py-2 text-xs text-muted">No virtual tags — create them in the <Link href="/dev" className="link">simulator</Link>.</li>}
                 </ul>
               </div>
             )}
@@ -394,24 +394,24 @@ export function ScanFlow() {
 
       {step === "preview" && preview && previewVerdict && !expired && (
         <div>
-          <StepHeader n={3} title="Siegel geprüft" />
+          <StepHeader n={3} title="Seal checked" />
           <div className="mt-6 flex items-center gap-3">
             <Lamp tone={previewVerdict.tone} className="h-3.5 w-3.5" />
             <p className={`font-serif text-3xl ${previewVerdict.tone === "ok" ? "text-ok" : previewVerdict.tone === "bad" ? "text-bad" : "text-warn"}`}>{previewVerdict.title}</p>
           </div>
           <p className="mt-2 max-w-lg text-sm text-muted">{previewVerdict.hint}</p>
-          {preview.serial && <p className="mt-2 text-sm text-muted">Pass <span className="mono text-ink">{preview.serial}</span> · {preview.sealKind === 0 ? "Packungssiegel" : "Halssiegel"}</p>}
+          {preview.serial && <p className="mt-2 text-sm text-muted">Passport <span className="mono text-ink">{preview.serial}</span> · {preview.sealKind === 0 ? "Box seal" : "Neck seal"}</p>}
           <div className="mt-6 flex flex-wrap gap-3">
-            {preview.verdict === "VALID" && <button onClick={() => setStep("camera")} className="btn"><Camera className="h-4 w-4" aria-hidden /> Weiter zur Kamera</button>}
-            {preview.verdict === "VALID" && !certified && <button onClick={skipCamera} className="btn-outline">Ohne Foto (Tier 1)</button>}
-            {preview.verdict !== "VALID" && <button onClick={startSession} className="btn-outline">Neu starten</button>}
+            {preview.verdict === "VALID" && <button onClick={() => setStep("camera")} className="btn"><Camera className="h-4 w-4" aria-hidden /> Continue to camera</button>}
+            {preview.verdict === "VALID" && !certified && <button onClick={skipCamera} className="btn-outline">Without photo (tier 1)</button>}
+            {preview.verdict !== "VALID" && <button onClick={startSession} className="btn-outline">Restart</button>}
           </div>
         </div>
       )}
 
       {step === "camera" && !expired && (
         <div>
-          <StepHeader n={4} title="Karte fotografieren" hint="Die Fahne mit Marker und Indikatoren in den Rahmen. Fünf Bilder, der Sitzungscode wird eingeblendet und mitfotografiert. Kein Galerie-Upload." />
+          <StepHeader n={4} title="Photograph the card" hint="Place the flag with marker and indicators inside the frame. Five frames; the session code is overlaid and captured in the photo. No gallery upload." />
           <div className="relative mt-6 overflow-hidden rounded-2xl border border-line bg-line">
             <video ref={video} playsInline muted className="block w-full" />
             <div className="pointer-events-none absolute inset-0">
@@ -420,12 +420,12 @@ export function ScanFlow() {
             </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-3">
-            <button onClick={captureFrames} disabled={busy !== null} className="btn">{busy === "capture" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Camera className="h-4 w-4" aria-hidden />} 5 Bilder aufnehmen</button>
-            {!certified && <button onClick={skipCamera} className="btn-outline">Ohne Foto (Tier 1)</button>}
+            <button onClick={captureFrames} disabled={busy !== null} className="btn">{busy === "capture" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Camera className="h-4 w-4" aria-hidden />} Capture 5 frames</button>
+            {!certified && <button onClick={skipCamera} className="btn-outline">Without photo (tier 1)</button>}
             {DEV_SIMULATOR && (
               <>
-                <button onClick={() => syntheticFrames(false)} disabled={busy !== null} className="btn-outline btn-sm">Testbild: intakt</button>
-                <button onClick={() => syntheticFrames(true)} disabled={busy !== null} className="btn-outline btn-sm">Testbild: 40 °C ausgelöst</button>
+                <button onClick={() => syntheticFrames(false)} disabled={busy !== null} className="btn-outline btn-sm">Test image: intact</button>
+                <button onClick={() => syntheticFrames(true)} disabled={busy !== null} className="btn-outline btn-sm">Test image: 40 °C triggered</button>
               </>
             )}
           </div>
@@ -434,43 +434,43 @@ export function ScanFlow() {
 
       {step === "read" && !expired && (
         <div>
-          <StepHeader n={5} title="Indikatoren" hint={frames ? "Gelesen aus den Aufnahmen: Marker → Entzerrung → Weißabgleich → ΔE." : "Ohne Foto: Indikatoren gelten als nicht gelesen (MISSING), Tier 1."} />
-          {busy === "read" && <p className="mt-6 flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Karte wird gelesen …</p>}
+          <StepHeader n={5} title="Indicators" hint={frames ? "Read from the frames: marker → dewarp → white balance → ΔE." : "Without photo: indicators count as not read (MISSING), tier 1."} />
+          {busy === "read" && <p className="mt-6 flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Reading the card …</p>}
           {reading && !reading.found && (
-            <div className="card mt-6 p-4 text-sm"><p className="font-medium">Karte nicht erkannt</p><p className="mt-1 text-muted">{reading.reason}. Nochmal fotografieren oder ohne Lesung fortfahren (Indikatoren MISSING).</p></div>
+            <div className="card mt-6 p-4 text-sm"><p className="font-medium">Card not recognized</p><p className="mt-1 text-muted">{reading.reason}. Photograph again or continue without a reading (indicators MISSING).</p></div>
           )}
           {reading?.found && heatTxt && humTxt && (
             <div className="mt-6 flex flex-wrap gap-2">
               <Pill tone={heatTxt.tone}>{heatTxt.label}: {heatTxt.detail}</Pill>
               <Pill tone={humTxt.tone}>{humTxt.label}: {humTxt.detail}</Pill>
-              {reading.uv === Indicator.MISSING ? <Pill tone="none">Licht: nicht bestückt</Pill> : <Pill tone={indicatorText("uv", reading.uv).tone}>{indicatorText("uv", reading.uv).label}: {indicatorText("uv", reading.uv).detail}</Pill>}
-              {(reading.heat === Indicator.UNREADABLE || reading.humidity === Indicator.UNREADABLE) && <Pill tone="none">Prüfung empfohlen</Pill>}
+              {reading.uv === Indicator.MISSING ? <Pill tone="none">Light: not fitted</Pill> : <Pill tone={indicatorText("uv", reading.uv).tone}>{indicatorText("uv", reading.uv).label}: {indicatorText("uv", reading.uv).detail}</Pill>}
+              {(reading.heat === Indicator.UNREADABLE || reading.humidity === Indicator.UNREADABLE) && <Pill tone="none">Inspection recommended</Pill>}
             </div>
           )}
           <div className="mt-6 grid gap-4 sm:grid-cols-2">
             <label className="card block p-4 text-sm">
-              <span className="font-medium">Füllstand {fill} %</span>
+              <span className="font-medium">Fill level {fill} %</span>
               <input type="range" min={0} max={100} value={fill} onChange={(e) => setFill(+e.target.value)} className="mt-2 w-full" />
-              <span className="text-xs text-muted">Demo: Slider. Später aus der Kamera.</span>
+              <span className="text-xs text-muted">Demo: slider. Later from the camera.</span>
             </label>
             <div className="card p-4 text-sm">
-              <label className="block">Rolle
+              <label className="block">Role
                 <select value={role} onChange={(e) => setRole(+e.target.value)} className="ml-2 rounded-full border border-line bg-surface px-2 py-0.5 text-sm">
-                  <option value={Role.OWNER}>Besitzer</option><option value={Role.SELLER}>Verkäufer</option><option value={Role.BUYER}>Käufer</option>
+                  <option value={Role.OWNER}>Owner</option><option value={Role.SELLER}>Seller</option><option value={Role.BUYER}>Buyer</option>
                   {certified && <><option value={Role.VAULT}>Vault</option><option value={Role.PARTNER}>Partner</option></>}
                 </select>
-                {certified && <span className="ml-2 text-xs text-muted">Tier {qTier} · Standort {siteId}</span>}
+                {certified && <span className="ml-2 text-xs text-muted">Tier {qTier} · Site {siteId}</span>}
               </label>
               <div className="mt-2 flex gap-2">
-                <input value={country} onChange={(e) => setCountry(e.target.value.toUpperCase().slice(0, 2))} placeholder="DE" className="w-14 rounded-full border border-line bg-surface px-2 py-0.5 text-sm" aria-label="Land" />
-                <input value={city} onChange={(e) => setCity(e.target.value)} placeholder="Ort (grob, freiwillig)" className="flex-1 rounded-full border border-line bg-surface px-3 py-0.5 text-sm" aria-label="Ort" />
+                <input value={country} onChange={(e) => setCountry(e.target.value.toUpperCase().slice(0, 2))} placeholder="DE" className="w-14 rounded-full border border-line bg-surface px-2 py-0.5 text-sm" aria-label="Country" />
+                <input value={city} onChange={(e) => setCity(e.target.value)} placeholder="Place (rough, optional)" className="flex-1 rounded-full border border-line bg-surface px-3 py-0.5 text-sm" aria-label="Place" />
               </div>
-              <p className="mt-1 text-xs text-muted">Ort bleibt off-chain. Kein GPS.</p>
+              <p className="mt-1 text-xs text-muted">Location stays off-chain. No GPS.</p>
             </div>
           </div>
           <div className="mt-6 flex flex-wrap gap-3">
-            <button onClick={requestSignature} disabled={busy !== null} className="btn">{busy === "verify" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Signatur holen <ArrowRight className="h-4 w-4" aria-hidden /></button>
-            {frames && <button onClick={() => setStep("camera")} className="btn-outline">Nochmal fotografieren</button>}
+            <button onClick={requestSignature} disabled={busy !== null} className="btn">{busy === "verify" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Get signature <ArrowRight className="h-4 w-4" aria-hidden /></button>
+            {frames && <button onClick={() => setStep("camera")} className="btn-outline">Photograph again</button>}
           </div>
         </div>
       )}
@@ -478,21 +478,21 @@ export function ScanFlow() {
       {step === "verify" && verify && (
         <div>
           <StepHeader n={6} title={verdictText(verify.verdict, verify.counter).title} hint={verdictText(verify.verdict, verify.counter).hint} />
-          <button onClick={startSession} className="btn-outline mt-6">Neu starten</button>
+          <button onClick={startSession} className="btn-outline mt-6">Restart</button>
         </div>
       )}
 
       {step === "tx" && verify && !expired && (
         <div>
-          <StepHeader n={6} title="Server hat signiert — jetzt verankern" hint={`Server-Verdict ${verify.verdict} · Zähler ${verify.counter} · Grade ${gradeLetter(verify.grade)} vorab. Die Transaktion enthält die Ed25519-Prüfung der Serversignatur und record_scan.`} />
+          <StepHeader n={6} title="Server signed — now anchor it" hint={`Server verdict ${verify.verdict} · counter ${verify.counter} · Grade ${gradeLetter(verify.grade)} preliminary. The transaction contains the Ed25519 check of the server signature and record_scan.`} />
           {!wallet.connected && isIOS() && noInjectedWallet(wallet.wallets.map((w) => ({ name: w.adapter.name, installed: w.readyState === WalletReadyState.Installed }))) && (
             <div className="card mt-6 p-4 text-sm">
-              <p className="font-medium">Mit deiner Wallet-App signieren</p>
-              <p className="mt-1 text-muted">Safari kann keine Wallet einbinden. Der Scan wird in der Wallet-App fortgesetzt, dort signierst du direkt.</p>
+              <p className="font-medium">Sign with your wallet app</p>
+              <p className="mt-1 text-muted">Safari cannot connect a wallet. The scan continues in the wallet app, where you sign directly.</p>
               {(() => { const links = walletBrowseLinks(resumeUrl({ v: verify, tier, role, siteId })); return (
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <a href={links.phantom} className="btn btn-sm">In Phantom fortsetzen</a>
-                  <a href={links.solflare} className="btn-outline btn-sm">In Solflare fortsetzen</a>
+                  <a href={links.phantom} className="btn btn-sm">Continue in Phantom</a>
+                  <a href={links.solflare} className="btn-outline btn-sm">Continue in Solflare</a>
                 </div>
               ); })()}
             </div>
@@ -500,8 +500,8 @@ export function ScanFlow() {
           <div className="mt-6 flex flex-wrap items-center gap-3">
             {!wallet.connected ? <WalletButton /> : (
               <>
-                <button onClick={sendTx} disabled={busy !== null || !PROGRAM_ID} className="btn">{busy === "tx" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Mit {wallet.wallet?.adapter.name} signieren und senden</button>
-                {DEV_SIMULATOR && <button onClick={airdropBurner} disabled={busy !== null} className="btn-outline btn-sm">1 SOL Airdrop (Test)</button>}
+                <button onClick={sendTx} disabled={busy !== null || !PROGRAM_ID} className="btn">{busy === "tx" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Sign and send with {wallet.wallet?.adapter.name}</button>
+                {DEV_SIMULATOR && <button onClick={airdropBurner} disabled={busy !== null} className="btn-outline btn-sm">1 SOL airdrop (test)</button>}
               </>
             )}
           </div>
@@ -511,44 +511,44 @@ export function ScanFlow() {
 
       {step === "done" && (
         <div>
-          <StepHeader n={7} title={txSig ? "Scan verankert" : "Siegel antwortet nicht — gemeldet"} />
+          <StepHeader n={7} title={txSig ? "Scan anchored" : "Seal not responding — reported"} />
           <div className="mt-6 flex items-center gap-5">
             <GradeMark grade={txSig ? finalGrade : Grade.VOID} />
             <div className="text-sm text-muted">
               {txSig && verify && (
                 <>
-                  <p className="text-ink">Grade {gradeLetter(finalGrade)} · Zähler {verify.counter}</p>
+                  <p className="text-ink">Grade {gradeLetter(finalGrade)} · counter {verify.counter}</p>
                   {gradeSentence(finalGrade ?? 0) && <p className="mt-1">{gradeSentence(finalGrade ?? 0)}</p>}
-                  <a href={txUrl(txSig)} target="_blank" rel="noreferrer" className="link mt-1 block">Transaktion im Explorer</a>
+                  <a href={txUrl(txSig)} target="_blank" rel="noreferrer" className="link mt-1 block">Transaction in explorer</a>
                 </>
               )}
-              {!txSig && <p>Grade-Vorschau VOID · Event SEAL_DEAD gemeldet. Ohne gültigen Scan keine Freigabe.</p>}
+              {!txSig && <p>Grade preview VOID · event SEAL_DEAD reported. No release without a valid scan.</p>}
             </div>
           </div>
           {reading?.found && heatTxt && humTxt && (
             <div className="mt-6 flex flex-wrap gap-2"><Pill tone={heatTxt.tone}>{heatTxt.label}: {heatTxt.detail}</Pill><Pill tone={humTxt.tone}>{humTxt.label}: {humTxt.detail}</Pill></div>
           )}
           <div className="mt-8 flex flex-wrap gap-3">
-            {(verify?.serial ?? deadSerial) && <Link href={`/p/${verify?.serial ?? deadSerial}`} className="btn">Pass ansehen <ArrowRight className="h-4 w-4" aria-hidden /></Link>}
-            <button onClick={startSession} className="btn-outline">Neuer Scan</button>
+            {(verify?.serial ?? deadSerial) && <Link href={`/p/${verify?.serial ?? deadSerial}`} className="btn">View passport <ArrowRight className="h-4 w-4" aria-hidden /></Link>}
+            <button onClick={startSession} className="btn-outline">New scan</button>
           </div>
         </div>
       )}
 
       {step === "dead" && (
         <div>
-          <StepHeader n={3} title="Kein Siegel gefunden" hint="Siegel getrennt, entfernt oder nicht in Reichweite. Ein Foto der Stelle dokumentiert es; der Pass bekommt Event SEAL_DEAD und Grade-Vorschau VOID." />
-          <div className="mt-6 flex items-center gap-3 text-bad"><ShieldOff className="h-5 w-5" aria-hidden /><span className="font-serif text-2xl">Siegel antwortet nicht</span></div>
+          <StepHeader n={3} title="No seal found" hint="Seal separated, removed or out of range. A photo of the spot documents it; the passport gets event SEAL_DEAD and grade preview VOID." />
+          <div className="mt-6 flex items-center gap-3 text-bad"><ShieldOff className="h-5 w-5" aria-hidden /><span className="font-serif text-2xl">Seal not responding</span></div>
           {!(preview?.serial ?? tag?.serial) && (
-            <label className="mt-4 block text-sm">Pass-Seriennummer <input value={deadSerial} onChange={(e) => setDeadSerial(e.target.value)} placeholder="SN-2026-000001" className="ml-2 rounded-full border border-line bg-surface px-3 py-0.5 font-mono text-sm" /></label>
+            <label className="mt-4 block text-sm">Passport serial number <input value={deadSerial} onChange={(e) => setDeadSerial(e.target.value)} placeholder="SN-2026-000001" className="ml-2 rounded-full border border-line bg-surface px-3 py-0.5 font-mono text-sm" /></label>
           )}
           <div className="mt-6 flex flex-wrap gap-3">
-            <button onClick={reportDead} disabled={busy !== null} className="btn">{busy === "dead" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Melden (SEAL_DEAD)</button>
-            <button onClick={startSession} className="btn-outline">Abbrechen</button>
+            <button onClick={reportDead} disabled={busy !== null} className="btn">{busy === "dead" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Report (SEAL_DEAD)</button>
+            <button onClick={startSession} className="btn-outline">Cancel</button>
           </div>
         </div>
       )}
-      <p className="mt-10 text-xs text-muted">Schritt {stepNo} · Tier {tier} · Wallet {wallet.publicKey ? `${wallet.publicKey.toBase58().slice(0, 4)}…` : "nicht verbunden"}</p>
+      <p className="mt-10 text-xs text-muted">Step {stepNo} · Tier {tier} · Wallet {wallet.publicKey ? `${wallet.publicKey.toBase58().slice(0, 4)}…` : "not connected"}</p>
     </div>
   );
 }

@@ -32,10 +32,10 @@ export function SolanaProviders({ children }: { children: ReactNode }) {
       const origin = typeof window !== "undefined" ? window.location.origin : "https://flaconvault.vercel.app";
       base.push(new WalletConnectWalletAdapter({
         network: WalletAdapterNetwork.Devnet,
-        options: { projectId: WALLETCONNECT_PROJECT_ID, metadata: { name: "FlaconVault", description: "Siegel, Zustand und Herkunft eines Flakons — ScanProof auf Solana", url: origin, icons: [`${origin}/icon.svg`] } },
+        options: { projectId: WALLETCONNECT_PROJECT_ID, metadata: { name: "FlaconVault", description: "Seal, condition and provenance of a bottle — ScanProof on Solana", url: origin, icons: [`${origin}/icon.svg`] } },
       }));
     }
-    return DEV_SIMULATOR ? [...base, new DevWalletAdapter("Dev-Wallet A (Verkäufer)", "a"), new DevWalletAdapter("Dev-Wallet B (Käufer)", "b"), new UnsafeBurnerWalletAdapter()] : base;
+    return DEV_SIMULATOR ? [...base, new DevWalletAdapter("Dev wallet A (seller)", "a"), new DevWalletAdapter("Dev wallet B (buyer)", "b"), new UnsafeBurnerWalletAdapter()] : base;
   }, []);
   return (
     <ConnectionProvider endpoint={SOLANA_RPC} config={{ commitment: "confirmed" }}>

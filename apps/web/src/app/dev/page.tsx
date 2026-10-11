@@ -8,9 +8,9 @@ export default function DevPage() {
   if (!DEV_SIMULATOR) notFound();
   return (
     <div className="page-in container-page py-10">
-      <p className="eyebrow">Simulatorkonsole · nur FV_DEV_SIMULATOR</p>
-      <h1 className="mt-3 font-serif text-4xl">Virtuelle Siegel</h1>
-      <p className="mt-2 max-w-xl text-sm text-muted">Bis die Hardware da ist: Tags anlegen, Taps auslösen, Antenne „reißen“. Jeder Tap erzeugt eine echte SUN-URL mit gültigem CMAC und hochgezähltem Zähler, die der Server wie einen Hardware-Tap behandelt.</p>
+      <p className="eyebrow">Simulator console · FV_DEV_SIMULATOR only</p>
+      <h1 className="mt-3 font-serif text-4xl">Virtual seals</h1>
+      <p className="mt-2 max-w-xl text-sm text-muted">Until the hardware arrives: create tags, trigger taps, “tear” the antenna. Every tap generates a real SUN URL with a valid CMAC and an incremented counter, which the server treats like a hardware tap.</p>
       <DevConsole />
     </div>
   );

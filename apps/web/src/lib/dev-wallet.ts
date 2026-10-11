@@ -49,7 +49,7 @@ export class DevWalletAdapter extends BaseSignerWalletAdapter {
   }
   async disconnect(): Promise<void> { this.keypair = null; this.emit("disconnect"); }
   async signTransaction<T extends Transaction | VersionedTransaction>(tx: T): Promise<T> {
-    if (!this.keypair) throw new Error("Dev-Wallet nicht verbunden");
+    if (!this.keypair) throw new Error("Dev wallet not connected");
     if ("version" in tx) tx.sign([this.keypair]); else tx.partialSign(this.keypair);
     return tx;
   }

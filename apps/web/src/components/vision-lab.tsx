@@ -7,13 +7,13 @@ import { VisionClient, frameFromSource } from "@/vision/client";
 import { indicatorText } from "@/lib/format";
 import { Lamp, Pill } from "./badges";
 
-const TINTS: Record<string, [number, number, number]> = { neutral: [1, 1, 1], warm: [1.06, 1.0, 0.82], kalt: [0.9, 0.97, 1.08], gelb: [1.1, 1.02, 0.85] };
+const TINTS: Record<string, [number, number, number]> = { neutral: [1, 1, 1], warm: [1.06, 1.0, 0.82], cold: [0.9, 0.97, 1.08], yellow: [1.1, 1.02, 0.85] };
 const toneOf = (code: number) => (code === Indicator.INTACT ? "ok" : code === Indicator.TRIGGERED ? "warn" : "none");
 
 export function VisionLab() {
   const client = useRef<VisionClient | null>(null);
   const [cfg, setCfg] = useState<HeatFieldsConfig | null>(null);
-  const [status, setStatus] = useState("OpenCV wird geladen …");
+  const [status, setStatus] = useState("Loading OpenCV …");
   const [busy, setBusy] = useState(false);
   const [reading, setReading] = useState<CardReading | null>(null);
   const [series, setSeries] = useState<CardReading[]>([]);
@@ -28,8 +28,8 @@ export function VisionLab() {
   useEffect(() => {
     const c = new VisionClient();
     client.current = c;
-    fetch("/heat_fields.json").then((r) => r.json()).then(setCfg).catch((e) => setStatus(`heat_fields.json fehlt: ${e.message}`));
-    c.ping().then((p) => setStatus(`OpenCV geladen in ${Math.round(p.loadMs)} ms · ArUco ${p.hasAruco ? "verfügbar" : "FEHLT"}`)).catch((e) => setStatus(`OpenCV-Fehler: ${e.message}`));
+    fetch("/heat_fields.json").then((r) => r.json()).then(setCfg).catch((e) => setStatus(`heat_fields.json missing: ${e.message}`));
+    c.ping().then((p) => setStatus(`OpenCV loaded in ${Math.round(p.loadMs)} ms · ArUco ${p.hasAruco ? "available" : "MISSING"}`)).catch((e) => setStatus(`OpenCV error: ${e.message}`));
     return () => { c.terminate(); stream.current?.getTracks().forEach((t) => t.stop()); };
   }, []);
 
@@ -74,7 +74,7 @@ export function VisionLab() {
       const r = await client.current.read(frame, cfg, { preview: true, debug: true });
       setReading(r); drawWarped(r);
       return r;
-    } catch (e) { setStatus(`Fehler: ${(e as Error).message}`); return null; }
+    } catch (e) { setStatus(`Error: ${(e as Error).message}`); return null; }
     finally { setBusy(false); }
   }, [cfg, drawWarped]);
 
@@ -131,46 +131,46 @@ export function VisionLab() {
         <p className="text-xs text-muted">{status}</p>
 
         <section className="card p-4">
-          <p className="flex items-center gap-2 text-sm font-medium"><FlaskConical className="h-4 w-4 text-amber" aria-hidden /> Testbild (ohne Hardware)</p>
+          <p className="flex items-center gap-2 text-sm font-medium"><FlaskConical className="h-4 w-4 text-amber" aria-hidden /> Test image (no hardware)</p>
           <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-            <label className="flex items-center gap-2"><input type="checkbox" checked={synth.decisive} onChange={(e) => setSynth({ ...synth, decisive: e.target.checked })} /> 40 °C ausgelöst</label>
-            <label className="flex items-center gap-2"><input type="checkbox" checked={synth.humidity} onChange={(e) => setSynth({ ...synth, humidity: e.target.checked })} /> Feuchte rosa</label>
-            <label>untere Felder schwarz <input type="range" min={0} max={4} value={synth.lowFields} onChange={(e) => setSynth({ ...synth, lowFields: +e.target.value })} className="w-full" /></label>
-            <label>Neigung {synth.tilt.toFixed(2)} <input type="range" min={0} max={0.2} step={0.01} value={synth.tilt} onChange={(e) => setSynth({ ...synth, tilt: +e.target.value })} className="w-full" /></label>
-            <label>Drehung {synth.rot}° <input type="range" min={-25} max={25} value={synth.rot} onChange={(e) => setSynth({ ...synth, rot: +e.target.value })} className="w-full" /></label>
-            <label>Helligkeit {synth.brightness} <input type="range" min={-80} max={40} value={synth.brightness} onChange={(e) => setSynth({ ...synth, brightness: +e.target.value })} className="w-full" /></label>
-            <label>Unschärfe {synth.blur} <input type="range" min={0} max={3} step={0.2} value={synth.blur} onChange={(e) => setSynth({ ...synth, blur: +e.target.value })} className="w-full" /></label>
-            <label>Rauschen {synth.noise} <input type="range" min={0} max={16} value={synth.noise} onChange={(e) => setSynth({ ...synth, noise: +e.target.value })} className="w-full" /></label>
-            <label className="col-span-2">Licht
+            <label className="flex items-center gap-2"><input type="checkbox" checked={synth.decisive} onChange={(e) => setSynth({ ...synth, decisive: e.target.checked })} /> 40 °C triggered</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={synth.humidity} onChange={(e) => setSynth({ ...synth, humidity: e.target.checked })} /> Humidity pink</label>
+            <label>lower fields black <input type="range" min={0} max={4} value={synth.lowFields} onChange={(e) => setSynth({ ...synth, lowFields: +e.target.value })} className="w-full" /></label>
+            <label>Tilt {synth.tilt.toFixed(2)} <input type="range" min={0} max={0.2} step={0.01} value={synth.tilt} onChange={(e) => setSynth({ ...synth, tilt: +e.target.value })} className="w-full" /></label>
+            <label>Rotation {synth.rot}° <input type="range" min={-25} max={25} value={synth.rot} onChange={(e) => setSynth({ ...synth, rot: +e.target.value })} className="w-full" /></label>
+            <label>Brightness {synth.brightness} <input type="range" min={-80} max={40} value={synth.brightness} onChange={(e) => setSynth({ ...synth, brightness: +e.target.value })} className="w-full" /></label>
+            <label>Blur {synth.blur} <input type="range" min={0} max={3} step={0.2} value={synth.blur} onChange={(e) => setSynth({ ...synth, blur: +e.target.value })} className="w-full" /></label>
+            <label>Noise {synth.noise} <input type="range" min={0} max={16} value={synth.noise} onChange={(e) => setSynth({ ...synth, noise: +e.target.value })} className="w-full" /></label>
+            <label className="col-span-2">Lighting
               <select value={synth.tint} onChange={(e) => setSynth({ ...synth, tint: e.target.value })} className="ml-2 rounded-full border border-line bg-surface px-2 py-0.5">
                 {Object.keys(TINTS).map((k) => <option key={k} value={k}>{k}</option>)}
               </select>
             </label>
           </div>
-          <button onClick={runSynth} disabled={busy || !cfg} className="btn btn-sm mt-3">{busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <FlaskConical className="h-3.5 w-3.5" aria-hidden />} Testbild erzeugen und lesen</button>
+          <button onClick={runSynth} disabled={busy || !cfg} className="btn btn-sm mt-3">{busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <FlaskConical className="h-3.5 w-3.5" aria-hidden />} Generate and read test image</button>
         </section>
 
         <section className="card p-4">
-          <p className="flex items-center gap-2 text-sm font-medium"><Upload className="h-4 w-4 text-amber" aria-hidden /> Foto der gedruckten Karte</p>
+          <p className="flex items-center gap-2 text-sm font-medium"><Upload className="h-4 w-4 text-amber" aria-hidden /> Photo of the card</p>
           <input type="file" accept="image/*" capture="environment" onChange={(e) => onFile(e.target.files?.[0])} className="mt-3 block w-full text-xs text-muted file:mr-3 file:rounded-full file:border file:border-line file:bg-surface file:px-3 file:py-1.5 file:text-xs file:text-ink" />
-          <p className="mt-2 text-xs text-muted">Karte drucken (<code className="mono">docs/card/Einlegekarte_RevC.pdf</code>, 100 %), ein Feld mit schwarzem Marker übermalen, Feuchtepunkt rosa anmalen.</p>
+          <p className="mt-2 text-xs text-muted">Photograph the card in its holder, flat and from above. To test a trigger with a printed card (<code className="mono">docs/card/Einlegekarte_RevC.pdf</code>, 100 %), black out a field with a marker or colour the humidity dot pink.</p>
         </section>
 
         <section className="card p-4">
-          <p className="flex items-center gap-2 text-sm font-medium"><Camera className="h-4 w-4 text-amber" aria-hidden /> Live-Kamera</p>
+          <p className="flex items-center gap-2 text-sm font-medium"><Camera className="h-4 w-4 text-amber" aria-hidden /> Live camera</p>
           <video ref={video} playsInline muted className={`mt-3 w-full rounded-lg bg-line ${camOn ? "" : "hidden"}`} />
           <div className="mt-3 flex flex-wrap gap-2">
-            {!camOn ? <button onClick={startCam} className="btn-outline btn-sm">Kamera starten</button> : (
+            {!camOn ? <button onClick={startCam} className="btn-outline btn-sm">Start camera</button> : (
               <>
-                <button onClick={capture} disabled={busy} className="btn btn-sm">Aufnehmen</button>
-                <button onClick={runSeries} disabled={busy} className="btn-outline btn-sm"><Repeat className="h-3.5 w-3.5" aria-hidden /> 10× Serie</button>
-                <button onClick={stopCam} className="btn-outline btn-sm">Stopp</button>
+                <button onClick={capture} disabled={busy} className="btn btn-sm">Capture</button>
+                <button onClick={runSeries} disabled={busy} className="btn-outline btn-sm"><Repeat className="h-3.5 w-3.5" aria-hidden /> 10× series</button>
+                <button onClick={stopCam} className="btn-outline btn-sm">Stop</button>
               </>
             )}
           </div>
           {series.length > 0 && (
             <p className="mt-3 text-xs">
-              <span className="font-medium">{agree} von {series.length}</span> Aufnahmen stimmen überein · Hitze {series.map((r) => r.heat).join("")} · Feuchte {series.map((r) => r.humidity).join("")}
+              <span className="font-medium">{agree} of {series.length}</span> captures agree · heat {series.map((r) => r.heat).join("")} · humidity {series.map((r) => r.humidity).join("")}
             </p>
           )}
         </section>
@@ -178,19 +178,19 @@ export function VisionLab() {
 
       <div className="space-y-6">
         <div className="grid gap-4 sm:grid-cols-2">
-          <div><p className="eyebrow">Eingang</p><canvas ref={inputCanvas} className="mt-2 w-full rounded-lg border border-line bg-line" /></div>
-          <div><p className="eyebrow">Entzerrte Karte 660 × 340</p><canvas ref={warpCanvas} className="mt-2 w-full rounded-lg border border-line bg-line" /></div>
+          <div><p className="eyebrow">Input</p><canvas ref={inputCanvas} className="mt-2 w-full rounded-lg border border-line bg-line" /></div>
+          <div><p className="eyebrow">Rectified card 660 × 340</p><canvas ref={warpCanvas} className="mt-2 w-full rounded-lg border border-line bg-line" /></div>
         </div>
 
         {reading && !reading.found && (
-          <div className="card p-4"><p className="font-medium text-bad">Karte nicht erkannt</p><p className="mt-1 text-sm text-muted">{reading.reason} · alle Indikatoren MISSING · {Math.round(reading.ms)} ms</p></div>
+          <div className="card p-4"><p className="font-medium text-bad">Card not detected</p><p className="mt-1 text-sm text-muted">{reading.reason} · all indicators MISSING · {Math.round(reading.ms)} ms</p></div>
         )}
         {reading && reading.found && heat && hum && (
           <div className="card p-4">
             <div className="flex flex-wrap gap-2">
               <Pill tone={heat.tone}>{heat.label}: {heat.detail}</Pill>
               <Pill tone={hum.tone}>{hum.label}: {hum.detail}</Pill>
-              <Pill tone="none">Licht: {reading?.found && reading.uv !== 3 ? indicatorText("uv", reading.uv).detail : "nicht bestückt"}</Pill>
+              <Pill tone="none">Light: {reading?.found && reading.uv !== 3 ? indicatorText("uv", reading.uv).detail : "not fitted"}</Pill>
             </div>
             <div className="mt-4 grid grid-cols-6 gap-2">
               {HEAT_FIELDS_C.map((c, i) => {
@@ -205,16 +205,16 @@ export function VisionLab() {
             </div>
             <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-muted sm:grid-cols-4">
               <div><dt>heatLevels</dt><dd className="mono text-ink">[{reading.heatLevels.join(",")}]</dd></div>
-              <div><dt>Konfidenz Hitze / Feuchte</dt><dd className="tabular text-ink">{reading.confidence.heat.toFixed(3)} / {reading.confidence.humidity.toFixed(3)}</dd></div>
-              <div><dt>Marker / QR / Anker</dt><dd className="text-ink">{Math.round(reading.quality.markerPx)} px · {reading.quality.qrUsed ? "QR" : "kein QR"} · {reading.quality.anchors.length}</dd></div>
-              <div><dt>Weißabgleich L* grau/weiß</dt><dd className="tabular text-ink">{reading.quality.groups.heat.greyL.toFixed(0)}/{reading.quality.groups.heat.whiteL.toFixed(0)} · {reading.quality.groups.hum.greyL.toFixed(0)}/{reading.quality.groups.hum.whiteL.toFixed(0)}</dd></div>
-              <div><dt>Feuchte ΔE Ausgang / Ausgelöst</dt><dd className="tabular text-ink">{reading.humidityField ? `${reading.humidityField.dIntact.toFixed(1)} / ${reading.humidityField.dTriggered.toFixed(1)}` : "–"}</dd></div>
-              <div><dt>Dauer</dt><dd className="tabular text-ink">{Math.round(reading.ms)} ms</dd></div>
-              <div className="col-span-2"><dt>Anker</dt><dd className="text-ink">{reading.quality.anchors.join(", ") || "–"}</dd></div>
+              <div><dt>Confidence heat / humidity</dt><dd className="tabular text-ink">{reading.confidence.heat.toFixed(3)} / {reading.confidence.humidity.toFixed(3)}</dd></div>
+              <div><dt>Marker / QR / anchors</dt><dd className="text-ink">{Math.round(reading.quality.markerPx)} px · {reading.quality.qrUsed ? "QR" : "no QR"} · {reading.quality.anchors.length}</dd></div>
+              <div><dt>White balance L* grey/white</dt><dd className="tabular text-ink">{reading.quality.groups.heat.greyL.toFixed(0)}/{reading.quality.groups.heat.whiteL.toFixed(0)} · {reading.quality.groups.hum.greyL.toFixed(0)}/{reading.quality.groups.hum.whiteL.toFixed(0)}</dd></div>
+              <div><dt>Humidity ΔE intact / triggered</dt><dd className="tabular text-ink">{reading.humidityField ? `${reading.humidityField.dIntact.toFixed(1)} / ${reading.humidityField.dTriggered.toFixed(1)}` : "–"}</dd></div>
+              <div><dt>Duration</dt><dd className="tabular text-ink">{Math.round(reading.ms)} ms</dd></div>
+              <div className="col-span-2"><dt>Anchors</dt><dd className="text-ink">{reading.quality.anchors.join(", ") || "–"}</dd></div>
             </dl>
             <div className="mt-3 flex items-center gap-3 text-xs">
               <Lamp tone={toneOf(reading.heat)} /><span>heat = heatLevels[4]</span>
-              <button onClick={() => setShowDebug(!showDebug)} className="link text-muted">{showDebug ? "Debug ausblenden" : "Debug anzeigen"}</button>
+              <button onClick={() => setShowDebug(!showDebug)} className="link text-muted">{showDebug ? "Hide debug" : "Show debug"}</button>
             </div>
             {showDebug && reading.debug && <pre className="mono mt-3 max-h-64 overflow-auto rounded-lg border border-line bg-bg p-3 text-[11px] text-muted">{reading.debug.join("\n")}</pre>}
           </div>

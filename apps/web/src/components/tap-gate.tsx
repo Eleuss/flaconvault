@@ -25,14 +25,14 @@ export function TapGate({ params }: { params: TagParams }) {
   if (handed) {
     return (
       <div className="page-in container-page flex min-h-[70vh] flex-col justify-center py-16">
-        <p className="eyebrow">Scan läuft</p>
-        <h1 className="mt-3 font-serif text-4xl">Tap übernommen</h1>
-        <p className="mt-3 max-w-md text-muted">Der Tap wurde an deine laufende Scan-Sitzung übergeben. Es geht gleich automatisch im Scan weiter.</p>
-        <Link href="/scan" className="btn mt-6 self-start">Zum Scan <ArrowRight className="h-4 w-4" aria-hidden /></Link>
+        <p className="eyebrow">Scan in progress</p>
+        <h1 className="mt-3 font-serif text-4xl">Tap handed over</h1>
+        <p className="mt-3 max-w-md text-muted">The tap was handed over to your running scan session. The scan will continue automatically in a moment.</p>
+        <Link href="/scan" className="btn mt-6 self-start">Back to scan <ArrowRight className="h-4 w-4" aria-hidden /></Link>
       </div>
     );
   }
-  return <div className="container-page py-16 text-sm text-muted"><Loader2 className="inline h-4 w-4 animate-spin" aria-hidden /> Siegel wird geprüft …</div>;
+  return <div className="container-page py-16 text-sm text-muted"><Loader2 className="inline h-4 w-4 animate-spin" aria-hidden /> Checking seal …</div>;
 }
 
 /** On the /t result page: remember the chip for /certify ("UID vom letzten Tap übernehmen"). */

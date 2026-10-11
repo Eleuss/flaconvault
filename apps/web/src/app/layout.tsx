@@ -10,7 +10,7 @@ const instrument = Instrument_Serif({ subsets: ["latin"], weight: "400", style: 
 
 export const metadata: Metadata = {
   title: { default: "FlaconVault", template: "%s · FlaconVault" },
-  description: "Aus erster Hand versiegelt. Auf dem Zweitmarkt lesbar. NFC-Siegel, Indikatorkarte und Pass für hochwertige Parfümflakons.",
+  description: "Sealed at first hand. Readable on the secondary market. NFC seal, indicator card and passport for fine perfume bottles.",
   manifest: "/manifest.webmanifest",
   applicationName: "FlaconVault",
   appleWebApp: { capable: true, title: "FlaconVault", statusBarStyle: "default" },
@@ -23,7 +23,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="de" className={`${manrope.variable} ${instrument.variable}`}>
+    <html lang="en" className={`${manrope.variable} ${instrument.variable}`}>
       <body className="min-h-dvh flex flex-col font-sans text-[15px] leading-relaxed">
         <SolanaProviders>
           <SiteHeader />

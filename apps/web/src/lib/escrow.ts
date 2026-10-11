@@ -10,8 +10,8 @@ const enc = (s: string) => new TextEncoder().encode(s);
 /** Mirrors programs/escrow/src/constants.rs (ORDER_STATE_*). */
 export const OrderState = { LISTED: 0, RESERVED: 1, PRESHIP_SCANNED: 2, SHIPPED: 3, RECEIPT_SCANNED: 4, RELEASED: 5, MISMATCH: 6, DISPUTE: 7, CANCELLED: 8 } as const;
 export const orderStateLabel: Record<number, string> = {
-  0: "Gelistet", 1: "Reserviert", 2: "Versand-Scan erfasst", 3: "Versendet", 4: "Empfangs-Scan erfasst",
-  5: "Freigegeben", 6: "Abweichung", 7: "Dispute", 8: "Storniert",
+  0: "Listed", 1: "Reserved", 2: "Shipping scan recorded", 3: "Shipped", 4: "Receiving scan recorded",
+  5: "Released", 6: "Mismatch", 7: "Dispute", 8: "Cancelled",
 };
 export const orderStateTone = (s: number): "ok" | "warn" | "bad" | "none" =>
   s === OrderState.RELEASED ? "ok" : s === OrderState.MISMATCH || s === OrderState.DISPUTE ? "bad" : s === OrderState.CANCELLED ? "none" : "warn";

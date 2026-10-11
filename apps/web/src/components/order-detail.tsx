@@ -55,7 +55,7 @@ export function OrderDetail({ serial }: { serial: string }) {
   // scans by the connected wallet on this passport → ScanProof PDAs (server payload carries counter + fill)
   const myScans: ScanOpt[] = (passport?.events ?? [])
     .filter((e: PassportEvent) => e.type === EventType.SCAN && e.actor === me && typeof e.payload.counter === "number" && e.status !== "failed")
-    .map((e) => ({ counter: e.payload.counter as number, ts: e.ts, fill: typeof e.payload.fill === "number" ? e.payload.fill : null, pda: scanPda(sealKey!, e.payload.counter as number), label: `Zähler ${e.payload.counter} · ${fmtDate(e.ts)}${typeof e.payload.fill === "number" ? ` · Füllstand ${e.payload.fill} %` : ""}` }))
+    .map((e) => ({ counter: e.payload.counter as number, ts: e.ts, fill: typeof e.payload.fill === "number" ? e.payload.fill : null, pda: scanPda(sealKey!, e.payload.counter as number), label: `Counter ${e.payload.counter} · ${fmtDate(e.ts)}${typeof e.payload.fill === "number" ? ` · fill level ${e.payload.fill} %` : ""}` }))
     .reverse();
 
   type Ev = { type: number; payload?: Record<string, unknown> };
@@ -93,35 +93,35 @@ export function OrderDetail({ serial }: { serial: string }) {
       payload: { receiptScanCounter: chosen!.counter, preShipScanCounter: sellerScanCounter ?? null, match: after?.state === OrderState.RECEIPT_SCANNED, fillDelta: null },
     })),
     release: () => run("release", () => escrowIx.release(prog(), order!, wallet.publicKey!, config!.usdcMint).rpc(), { type: EventType.RELEASE, payload: { priceUsdc: order!.priceUsdc, currency: "USDC", to: order!.seller.toBase58(), passportTo: order!.buyer?.toBase58() } }),
-    dispute: () => run("dispute", () => escrowIx.dispute(prog(), order!, wallet.publicKey!, config!.usdcMint, seal?.dead && sealKey ? sealKey : null).rpc(), { type: EventType.DISPUTE, payload: { reason: seal?.dead ? "Siegel antwortet nicht" : timeoutReached ? "kein Empfangs-Scan binnen Frist" : order!.state === OrderState.MISMATCH ? "Scans weichen ab" : "Admin" } }),
+    dispute: () => run("dispute", () => escrowIx.dispute(prog(), order!, wallet.publicKey!, config!.usdcMint, seal?.dead && sealKey ? sealKey : null).rpc(), { type: EventType.DISPUTE, payload: { reason: seal?.dead ? "Seal not responding" : timeoutReached ? "no receiving scan within the deadline" : order!.state === OrderState.MISMATCH ? "scans disagree" : "admin" } }),
     cancel: () => run("cancel", () => escrowIx.cancel(prog(), order!).rpc()),
   };
 
-  if (order === undefined) return <div className="container-page py-16 text-sm text-muted"><Loader2 className="inline h-4 w-4 animate-spin" aria-hidden /> Lade Order …</div>;
+  if (order === undefined) return <div className="container-page py-16 text-sm text-muted"><Loader2 className="inline h-4 w-4 animate-spin" aria-hidden /> Loading order …</div>;
 
   return (
     <div className="page-in container-page py-10">
-      <p className="eyebrow"><Link href="/market" className="hover:text-ink">Markt</Link> · {serial}</p>
+      <p className="eyebrow"><Link href="/market" className="hover:text-ink">Market</Link> · {serial}</p>
       <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="font-serif text-4xl">{passport ? `${passport.brand} · ${passport.name}` : serial}</h1>
-          {passport && <p className="mt-2 text-sm text-muted">Grade {gradeLetter(passport.void ? 4 : passport.grade)} · {passport.stats.scanCount} Scans · Siegel {passport.sealStatus === "INTACT" ? "intakt" : passport.sealStatus === "NO_RESPONSE" ? "antwortet nicht" : "geöffnet"} · <Link href={`/p/${serial}`} className="link">Pass ansehen</Link></p>}
+          {passport && <p className="mt-2 text-sm text-muted">Grade {gradeLetter(passport.void ? 4 : passport.grade)} · {passport.stats.scanCount} scans · seal {passport.sealStatus === "INTACT" ? "intact" : passport.sealStatus === "NO_RESPONSE" ? "not responding" : "opened"} · <Link href={`/p/${serial}`} className="link">View passport</Link></p>}
         </div>
         {passport && <GradeMark grade={passport.void ? 4 : passport.grade} />}
       </div>
       {error && <p className="mt-4 rounded-xl border border-bad/40 px-4 py-3 text-sm text-bad">{error}</p>}
-      {lastTx && <p className="mt-4 text-xs text-muted">Letzte Transaktion: <a className="link" href={txUrl(lastTx)} target="_blank" rel="noreferrer">{short(lastTx, 8)}</a></p>}
+      {lastTx && <p className="mt-4 text-xs text-muted">Last transaction: <a className="link" href={txUrl(lastTx)} target="_blank" rel="noreferrer">{short(lastTx, 8)}</a></p>}
 
       {!order ? (
         <div className="card mt-8 p-5 text-sm">
-          <p className="font-medium">Kein Listing für diesen Pass.</p>
-          <p className="mt-1 text-muted">Als Verkäufer im <Link href="/market" className="link">Markt</Link> listen.</p>
+          <p className="font-medium">No listing for this passport.</p>
+          <p className="mt-1 text-muted">List it as the seller in the <Link href="/market" className="link">market</Link>.</p>
         </div>
       ) : (
         <>
           <section className="card mt-8 p-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <p className="tabular text-2xl">{order.priceUsdc.toLocaleString("de-DE")} USDC</p>
+              <p className="tabular text-2xl">{order.priceUsdc.toLocaleString("en-US")} USDC</p>
               <Pill tone={orderStateTone(order.state)}>{orderStateLabel[order.state]}</Pill>
             </div>
             <ol className="mt-5 grid grid-cols-3 gap-2 text-xs sm:grid-cols-6">
@@ -131,62 +131,62 @@ export function OrderDetail({ serial }: { serial: string }) {
               })}
             </ol>
             <dl className="mt-4 grid gap-x-6 gap-y-1 text-xs text-muted sm:grid-cols-3">
-              <div><dt>Verkäufer</dt><dd className="text-ink"><Link href={`/wallet/${order.seller.toBase58()}`} className="link">{short(order.seller.toBase58())}</Link></dd></div>
-              <div><dt>Käufer</dt><dd className="text-ink">{order.buyer ? <Link href={`/wallet/${order.buyer.toBase58()}`} className="link">{short(order.buyer.toBase58())}</Link> : "–"}</dd></div>
-              <div><dt>Gelistet</dt><dd className="text-ink">{fmtDate(order.listedAt)}</dd></div>
-              <div><dt>Versand-Scan</dt><dd className="mono text-ink">{order.sellerScan ? short(order.sellerScan.toBase58()) : "–"}</dd></div>
-              <div><dt>Empfangs-Scan</dt><dd className="mono text-ink">{order.buyerScan ? short(order.buyerScan.toBase58()) : "–"}</dd></div>
-              <div><dt>Frist</dt><dd className="text-ink">{order.shippedAt ? `${fmtDate(order.shippedAt + order.disputeAfterS)}${timeoutReached ? " · abgelaufen" : ""}` : `${Math.round(order.disputeAfterS / 86400)} Tage nach Versand`}</dd></div>
+              <div><dt>Seller</dt><dd className="text-ink"><Link href={`/wallet/${order.seller.toBase58()}`} className="link">{short(order.seller.toBase58())}</Link></dd></div>
+              <div><dt>Buyer</dt><dd className="text-ink">{order.buyer ? <Link href={`/wallet/${order.buyer.toBase58()}`} className="link">{short(order.buyer.toBase58())}</Link> : "–"}</dd></div>
+              <div><dt>Listed</dt><dd className="text-ink">{fmtDate(order.listedAt)}</dd></div>
+              <div><dt>Shipping scan</dt><dd className="mono text-ink">{order.sellerScan ? short(order.sellerScan.toBase58()) : "–"}</dd></div>
+              <div><dt>Receiving scan</dt><dd className="mono text-ink">{order.buyerScan ? short(order.buyerScan.toBase58()) : "–"}</dd></div>
+              <div><dt>Deadline</dt><dd className="text-ink">{order.shippedAt ? `${fmtDate(order.shippedAt + order.disputeAfterS)}${timeoutReached ? " · expired" : ""}` : `${Math.round(order.disputeAfterS / 86400)} days after shipping`}</dd></div>
             </dl>
           </section>
 
           <section className="card mt-6 p-5">
-            <p className="text-sm font-medium">Nächster Schritt</p>
+            <p className="text-sm font-medium">Next step</p>
             {!wallet.connected && <div className="mt-3"><WalletButton /></div>}
             {wallet.connected && (
               <div className="mt-3 space-y-3 text-sm">
                 {order.state === OrderState.LISTED && !isSeller && (
                   <div className="flex flex-wrap items-center gap-3">
-                    <button onClick={act.reserve} disabled={busy !== null || !config} className="btn btn-sm">{busy === "reserve" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Reservieren · {order.priceUsdc} USDC in den Vault</button>
-                    <span className="text-xs text-muted">Braucht ein USDC-Konto mit Guthaben (Mint {config ? short(config.usdcMint.toBase58()) : "?"}).</span>
+                    <button onClick={act.reserve} disabled={busy !== null || !config} className="btn btn-sm">{busy === "reserve" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Reserve · {order.priceUsdc} USDC into the vault</button>
+                    <span className="text-xs text-muted">Needs a funded USDC account (mint {config ? short(config.usdcMint.toBase58()) : "?"}).</span>
                   </div>
                 )}
-                {order.state === OrderState.LISTED && isSeller && <button onClick={act.cancel} disabled={busy !== null} className="btn-outline btn-sm">Listing zurückziehen</button>}
+                {order.state === OrderState.LISTED && isSeller && <button onClick={act.cancel} disabled={busy !== null} className="btn-outline btn-sm">Withdraw listing</button>}
                 {(order.state === OrderState.RESERVED && isSeller) && (
                   <div className="space-y-2">
-                    <p className="text-muted">Versand-Scan (Tier 2, mit Foto) machen und dann hier erfassen. Der Scan muss von dieser Wallet stammen.</p>
+                    <p className="text-muted">Do the shipping scan (tier 2, with photo), then record it here. The scan must come from this wallet.</p>
                     <div className="flex flex-wrap items-center gap-2">
-                      <Link href="/scan?role=1" className="btn-outline btn-sm">Versand-Scan machen <ArrowRight className="h-3.5 w-3.5" aria-hidden /></Link>
+                      <Link href="/scan?role=1" className="btn-outline btn-sm">Do shipping scan <ArrowRight className="h-3.5 w-3.5" aria-hidden /></Link>
                       <select value={chosen?.pda.toBase58() ?? ""} onChange={(e) => setScanChoice(e.target.value)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
-                        {myScans.length === 0 && <option value="">— noch kein eigener Scan —</option>}
+                        {myScans.length === 0 && <option value="">— no own scan yet —</option>}
                         {myScans.map((s) => <option key={s.pda.toBase58()} value={s.pda.toBase58()}>{s.label}</option>)}
                       </select>
-                      <button onClick={act.preShip} disabled={busy !== null || !chosen} className="btn btn-sm">{busy === "preShip" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Versand-Scan erfassen</button>
+                      <button onClick={act.preShip} disabled={busy !== null || !chosen} className="btn btn-sm">{busy === "preShip" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Record shipping scan</button>
                     </div>
                   </div>
                 )}
-                {order.state === OrderState.PRESHIP_SCANNED && isSeller && <button onClick={act.ship} disabled={busy !== null} className="btn btn-sm">{busy === "ship" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Als versendet markieren</button>}
+                {order.state === OrderState.PRESHIP_SCANNED && isSeller && <button onClick={act.ship} disabled={busy !== null} className="btn btn-sm">{busy === "ship" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Mark as shipped</button>}
                 {order.state === OrderState.SHIPPED && isBuyer && (
                   <div className="space-y-2">
-                    <p className="text-muted">Nach Empfang: Scan (Tier 2, mit Foto) machen und erfassen. Freigabe, wenn Hitze und Feuchte gleich sind und der Füllstand um höchstens {FILL_TOLERANCE} % abweicht.</p>
+                    <p className="text-muted">After receipt: do a scan (tier 2, with photo) and record it. Release happens when heat and humidity match and the fill level differs by at most {FILL_TOLERANCE} %.</p>
                     <div className="flex flex-wrap items-center gap-2">
-                      <Link href="/scan?role=2" className="btn-outline btn-sm">Empfangs-Scan machen <ArrowRight className="h-3.5 w-3.5" aria-hidden /></Link>
+                      <Link href="/scan?role=2" className="btn-outline btn-sm">Do receiving scan <ArrowRight className="h-3.5 w-3.5" aria-hidden /></Link>
                       <select value={chosen?.pda.toBase58() ?? ""} onChange={(e) => setScanChoice(e.target.value)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
-                        {myScans.length === 0 && <option value="">— noch kein eigener Scan —</option>}
+                        {myScans.length === 0 && <option value="">— no own scan yet —</option>}
                         {myScans.map((s) => <option key={s.pda.toBase58()} value={s.pda.toBase58()}>{s.label}</option>)}
                       </select>
-                      <button onClick={act.receipt} disabled={busy !== null || !chosen} className="btn btn-sm">{busy === "receipt" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Empfangs-Scan erfassen</button>
+                      <button onClick={act.receipt} disabled={busy !== null || !chosen} className="btn btn-sm">{busy === "receipt" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Record receiving scan</button>
                     </div>
                   </div>
                 )}
-                {order.state === OrderState.RECEIPT_SCANNED && <button onClick={act.release} disabled={busy !== null || !config} className="btn btn-sm">{busy === "release" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Freigeben · USDC → Verkäufer, Pass → Käufer</button>}
+                {order.state === OrderState.RECEIPT_SCANNED && <button onClick={act.release} disabled={busy !== null || !config} className="btn btn-sm">{busy === "release" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Release · USDC → seller, passport → buyer</button>}
                 {((order.state === OrderState.MISMATCH && (isBuyer || isAdmin)) || (order.state === OrderState.SHIPPED && isBuyer && (timeoutReached || seal?.dead)) || (isAdmin && [OrderState.RESERVED, OrderState.PRESHIP_SCANNED, OrderState.SHIPPED].includes(order.state as 1 | 2 | 3)) || (isBuyer && seal?.dead && [OrderState.RESERVED, OrderState.PRESHIP_SCANNED].includes(order.state as 1 | 2))) && (
-                  <button onClick={act.dispute} disabled={busy !== null || !config} className="btn-outline btn-sm text-bad">{busy === "dispute" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Dispute · USDC zurück an Käufer</button>
+                  <button onClick={act.dispute} disabled={busy !== null || !config} className="btn-outline btn-sm text-bad">{busy === "dispute" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Dispute · USDC back to buyer</button>
                 )}
-                {[OrderState.RELEASED, OrderState.DISPUTE, OrderState.CANCELLED].includes(order.state as 5 | 7 | 8) && <p className="text-muted">Abgeschlossen. Die Geschichte steht im <Link href={`/p/${serial}`} className="link">Pass</Link>.</p>}
-                {order.state === OrderState.RESERVED && !isSeller && <p className="text-muted">Warten auf den Versand-Scan des Verkäufers.</p>}
-                {order.state === OrderState.PRESHIP_SCANNED && !isSeller && <p className="text-muted">Warten auf den Versand.</p>}
-                {order.state === OrderState.SHIPPED && !isBuyer && <p className="text-muted">Unterwegs. Der Käufer erfasst den Empfangs-Scan.</p>}
+                {[OrderState.RELEASED, OrderState.DISPUTE, OrderState.CANCELLED].includes(order.state as 5 | 7 | 8) && <p className="text-muted">Completed. The history is on the <Link href={`/p/${serial}`} className="link">passport</Link>.</p>}
+                {order.state === OrderState.RESERVED && !isSeller && <p className="text-muted">Waiting for the seller’s shipping scan.</p>}
+                {order.state === OrderState.PRESHIP_SCANNED && !isSeller && <p className="text-muted">Waiting for shipment.</p>}
+                {order.state === OrderState.SHIPPED && !isBuyer && <p className="text-muted">In transit. The buyer records the receiving scan.</p>}
               </div>
             )}
           </section>

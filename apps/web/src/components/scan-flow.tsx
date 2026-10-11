@@ -15,6 +15,8 @@ import { DEV_SIMULATOR, PROGRAM_ID } from "@/lib/config";
 import { gradeLetter, gradeSentence, indicatorText, txUrl, verdictText } from "@/lib/format";
 import { GradeMark, Lamp, Pill } from "./badges";
 import { WalletButton } from "./wallet-button";
+import { isIOS, noInjectedWallet, resumeState, resumeUrl, walletBrowseLinks } from "@/lib/wallet-links";
+import { WalletReadyState } from "@solana/wallet-adapter-base";
 
 type Step = "session" | "tap" | "preview" | "camera" | "read" | "verify" | "tx" | "done" | "dead";
 interface Tag extends TagParams { source: "nfc" | "simulator"; serial?: string | null }
@@ -62,7 +64,8 @@ export function ScanFlow() {
   const video = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
   const nfcAbort = useRef<AbortController | null>(null);
-  const tier = certified ? qTier : frames ? Tier.SELF_MEDIA : Tier.SELF;
+  const [tierOverride, setTierOverride] = useState<number | null>(null);
+  const tier = tierOverride ?? (certified ? qTier : frames ? Tier.SELF_MEDIA : Tier.SELF);
 
   // ---- 1. session -------------------------------------------------------
   const startSession = useCallback(async () => {
@@ -111,6 +114,18 @@ export function ScanFlow() {
     setStep("tap");
     if (DEV_SIMULATOR) api.simTags().then(setSimTags).catch(() => setSimTags([]));
   }, [step]);
+  // Resume at step 8 inside a wallet app's browser (iPhone): state travels in ?resume= (see lib/wallet-links.ts)
+  const resumedTx = useRef(false);
+  useEffect(() => {
+    if (resumedTx.current) return;
+    const r = params.get("resume");
+    if (!r) return;
+    resumedTx.current = true;
+    const st = resumeState.decode(r);
+    if (!st) { setError("Wiederaufnahme-Link ungültig"); return; }
+    setVerify(st.v); setRole(st.role); setTierOverride(st.tier);
+    setStep("tx");
+  }, [params]);
   // Tap handoff: a tap that opened /t (other tab, or this tab before the reload) is handed over through localStorage
   useEffect(() => {
     if (step !== "tap") return;
@@ -447,6 +462,18 @@ export function ScanFlow() {
       {step === "tx" && verify && !expired && (
         <div>
           <StepHeader n={8} title="Signiert — jetzt verankern" hint={`Server-Verdict ${verify.verdict} · Zähler ${verify.counter} · Grade ${gradeLetter(verify.grade)} vorab. Die Transaktion enthält die Ed25519-Prüfung der Serversignatur und record_scan.`} />
+          {!wallet.connected && isIOS() && noInjectedWallet(wallet.wallets.map((w) => ({ name: w.adapter.name, installed: w.readyState === WalletReadyState.Installed }))) && (
+            <div className="card mt-6 p-4 text-sm">
+              <p className="font-medium">Mit deiner Wallet-App signieren</p>
+              <p className="mt-1 text-muted">Safari kann keine Wallet einbinden. Der Scan wird in der Wallet-App fortgesetzt, dort signierst du direkt.</p>
+              {(() => { const links = walletBrowseLinks(resumeUrl({ v: verify, tier, role, siteId })); return (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <a href={links.phantom} className="btn btn-sm">In Phantom fortsetzen</a>
+                  <a href={links.solflare} className="btn-outline btn-sm">In Solflare fortsetzen</a>
+                </div>
+              ); })()}
+            </div>
+          )}
           <div className="mt-6 flex flex-wrap items-center gap-3">
             {!wallet.connected ? <WalletButton /> : (
               <>

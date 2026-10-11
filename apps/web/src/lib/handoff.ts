@@ -11,7 +11,7 @@ const read = <T,>(k: string): T | null => { try { const v = localStorage.getItem
 const write = (k: string, v: unknown) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } };
 const drop = (k: string) => { try { localStorage.removeItem(k); } catch { /* ignore */ } };
 
-export interface ScanSessionFlag { nonce: string; expiresAt: number }
+export interface ScanSessionFlag { nonce: string; expiresAt: number; ttl?: number; issuedAt?: number }
 export interface TapHandoff extends TagParams { ts: number }
 export interface LastTap { uid: string; serial: string | null; counter: number | null; ts: number }
 

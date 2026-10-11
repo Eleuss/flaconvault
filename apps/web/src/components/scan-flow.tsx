@@ -69,7 +69,7 @@ export function ScanFlow() {
     setError(null); setTag(null); setPreview(null); setFrames(null); setReading(null); setVerify(null); setTxSig(null);
     try {
       const s = await api.session();
-      scanSession.set({ nonce: s.nonce, expiresAt: s.expiresAt });
+      scanSession.set({ nonce: s.nonce, expiresAt: s.expiresAt, ttl: s.ttl, issuedAt: s.issuedAt });
       setSession(s); setLeft(s.ttl ?? NONCE_TTL_S); setStep("tap");
       if (DEV_SIMULATOR) api.simTags().then(setSimTags).catch(() => setSimTags([]));
     } catch (e) { setError(`Server nicht erreichbar: ${(e as Error).message}`); }
@@ -97,7 +97,21 @@ export function ScanFlow() {
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(null); }
   }, []);
-  // iPhone path: a tap that opened /t in another tab is handed over through localStorage
+  // Resume: Safari (iPhone) loads the sticker link into THIS tab, so the page restarts. A session that is still
+  // running in localStorage is picked up again, and the pending tap handoff then advances it.
+  const resumed = useRef(false);
+  useEffect(() => {
+    if (resumed.current || step !== "session") return;
+    resumed.current = true;
+    const s = scanSession.active();
+    if (!s) return;
+    setSession({ nonce: s.nonce, expiresAt: s.expiresAt, ttl: s.ttl ?? NONCE_TTL_S, issuedAt: s.issuedAt });
+    setLeft(Math.max(0, Math.round(s.expiresAt - Date.now() / 1000)));
+    setNfcState("Sitzung wiederaufgenommen");
+    setStep("tap");
+    if (DEV_SIMULATOR) api.simTags().then(setSimTags).catch(() => setSimTags([]));
+  }, [step]);
+  // Tap handoff: a tap that opened /t (other tab, or this tab before the reload) is handed over through localStorage
   useEffect(() => {
     if (step !== "tap") return;
     const pick = () => { const h = tapHandoff.take(); if (h) { setNfcState("Tap aus dem Browser übernommen"); onTag({ uid: h.uid, ctr: h.ctr, cmac: h.cmac, piccData: h.piccData, enc: h.enc, source: "nfc" }); } };

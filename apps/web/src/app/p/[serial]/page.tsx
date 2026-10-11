@@ -23,7 +23,7 @@ export default async function PassportPage({ params }: { params: { serial: strin
   const seal = sealStatusText(p.sealStatus);
   const heat = indicatorText("heat", p.latest?.indicators.heat ?? 3);
   const hum = indicatorText("humidity", p.latest?.indicators.humidity ?? 3);
-  const uv = indicatorText("uv", 3);
+  const uv = indicatorText("uv", p.latest?.indicators.uv ?? 3);
   const sentence = gradeSentence(grade);
 
   return (

@@ -19,14 +19,14 @@ import { isIOS, noInjectedWallet, resumeState, resumeUrl, walletBrowseLinks } fr
 import { WalletReadyState } from "@solana/wallet-adapter-base";
 
 type Step = "session" | "tap" | "preview" | "camera" | "read" | "verify" | "tx" | "done" | "dead";
-interface Tag extends TagParams { source: "nfc" | "simulator"; serial?: string | null }
+interface Tag extends TagParams { source: "nfc" | "simulator"; serial?: string | null; tapId?: number }
 const platform = () => (typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent) ? "ANDROID_WEB" : typeof navigator !== "undefined" && /iPhone|iPad/i.test(navigator.userAgent) ? "IOS_WEB" : "DESKTOP_WEB");
 const nonceCode = (nonce: string) => nonce.replace(/^0x/, "").slice(0, 6).toUpperCase();
 
 function StepHeader({ n, title, hint }: { n: number; title: string; hint?: string }) {
   return (
     <div>
-      <p className="eyebrow">Schritt {n} von 9</p>
+      <p className="eyebrow">Schritt {n} von 7</p>
       <h1 className="mt-2 font-serif text-3xl sm:text-4xl">{title}</h1>
       {hint && <p className="mt-2 max-w-lg text-sm text-muted">{hint}</p>}
     </div>
@@ -125,6 +125,26 @@ export function ScanFlow() {
     if (!st) { setError("Wiederaufnahme-Link ungültig"); return; }
     setVerify(st.v); setRole(st.role); setTierOverride(st.tier);
     setStep("tx");
+  }, [params]);
+  // Adopt a tap that already landed on /t (phone background NFC read): one tap, then straight on to the card photo.
+  const adopted = useRef(false);
+  useEffect(() => {
+    const id = params.get("adopt");
+    if (!id || adopted.current) return;
+    adopted.current = true;
+    (async () => {
+      setError(null);
+      try {
+        const [s, t] = await Promise.all([api.session(), api.tap(id)]);
+        scanSession.set({ nonce: s.nonce, expiresAt: s.expiresAt, ttl: s.ttl, issuedAt: s.issuedAt });
+        setSession(s); setLeft(s.ttl ?? NONCE_TTL_S);
+        if (Date.now() / 1000 - t.ts > 170) { setPreview({ ...t, verdict: "REPLAY" }); setStep("preview"); setNfcState("Tap ist älter als 3 Minuten — bitte neu antippen"); return; }
+        setTag({ uid: t.uid ?? "", ctr: t.counter != null ? t.counter.toString(16).padStart(6, "0").toUpperCase() : "", cmac: "", source: "nfc", serial: t.serial ?? undefined, tapId: t.tapId });
+        setPreview({ verdict: t.verdict, counter: t.counter, serial: t.serial, serialHash: t.serialHash, uidHash: t.uidHash, sealKind: t.sealKind, sealDead: !!t.sealDead });
+        setNfcState("Tap übernommen");
+        setStep("preview");
+      } catch (e) { setError(`Tap konnte nicht übernommen werden: ${(e as Error).message}`); }
+    })();
   }, [params]);
   // Tap handoff: a tap that opened /t (other tab, or this tab before the reload) is handed over through localStorage
   useEffect(() => {
@@ -257,7 +277,7 @@ export function ScanFlow() {
       }
       const r = reading && reading.found ? reading : null;
       const body = {
-        uid: tag.uid || undefined, ctr: tag.ctr || undefined, cmac: tag.cmac, piccData: tag.piccData, enc: tag.enc, nonce: session.nonce, role, tier,
+        uid: tag.tapId ? undefined : tag.uid || undefined, ctr: tag.tapId ? undefined : tag.ctr || undefined, cmac: tag.tapId ? undefined : tag.cmac, piccData: tag.piccData, enc: tag.enc, tapId: tag.tapId, nonce: session.nonce, role, tier,
         indicators: { heat: r ? r.heat : Indicator.MISSING, humidity: r ? r.humidity : Indicator.MISSING, uv: r ? r.uv : Indicator.MISSING },
         heatLevels: r ? r.heatLevels : [0, 0, 0, 0, 0, 0], fill, mediaHash,
         serial: preview?.serial ?? undefined, location: { country: country || null, city: city || null },
@@ -309,7 +329,7 @@ export function ScanFlow() {
   const humTxt = reading?.found ? indicatorText("humidity", reading.humidity) : null;
   const previewVerdict = preview ? verdictText(preview.verdict, preview.counter) : null;
   const finalGrade = verify?.grade ?? null;
-  const stepNo = useMemo(() => ({ session: 1, tap: 2, preview: 3, camera: 4, read: 5, verify: 7, tx: 8, done: 9, dead: 3 })[step], [step]);
+  const stepNo = useMemo(() => ({ session: 1, tap: 2, preview: 3, camera: 4, read: 5, verify: 6, tx: 6, done: 7, dead: 3 })[step], [step]);
 
   return (
     <div className="page-in container-page py-10">
@@ -371,7 +391,7 @@ export function ScanFlow() {
 
       {step === "preview" && preview && previewVerdict && !expired && (
         <div>
-          <StepHeader n={3} title="Verdict-Vorschau" />
+          <StepHeader n={3} title="Siegel geprüft" />
           <div className="mt-6 flex items-center gap-3">
             <Lamp tone={previewVerdict.tone} className="h-3.5 w-3.5" />
             <p className={`font-serif text-3xl ${previewVerdict.tone === "ok" ? "text-ok" : previewVerdict.tone === "bad" ? "text-bad" : "text-warn"}`}>{previewVerdict.title}</p>
@@ -454,14 +474,14 @@ export function ScanFlow() {
 
       {step === "verify" && verify && (
         <div>
-          <StepHeader n={7} title={verdictText(verify.verdict, verify.counter).title} hint={verdictText(verify.verdict, verify.counter).hint} />
+          <StepHeader n={6} title={verdictText(verify.verdict, verify.counter).title} hint={verdictText(verify.verdict, verify.counter).hint} />
           <button onClick={startSession} className="btn-outline mt-6">Neu starten</button>
         </div>
       )}
 
       {step === "tx" && verify && !expired && (
         <div>
-          <StepHeader n={8} title="Signiert — jetzt verankern" hint={`Server-Verdict ${verify.verdict} · Zähler ${verify.counter} · Grade ${gradeLetter(verify.grade)} vorab. Die Transaktion enthält die Ed25519-Prüfung der Serversignatur und record_scan.`} />
+          <StepHeader n={6} title="Server hat signiert — jetzt verankern" hint={`Server-Verdict ${verify.verdict} · Zähler ${verify.counter} · Grade ${gradeLetter(verify.grade)} vorab. Die Transaktion enthält die Ed25519-Prüfung der Serversignatur und record_scan.`} />
           {!wallet.connected && isIOS() && noInjectedWallet(wallet.wallets.map((w) => ({ name: w.adapter.name, installed: w.readyState === WalletReadyState.Installed }))) && (
             <div className="card mt-6 p-4 text-sm">
               <p className="font-medium">Mit deiner Wallet-App signieren</p>
@@ -488,7 +508,7 @@ export function ScanFlow() {
 
       {step === "done" && (
         <div>
-          <StepHeader n={9} title={txSig ? "Scan verankert" : "Siegel antwortet nicht — gemeldet"} />
+          <StepHeader n={7} title={txSig ? "Scan verankert" : "Siegel antwortet nicht — gemeldet"} />
           <div className="mt-6 flex items-center gap-5">
             <GradeMark grade={txSig ? finalGrade : Grade.VOID} />
             <div className="text-sm text-muted">

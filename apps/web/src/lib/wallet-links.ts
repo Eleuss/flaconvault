@@ -41,4 +41,4 @@ export function walletBrowseLinks(target: string): { phantom: string; solflare: 
 
 export const isIOS = () => typeof navigator !== "undefined" && /iPhone|iPad|iPod/i.test(navigator.userAgent);
 /** true when no real wallet is injected into this browser (only the dev wallets / MWA entries would be offered) */
-export const noInjectedWallet = (names: Array<{ name: string; installed: boolean }>) => !names.some((w) => w.installed && !/^Dev-Wallet|Mobile Wallet Adapter|Burner/i.test(w.name));
+export const noInjectedWallet = (names: Array<{ name: string; installed: boolean }>) => !names.some((w) => w.installed && !/^Dev-Wallet|Mobile Wallet Adapter|Burner|WalletConnect/i.test(w.name));

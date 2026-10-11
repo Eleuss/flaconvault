@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from fv import proof
 from fv.config import Settings
-from fv.db import advance_seal_counter, get_seal_by_uid, last_counter_unregistered
+from fv.db import advance_seal_counter, get_seal_by_uid, get_tap, last_counter_unregistered
 from fv.enums import INVALID, REPLAY, UNREGISTERED, VALID
 from fv.sdm import TagParamError, decrypt_tap, key_for_uid, parse_cmac, parse_ctr, parse_hex_len, parse_uid, validate_tap
 
@@ -94,3 +94,29 @@ def check_tap(conn, settings: Settings, uid: str | None, ctr: str | int | None, 
         seal = dict(seal, last_counter=ctr_n)
     verdict = VALID if seal else UNREGISTERED
     return TapCheck(verdict, uid_hex=uid_hex, uid_hash_hex=uid_hash_hex, counter=ctr_n, cmac_hex=cmac_hex, seal=seal, encrypted=encrypted)
+
+
+ADOPT_WINDOW_S = 180
+
+
+def adopt_tap(conn, tap_id: int, now_ts: int) -> TapCheck:
+    """
+    A sticker tap that landed on /t (background NFC read on the phone) already passed CMAC + counter and advanced the
+    seal. A scan session started right afterwards may adopt it once, within ADOPT_WINDOW_S, instead of asking for a
+    second tap. The adoption is recorded as the usual source="verify" tap row, which also blocks a second use.
+    """
+    tap = get_tap(conn, tap_id)
+    if not tap or tap["source"] != "t":
+        return TapCheck(INVALID, error="tap not found")
+    if tap["verdict"] != VALID or not tap["uid_hex"] or tap["ctr"] is None:
+        return TapCheck(tap["verdict"], uid_hex=tap["uid_hex"], counter=tap["ctr"], cmac_hex=tap["cmac"], error="tap not adoptable")
+    if now_ts - int(tap["ts"]) > ADOPT_WINDOW_S:
+        return TapCheck(REPLAY, uid_hex=tap["uid_hex"], counter=int(tap["ctr"]), cmac_hex=tap["cmac"], error="tap too old")
+    used = conn.execute("SELECT 1 FROM taps WHERE uid_hex=? AND ctr=? AND source='verify' LIMIT 1",
+                        (tap["uid_hex"], int(tap["ctr"]))).fetchone()
+    if used:
+        return TapCheck(REPLAY, uid_hex=tap["uid_hex"], counter=int(tap["ctr"]), cmac_hex=tap["cmac"], error="tap already used")
+    seal = get_seal_by_uid(conn, tap["uid_hex"])
+    uid_hash_hex = proof.uid_hash(bytes.fromhex(tap["uid_hex"])).hex()
+    return TapCheck(VALID if seal else UNREGISTERED, uid_hex=tap["uid_hex"], uid_hash_hex=uid_hash_hex, counter=int(tap["ctr"]),
+                    cmac_hex=tap["cmac"], seal=seal)

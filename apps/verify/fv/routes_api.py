@@ -18,7 +18,7 @@ from fv.db import (bump_attester, confirm_event, consume_nonce, find_event, get_
                    upsert_attester, upsert_media, upsert_passport, upsert_seal, void_passport, transaction)
 from fv.deps import get_conn, get_settings
 from fv.enums import EventType, Grade, Indicator, NONCE_INVALID, NO_RESPONSE, SealKind, Tamper, VALID
-from fv.service import check_tap
+from fv.service import adopt_tap, check_tap
 from fv.strings import tap_message
 from fv.views import attester_view, event_view, passport_list_view, passport_view
 
@@ -51,7 +51,7 @@ class PreviewBody(BaseModel):
 class VerifyBody(BaseModel):
     uid: str | None = None
     ctr: str | int | None = None
-    cmac: str
+    cmac: str | None = None
     piccData: str | None = None
     enc: str | None = None
     nonce: str
@@ -65,6 +65,7 @@ class VerifyBody(BaseModel):
     location: Location | None = None
     attester: str | None = Field(default=None, min_length=32, max_length=64)
     platform: Platform = "SIMULATOR"
+    tapId: int | None = None   # adopt a tap already consumed by /t (same phone, ≤ 3 min, not yet verified)
     tamper: int = Field(default=Tamper.UNKNOWN, ge=0, le=3)
     note: str = Field(default="", max_length=280)
 
@@ -165,8 +166,11 @@ def verify(body: VerifyBody, conn=Depends(get_conn), settings: Settings = Depend
             g, _ = proof.compute_grade(verdict=NONCE_INVALID, tamper=tamper, heat=heat, hum=hum, fill=body.fill)
             return {**base, "verdict": NONCE_INVALID, "counter": None, "serial": None, "serialHash": None, "uidHash": None,
                     "sealKind": None, "sealDead": None, "grade": g, "message": tap_message(NONCE_INVALID)}
-        # 2.–5. key, CMAC, counter (advances), seal
-        chk = check_tap(conn, settings, body.uid, body.ctr, body.cmac, consume=True, picc_data=body.piccData, enc=body.enc)
+        # 2.–5. key, CMAC, counter (advances), seal — or adopt the tap /t already verified and consumed
+        if body.tapId is not None:
+            chk = adopt_tap(conn, body.tapId, ts)
+        else:
+            chk = check_tap(conn, settings, body.uid, body.ctr, body.cmac, consume=True, picc_data=body.piccData, enc=body.enc)
         verdict = chk.verdict
         if verdict == VALID and chk.seal_dead:
             verdict = NO_RESPONSE

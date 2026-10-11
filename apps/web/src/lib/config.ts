@@ -4,3 +4,6 @@ export const SOLANA_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC ?? "https://api.dev
 export const PROGRAM_ID = process.env.NEXT_PUBLIC_PROGRAM_ID ?? "";
 export const DEV_SIMULATOR = (process.env.NEXT_PUBLIC_DEV_SIMULATOR ?? "true") === "true";
 export const CLUSTER = "devnet";
+
+/** Reown (WalletConnect) Cloud project id — enables the WalletConnect entry (Phantom/Solflare/Backpack on iPhone from Safari). */
+export const WALLETCONNECT_PROJECT_ID = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "";

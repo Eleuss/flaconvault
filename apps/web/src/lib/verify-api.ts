@@ -17,10 +17,12 @@ export interface Session { nonce: string; expiresAt: number; ttl: number; issued
 export interface SimTag { uid: string; serial: string | null; kind: number | null; counter: number; alive: boolean }
 export interface TapResult { responds: boolean; uid: string; ctr?: number; ctrHex?: string; cmac?: string; url: string | null; tapId?: number }
 export interface Preview { verdict: string; counter: number | null; serial: string | null; serialHash: string | null; uidHash: string | null; sealKind: number | null; sealDead: boolean }
+export interface TapView extends Preview { tapId: number; ts: number; uid: string | null; message: string }
 
 export const api = {
   session: () => post<Session>("/api/session", {}),
   simTags: () => get<SimTag[]>("/api/dev/tags"),
+  tap: (id: number | string) => get<TapView>(`/api/tap/${id}`),
   simTap: (uid: string) => post<TapResult>("/api/dev/tap", { uid }),
   preview: (t: TagParams) => post<Preview>("/api/preview", { uid: t.uid || undefined, ctr: t.ctr || undefined, cmac: t.cmac, piccData: t.piccData, enc: t.enc }),
   verify: (body: Record<string, unknown>) => post<VerifyResponse>("/api/verify", body),

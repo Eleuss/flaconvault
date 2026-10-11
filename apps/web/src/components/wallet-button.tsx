@@ -25,7 +25,7 @@ export function WalletButton() {
     try { await mwa.adapter.connect(); } catch (e) { console.error("[wallet] mobile connect", e); }
   };
   return (
-    <span className="inline-flex items-center gap-2">
+    <span className="inline-flex flex-wrap items-center gap-2">
       <MultiButton />
       {android && mwa && !connected && wallet?.adapter.name !== mwa.adapter.name && (
         <button onClick={viaApp} className="btn btn-sm">Phantom-App</button>

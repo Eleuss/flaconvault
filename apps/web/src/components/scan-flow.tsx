@@ -61,6 +61,7 @@ export function ScanFlow() {
   const vision = useRef<VisionClient | null>(null);
   const video = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
+  const nfcAbort = useRef<AbortController | null>(null);
   const tier = certified ? qTier : frames ? Tier.SELF_MEDIA : Tier.SELF;
 
   // ---- 1. session -------------------------------------------------------
@@ -118,11 +119,13 @@ export function ScanFlow() {
     finally { setBusy(null); }
   };
   const startNfc = async () => {
-    const w = window as unknown as { NDEFReader?: new () => { scan: () => Promise<void>; onreading: ((ev: { message: { records: Array<{ recordType: string; data?: DataView; encoding?: string }> } }) => void) | null; onreadingerror: (() => void) | null } };
+    const w = window as unknown as { NDEFReader?: new () => { scan: (o?: { signal: AbortSignal }) => Promise<void>; onreading: ((ev: { message: { records: Array<{ recordType: string; data?: DataView; encoding?: string }> } }) => void) | null; onreadingerror: (() => void) | null } };
     if (!w.NDEFReader) { setNfcState("WebNFC nur in Android Chrome. iPhone: Siegel antippen öffnet /t."); return; }
     try {
       const reader = new w.NDEFReader();
-      await reader.scan();
+      nfcAbort.current?.abort();
+      const ctrl = new AbortController(); nfcAbort.current = ctrl;
+      await reader.scan({ signal: ctrl.signal });
       setNfcState("Bereit — Siegel ans Handy halten …");
       reader.onreadingerror = () => setNfcState("Lesefehler — nochmal antippen");
       reader.onreading = (ev) => {
@@ -135,10 +138,13 @@ export function ScanFlow() {
           const candidates = [text, ...(text.match(/https?:\/\/[^\s"'<>]+/gi) ?? []), ...(/^[\w.-]+\.[a-z]{2,}\//i.test(text) ? [`https://${text}`] : [])];
           for (const c of candidates) {
             const parsed = parseTagUrl(c);
-            if (parsed) { setNfcState(parsed.piccData ? "Gelesen: verschlüsselter Tap" : `Gelesen: …${parsed.uid.slice(-4)} · Zähler ${parseInt(parsed.ctr, 16)}`); onTag({ ...parsed, source: "nfc" }); return; }
+            if (parsed) { setNfcState(parsed.piccData ? "Gelesen: verschlüsselter Tap" : `Gelesen: …${parsed.uid.slice(-4)} · Zähler ${parseInt(parsed.ctr, 16)}`); onTag({ ...parsed, source: "nfc" }); ctrl.abort(); nfcAbort.current = null; return; }
           }
         }
-        setNfcState(seen.length ? `Kein FlaconVault-Siegel (keine SUN-URL). Gelesen: ${seen.join(" | ")}` : "Kein FlaconVault-Siegel (leerer NDEF)");
+        // Chrome's WebNFC hands some NTAG 424 DNA messages over as an empty record. Release the reader so the next tap goes
+        // to Android, which opens the sticker link; /t then hands the tap over to this session.
+        ctrl.abort(); nfcAbort.current = null;
+        setNfcState(`Chrome konnte den Chip nicht lesen (${seen.join(" | ") || "leer"}). NFC-Leser gestoppt — Siegel jetzt einfach ans Handy halten: Android öffnet den Link, „Tap übernommen“, dann zurück zu diesem Tab.`);
       };
     } catch (e) { setNfcState(`NFC: ${(e as Error).message}`); }
   };

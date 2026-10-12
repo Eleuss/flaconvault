@@ -70,6 +70,9 @@ export function ScanFlow() {
   const video = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
   const nfcAbort = useRef<AbortController | null>(null);
+  // the virtual-tap card only makes sense when the verifier runs its simulator (off in production)
+  const [serverSim, setServerSim] = useState(false);
+  useEffect(() => { if (DEV_SIMULATOR) api.health().then((h) => setServerSim(!!h.simulator)).catch(() => setServerSim(false)); }, []);
   const deadNonceSpent = useRef<string | null>(null);
   const [tierOverride, setTierOverride] = useState<number | null>(null);
   const tier = tierOverride ?? (certified ? qTier : frames ? Tier.SELF_MEDIA : Tier.SELF);
@@ -413,7 +416,7 @@ export function ScanFlow() {
               </div>
               <p className="mt-2 break-words text-xs text-muted">{nfcState || "Session running — simply hold the seal to the phone. The phone opens the seal link and the tap is handed over here; then return to this tab."}</p>
             </div>
-            {DEV_SIMULATOR && (
+            {DEV_SIMULATOR && serverSim && (
               <div className="card p-4">
                 <p className="flex items-center gap-2 text-sm font-medium"><Zap className="h-4 w-4 text-amber" aria-hidden /> Inject a virtual tap</p>
                 <ul className="mt-3 divide-y divide-line">

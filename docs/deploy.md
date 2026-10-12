@@ -1,6 +1,6 @@
 # Deployment
 
-**Live:** web https://flaconvault.vercel.app · verifier https://verify-production-00e9.up.railway.app (Railway project `flaconvault`, service `verify`, volume `verify-volume` at `/data`). Vercel project `flaconvault` (team `eleuss-projects`, root directory `apps/web`).
+**Live:** web https://app.flaconvault.com · verifier https://verify.flaconvault.com (old hosts still work: https://flaconvault.vercel.app redirects permanently via `apps/web/src/middleware.ts` and `NEXT_PUBLIC_CANONICAL_ORIGIN`; https://verify-production-00e9.up.railway.app stays reachable) (Railway project `flaconvault`, service `verify`, volume `verify-volume` at `/data`). Vercel project `flaconvault` (team `eleuss-projects`, root directory `apps/web`).
 
 Two services. The **web app** runs on Vercel (stable domain for the stickers and the README links), the **verifier** on Railway with a persistent volume for SQLite and media. Tags point at the web domain `/t`; the web app forwards each tap once to the verifier.
 
@@ -22,11 +22,11 @@ Two services. The **web app** runs on Vercel (stable domain for the stickers and
 | `FV_PROGRAM_ID` | `7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL` | `docs/devnet.md` |
 | `FV_DB_PATH` | `/data/flaconvault.db` | set in the Dockerfile |
 | `FV_MEDIA_DIR` | `/data/media` | set in the Dockerfile |
-| `FV_WEB_URL` | `https://flaconvault.vercel.app` | redirect target of `/t` |
-| `FV_VERIFIER_HOST` | `https://verify-production-00e9.up.railway.app` | host in simulator tag URLs |
+| `FV_WEB_URL` | `https://app.flaconvault.com` | redirect target of `/t` |
+| `FV_VERIFIER_HOST` | `https://verify.flaconvault.com` | host in simulator tag URLs |
 | `FV_ADMIN_TOKEN` | random, `secrets.token_urlsafe(32)` | required for `POST /api/reconcile` and `/api/dev/reset`; kept only in Railway + ignored `apps/verify/.env` |
 | `FV_DEV_SIMULATOR` | `false` in production | default is now false; with it off the server refuses to start on an all-zero master key |
-| `FV_CORS_ORIGINS` | `https://flaconvault.vercel.app,http://localhost:3000` | comma-separated |
+| `FV_CORS_ORIGINS` | `https://flaconvault.vercel.app,https://app.flaconvault.com,http://localhost:3000` | comma-separated |
 | `FV_ARWEAVE` | `true` | |
 | `FV_IRYS_KEY_JSON` | contents of `~/.config/solana/irys.json` | **secret** — a separate keypair (`7oSB1jK7btf5hhG9tbjUdtEJ18npuyA7dcD77CJyL3iB`, 0.05 devnet SOL), not the deploy wallet |
 | `FV_IRYS_NETWORK` | `devnet` | |
@@ -40,7 +40,9 @@ Two services. The **web app** runs on Vercel (stable domain for the stickers and
 
 | Variable | Value |
 |---|---|
-| `NEXT_PUBLIC_VERIFY_URL` | `https://verify-production-00e9.up.railway.app` |
+| `NEXT_PUBLIC_VERIFY_URL` | `https://verify.flaconvault.com` |
+| `NEXT_PUBLIC_CANONICAL_ORIGIN` | `https://app.flaconvault.com` (old vercel.app host redirects here) |
+| `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | Reown project id (WalletConnect entry) |
 | `NEXT_PUBLIC_SOLANA_RPC` | `https://api.devnet.solana.com` |
 | `NEXT_PUBLIC_PROGRAM_ID` | `7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL` |
 | `NEXT_PUBLIC_ESCROW_PROGRAM_ID` | `9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL` |
@@ -52,7 +54,7 @@ Two services. The **web app** runs on Vercel (stable domain for the stickers and
 
 1. `curl https://<railway-domain>/health` → `ok`, `programId` set.
 2. Simulator tap: `POST https://<railway-domain>/api/dev/tap {"uid":"04A1B2C3D4E5F6"}` → open the returned URL with the host swapped to the web domain → „Siegel echt · Tap N“; open it again → „Wiederholter Tap“.
-3. Write `https://flaconvault.vercel.app/t?uid=00000000000000&ctr=000000&cmac=0000000000000000` into the stickers (TagWriter SDM mirrors, see `docs/hardware-day.md`).
+3. New stickers: write `https://app.flaconvault.com/t` with the NFC Developer App (encrypted SUN, see `docs/hardware-day.md`); stickers written earlier with `https://flaconvault.vercel.app/t…` keep working through the redirect. (Old TagWriter instructions: (TagWriter SDM mirrors, see `docs/hardware-day.md`).
 4. Local dev keeps working against localhost; only the hosted `.env`s differ.
 
 ## CLI cheat sheet (both CLIs are logged in on this Mac)
@@ -64,3 +66,15 @@ railway up --service verify --detach --ci             # redeploy verifier from t
 railway variables --service verify --set K=V          # change a server variable (redeploys)
 railway logs --service verify                         # server logs
 ```
+
+
+## DNS (Namecheap, flaconvault.com)
+
+| Host | Type | Value | Purpose |
+|---|---|---|---|
+| `@` | A | `76.76.21.21` | marketplace (separate Vercel project) |
+| `www` | CNAME | `cname.vercel-dns.com` | marketplace |
+| `app` | A | `76.76.21.21` | this web app (Vercel project `flaconvault`) |
+| `verify` | CNAME | `q9g4o5rk.up.railway.app` | verifier (Railway) |
+| `_railway-verify.verify` | TXT | `railway-verify=…` | Railway ownership check for the certificate |
+| `@` | MX / TXT | privateemail / SPF | e-mail — do not touch |

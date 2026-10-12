@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS events (
   actor_pubkey  TEXT,
   actor_label   TEXT,
   tx_sig        TEXT,
-  status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','confirmed','failed')),
+  status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','confirmed','failed','reported')),  -- reported: unverified SEAL_DEAD report (no effect)
   seal_uid_hash TEXT,
   payload_json  TEXT NOT NULL DEFAULT '{}',
   ar_bundle     TEXT,
@@ -76,7 +76,9 @@ CREATE TABLE IF NOT EXISTS taps (
   cmac          TEXT,
   verdict       TEXT NOT NULL,
   serial        TEXT,
-  message       TEXT NOT NULL
+  message       TEXT NOT NULL,
+  adopt_hash    TEXT,                        -- sha256 hex of the one-time adoption token handed out by /t (VALID taps only)
+  adopted_at    INTEGER                      -- set when /api/verify adopted the tap (once)
 );
 CREATE INDEX IF NOT EXISTS taps_uid ON taps(uid_hex, ctr);
 

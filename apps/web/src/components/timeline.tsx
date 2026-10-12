@@ -14,40 +14,52 @@ const icons: Record<number, LucideIcon> = {
   [EventType.RELEASE]: Unlock, [EventType.DISPUTE]: ShieldOff, [EventType.SEAL_DEAD]: ShieldOff,
 };
 
+/** Event status as served; "reported" (an unverified SEAL_DEAD report from a buyer) may be newer than the api.ts type. */
+type EventStatus = PassportEvent["status"] | "reported";
+const statusBadge = (s: EventStatus): string | null =>
+  s === "pending" ? "awaiting confirmation" : s === "reported" ? "reported · unverified" : null;
+
 export function Timeline({ events }: { events: PassportEvent[] }) {
-  if (events.length === 0) return <p className="text-sm text-muted">No entries yet.</p>;
+  // failed attempts never landed on-chain — they are not part of the public history
+  const shown = events.filter((e) => (e.status as EventStatus) !== "failed");
+  const hidden = events.length - shown.length;
+  const hiddenNote = hidden > 0 && <p className="mt-4 text-xs text-muted">{hidden} failed {hidden === 1 ? "attempt" : "attempts"} not shown</p>;
+  if (shown.length === 0) return <><p className="text-sm text-muted">No entries yet.</p>{hiddenNote}</>;
   return (
-    <ol className="relative border-l border-line pl-6">
-      {events.map((e) => {
-        const Icon = icons[e.type] ?? Scan;
-        const { title, details } = eventLine(e);
-        const loc = e.location?.city ?? e.location?.country ?? null;
-        return (
-          <li key={e.id} className="relative pb-7 last:pb-0">
-            <span className="absolute -left-[31px] top-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full border border-line bg-surface">
-              <Icon className="h-3 w-3 text-muted" aria-hidden />
-            </span>
-            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-              <span className="tabular text-xs text-muted">{fmtDate(e.ts)}</span>
-              <span className="font-medium">{title}</span>
-              {e.status !== "confirmed" && <span className="rounded-full border border-line px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted">{e.status === "pending" ? "awaiting confirmation" : "failed"}</span>}
-            </div>
-            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
-              {details.map((d, i) => <span key={i}>{i > 0 && <span className="mr-2 opacity-50">·</span>}{d}</span>)}
-              {e.actor && (
-                <span>{details.length > 0 && <span className="mr-2 opacity-50">·</span>}<Link href={`/wallet/${e.actor}`} className="link">{e.actorLabel ?? `${e.actor.slice(0, 4)}…${e.actor.slice(-4)}`}</Link></span>
-              )}
-              {loc && <span><span className="mr-2 opacity-50">·</span>{loc}</span>}
-            </div>
-            <div className="mt-2 flex items-center gap-3 text-xs">
-              {e.gradeAfter != null && <span className="inline-flex items-center gap-1.5 text-muted">Grade <GradeMark grade={e.gradeAfter} size="sm" /></span>}
-              {e.txSig && <a href={txUrl(e.txSig)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink">tx <ExternalLink className="h-3 w-3" aria-hidden /></a>}
-              {e.arMedia && <a href={arUrl(e.arMedia)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink"><Camera className="h-3 w-3" aria-hidden /> Photo</a>}
-              {e.arBundle && <a href={arUrl(e.arBundle)} target="_blank" rel="noreferrer" className="text-muted hover:text-ink">Bundle</a>}
-            </div>
-          </li>
-        );
-      })}
-    </ol>
+    <>
+      <ol className="relative border-l border-line pl-6">
+        {shown.map((e) => {
+          const Icon = icons[e.type] ?? Scan;
+          const { title, details } = eventLine(e);
+          const loc = e.location?.city ?? e.location?.country ?? null;
+          return (
+            <li key={e.id} className="relative pb-7 last:pb-0">
+              <span className="absolute -left-[31px] top-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full border border-line bg-surface">
+                <Icon className="h-3 w-3 text-muted" aria-hidden />
+              </span>
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <span className="tabular text-xs text-muted">{fmtDate(e.ts)}</span>
+                <span className="font-medium">{title}</span>
+                {statusBadge(e.status) && <span className="rounded-full border border-line px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted">{statusBadge(e.status)}</span>}
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
+                {details.map((d, i) => <span key={i}>{i > 0 && <span className="mr-2 opacity-50">·</span>}{d}</span>)}
+                {e.actor && (
+                  <span>{details.length > 0 && <span className="mr-2 opacity-50">·</span>}<Link href={`/wallet/${e.actor}`} className="link">{e.actorLabel ?? `${e.actor.slice(0, 4)}…${e.actor.slice(-4)}`}</Link></span>
+                )}
+                {loc && <span><span className="mr-2 opacity-50">·</span>{loc}</span>}
+              </div>
+              <div className="mt-2 flex items-center gap-3 text-xs">
+                {e.gradeAfter != null && <span className="inline-flex items-center gap-1.5 text-muted">Grade <GradeMark grade={e.gradeAfter} size="sm" /></span>}
+                {e.txSig && <a href={txUrl(e.txSig)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink">tx <ExternalLink className="h-3 w-3" aria-hidden /></a>}
+                {e.arMedia && <a href={arUrl(e.arMedia)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink"><Camera className="h-3 w-3" aria-hidden /> Photo</a>}
+                {e.arBundle && <a href={arUrl(e.arBundle)} target="_blank" rel="noreferrer" className="text-muted hover:text-ink">Bundle</a>}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+      {hiddenNote}
+    </>
   );
 }

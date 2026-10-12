@@ -5,12 +5,22 @@ import json
 
 from fv.db import (events_for, get_passport, has_event_type, latest_scan_with_indicators, passport_stats,
                    recent_serials_for, seals_for)
-from fv.enums import EventType, Grade, Tamper
+from fv.enums import UNREGISTERED, EventType, Grade, Tamper
 from fv.proof import serial_hash, uid_hash
 
 
 def h0x(h: str | None) -> str | None:
     return None if h is None else ("0x" + h.lower())
+
+
+def _uid_hash0x(uid_hex: str | None) -> str | None:
+    """uidHash of a stored uid; None for anything that is not 7 bytes of hex (INVALID taps store raw input)."""
+    if not uid_hex or len(uid_hex) != 14:
+        return None
+    try:
+        return h0x(uid_hash(bytes.fromhex(uid_hex)).hex())
+    except ValueError:
+        return None
 
 
 def tap_view(row: dict, seal: dict | None) -> dict:
@@ -19,10 +29,11 @@ def tap_view(row: dict, seal: dict | None) -> dict:
         "ts": row["ts"],
         "verdict": row["verdict"],
         "counter": row["ctr"],
-        "uid": row["uid_hex"],
+        # the raw uid only for an unassigned chip (the web offers to attach it); never for registered seals
+        "uid": row["uid_hex"] if row["verdict"] == UNREGISTERED else None,
         "serial": row["serial"],
         "serialHash": h0x(serial_hash(row["serial"]).hex()) if row["serial"] else None,
-        "uidHash": h0x(uid_hash(bytes.fromhex(row["uid_hex"])).hex()) if row["uid_hex"] and len(row["uid_hex"]) == 14 else None,
+        "uidHash": _uid_hash0x(row["uid_hex"]),
         "sealKind": seal["kind"] if seal else None,
         "sealDead": bool(seal["dead"]) if seal else None,
         "message": row["message"],
@@ -64,7 +75,8 @@ def passport_view(conn, serial: str) -> dict | None:
             "ts": latest_row["ts"], "reviewRecommended": bool(b.get("reviewRecommended", False)),
             "eventId": latest_row["id"], "attester": latest_row["actor_pubkey"],
         }
-    any_dead = any(s["dead"] for s in seals) or has_event_type(conn, serial, EventType.SEAL_DEAD)
+    # a merely *reported* SEAL_DEAD (no tx) is shown in the timeline but changes nothing here
+    any_dead = any(s["dead"] for s in seals) or has_event_type(conn, serial, EventType.SEAL_DEAD, status="confirmed")
     if any_dead:
         seal_status = "NO_RESPONSE"
     elif latest and latest["tamper"] in (Tamper.OPENED_NOW, Tamper.OPENED_BEFORE):

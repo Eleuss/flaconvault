@@ -1,9 +1,10 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { Keypair, PublicKey, SystemProgram, type Transaction } from "@solana/web3.js";
-import { creatingSignature, sendAsV0 } from "@/lib/send-tx";
+import { creatingSignature, describeTxError, sendAsV0 } from "@/lib/send-tx";
+import { TxFailedError, friendly } from "@/lib/errors";
 import { ArrowRight, Loader2, Printer, ShieldCheck } from "lucide-react";
 import { bindingHash, bytesToHex, serialHash, uidHash } from "@flaconvault/proof";
 import { flaconProgram, passportPda, registryPda, sealPda } from "@/lib/flacon";
@@ -18,16 +19,9 @@ import { WalletButton } from "./wallet-button";
 interface Site { siteId: number; label: string }
 interface Registry { authority: string; partners: string[]; sites: Site[] }
 const labelOf = (bytes: number[]) => new TextDecoder().decode(new Uint8Array(bytes)).replace(/\0+$/, "");
-
-function friendly(e: unknown): string {
-  const m = (e as Error)?.message ?? String(e);
-  if (/prior credit|insufficient|0x1\b/i.test(m)) return "This wallet has no SOL on devnet. Send the address (above) to the operator or press “1 SOL airdrop (test)”.";
-  if (/rejected|declined|cancel|abgelehnt/i.test(m)) return "Signature rejected or cancelled in the wallet app. Press again and confirm in Phantom.";
-  if (/not connected|wallet.*connect|No wallet/i.test(m)) return "Wallet is no longer connected. Reconnect above.";
-  if (/ChunkLoadError|Loading chunk|dynamically imported module/i.test(m)) return "Page is outdated (new version online). Reload the page and retry.";
-  if (/429|Too Many Requests/i.test(m)) return "Devnet RPC overloaded (429). Wait 10 seconds, then press again.";
-  return m;
-}
+/** Where an error is shown: next to the section whose action failed, or at the top. Each error appears once. */
+type ErrAt = "top" | "uid" | "core" | "mint" | "seal" | "scan";
+type NdefReaderLike = { scan: (o?: { signal?: AbortSignal }) => Promise<void>; onreading: ((ev: { serialNumber?: string }) => void) | null; onreadingerror: (() => void) | null };
 
 export function CertifyConsole() {
   const { connection } = useConnection();
@@ -37,13 +31,21 @@ export function CertifyConsole() {
   const [form, setForm] = useState({ serial: "SN-2026-000004", brand: "", name: "", batch: "", siteId: 1, kind: 1, uid: "", useCore: true });
   const [simTags, setSimTags] = useState<SimTag[]>([]);
   const [recent, setRecent] = useState<{ uid: string; counter: number | null } | null>(null);
-  useEffect(() => { const t = lastTap.get(); if (t) setRecent({ uid: t.uid, counter: t.counter }); }, []);
+  // the verifier only reveals the UID for UNREGISTERED taps; a VALID tap leaves it null
+  useEffect(() => { const t = lastTap.get(); if (t?.uid) setRecent({ uid: t.uid, counter: t.counter }); }, []);
+  const [simulator, setSimulator] = useState(false); // DEV_SIMULATOR and the verifier's /health says simulator: true
   const [asset, setAsset] = useState<string | null>(null);
   const [txs, setTxs] = useState<{ core?: string; mint?: string; seal?: string }>({});
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setErrorState] = useState<{ at: ErrAt; msg: string } | null>(null);
+  const setError = (msg: string | null, at: ErrAt = "top") => setErrorState(msg ? { at, msg } : null);
+  const errorAt = (at: ErrAt) => error?.at === at
+    ? <p role="alert" className={at === "top" ? "mt-4 rounded-xl border border-bad/40 px-4 py-3 text-sm text-bad" : "mt-3 rounded-xl border border-bad/40 px-3 py-2 text-xs text-bad"}>{error.msg}</p>
+    : null;
   const [log, setLog] = useState<string[]>([]);
   const note = (s: string) => setLog((l) => [s, ...l].slice(0, 20));
+  const nfcAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => nfcAbort.current?.abort(), []);
 
   const loadRegistry = useCallback(async () => {
     if (!PROGRAM_ID || !anchorWallet) { setRegistry(null); return; }
@@ -52,10 +54,20 @@ export function CertifyConsole() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const reg: any = await (program.account as any).registry.fetch(registryPda());
       setRegistry({ authority: reg.authority.toBase58(), partners: reg.partners.map((p: PublicKey) => p.toBase58()), sites: reg.sites.map((s: { siteId: number; label: number[] }) => ({ siteId: s.siteId, label: labelOf(s.label) })) });
-    } catch (e) { setRegistry(null); setError(`Registry unreadable: ${(e as Error).message}`); }
+    } catch (e) { setRegistry(null); setError(`Registry unreadable: ${friendly(e)}`); }
   }, [connection, anchorWallet]);
   useEffect(() => { loadRegistry(); }, [loadRegistry]);
-  useEffect(() => { if (DEV_SIMULATOR) api.simTags().then(setSimTags).catch(() => {}); }, []);
+  useEffect(() => {
+    if (!DEV_SIMULATOR) return;
+    let live = true;
+    api.health().then((h) => {
+      if (!live || !h.simulator) return;
+      setSimulator(true);
+      api.simTags().then((t) => { if (live) setSimTags(t); }).catch(() => {});
+    }).catch(() => {});
+    return () => { live = false; };
+  }, []);
+  const simOn = DEV_SIMULATOR && simulator;
 
   const isPartner = !!(registry && wallet.publicKey && (registry.partners.includes(wallet.publicKey.toBase58()) || registry.authority === wallet.publicKey.toBase58()));
   const site = registry?.sites.find((s) => s.siteId === form.siteId);
@@ -71,42 +83,47 @@ export function CertifyConsole() {
       const umi = createUmi(SOLANA_RPC).use(mplCore()).use(walletAdapterIdentity(wallet));
       const signer = generateSigner(umi);
       const res = await create(umi, { asset: signer, name: `${form.brand} ${form.name} · ${form.serial}`.trim(), uri: `${PUBLIC_VERIFY_URL}/api/passport/${form.serial}` }).sendAndConfirm(umi);
-      const sig = Buffer.from(res.signature).toString("base64");
+      const { base58 } = await import("@metaplex-foundation/umi/serializers");
+      const sig = base58.deserialize(res.signature)[0];
+      if (res.result.value.err) throw new TxFailedError(sig, describeTxError(res.result.value.err));
       setAsset(signer.publicKey.toString()); setTxs((t) => ({ ...t, core: sig }));
-      note(`Core asset ${signer.publicKey.toString()} minted`);
-    } catch (e) { setError(`Core mint failed: ${friendly(e)}`); }
+      note(`Core asset ${signer.publicKey.toString()} minted · ${sig.slice(0, 12)}…`);
+    } catch (e) { setError(`Core mint failed: ${friendly(e)}`, "core"); }
     finally { setBusy(null); }
   };
   const airdrop = async () => {
     if (!wallet.publicKey) return;
     setBusy("airdrop"); setError(null);
     try { const s = await connection.requestAirdrop(wallet.publicKey, 1e9); await connection.confirmTransaction(s, "confirmed"); note("1 SOL airdrop"); }
-    catch (e) { setError(`Airdrop: ${(e as Error).message}`); } finally { setBusy(null); }
+    catch (e) { setError(`Airdrop: ${friendly(e)}`); } finally { setBusy(null); }
   };
-  const usePlaceholder = () => { const k = Keypair.generate().publicKey.toBase58(); setAsset(k); note(`Placeholder asset ${k.slice(0, 8)}…`); };
+  const placeholderAsset = () => { const k = Keypair.generate().publicKey.toBase58(); setAsset(k); note(`Placeholder asset ${k.slice(0, 8)}…`); };
 
   const sendViaWallet = (tx: Transaction) => sendAsV0(wallet, connection, tx);
 
   const mintPassport = async () => {
-    if (!anchorWallet || !wallet.publicKey || !asset) return;
+    if (!anchorWallet || !wallet.publicKey) return;
     setBusy("mint"); setError(null);
     try {
       if (!form.serial.trim() || !form.brand.trim() || !form.name.trim()) throw new Error("Serial number, brand and name must be filled in (they appear in the passport)");
-      if (!/^[0-9A-Fa-f]{14}$/.test(form.uid)) throw new Error("UID of the first seal (7 bytes hex) is needed for the binding_hash");
       const program = flaconProgram(connection, anchorWallet);
-      const sh = serialHash(form.serial), uh = uidHash(form.uid);
-      let bh = bindingHash(form.serial, form.batch, uh);
+      const sh = serialHash(form.serial);
       const pda = passportPda(sh);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const existing = (await (program.account as any).passport.fetchNullable(pda)) as { issuer: PublicKey; asset: PublicKey; bindingHash: number[] } | null;
-      let sig: string, usedAsset = asset, recovered = false;
+      let sig: string, usedAsset: string, bh: Uint8Array, recovered = false;
       if (existing) {
-        // The passport is already on chain (e.g. the wallet app sent it but the answer never reached this page).
+        // The passport is already on chain (e.g. the wallet app sent it but the answer never reached this page):
+        // asset and binding hash come from the chain, no Core asset in this page's state is needed.
         if (existing.issuer.toBase58() !== wallet.publicKey.toBase58()) throw new Error(`Passport ${form.serial} already exists and belongs to another wallet (${existing.issuer.toBase58().slice(0, 8)}…)`);
         usedAsset = existing.asset.toBase58(); bh = Uint8Array.from(existing.bindingHash);
-        sig = (await creatingSignature(connection, pda)) ?? "";
-        recovered = true; setAsset(usedAsset);
+        const found = await creatingSignature(connection, pda);
+        if (!found) throw new Error(`Passport ${form.serial} is on chain, but its mint transaction was not found. Try again in a moment.`);
+        sig = found; recovered = true; setAsset(usedAsset);
       } else {
+        if (!asset) throw new Error("Mint the Core asset first.");
+        if (!/^[0-9A-Fa-f]{14}$/.test(form.uid)) throw new Error("UID of the first seal (7 bytes hex) is needed for the binding_hash");
+        usedAsset = asset; bh = bindingHash(form.serial, form.batch, uidHash(form.uid));
         const tx = await program.methods.mintPassport(Array.from(sh), Array.from(bh), new PublicKey(asset))
           .accountsStrict({ registry: registryPda(), passport: pda, issuer: wallet.publicKey, systemProgram: SystemProgram.programId }).transaction();
         sig = await sendViaWallet(tx);
@@ -114,7 +131,7 @@ export function CertifyConsole() {
       setTxs((t) => ({ ...t, mint: sig }));
       await api.events({ serial: form.serial, type: 0, txSig: sig, actor: wallet.publicKey.toBase58(), payload: { brand: form.brand, name: form.name, batch: form.batch, asset: usedAsset, issuerLabel: site?.label ?? null, siteId: form.siteId, bindingHash: bytesToHex(bh, true) } });
       note(recovered ? `Passport ${form.serial} was already on chain · log backfilled (${sig.slice(0, 12)}…)` : `mint_passport ${form.serial} · ${sig.slice(0, 12)}…`);
-    } catch (e) { setError(friendly(e)); }
+    } catch (e) { setError(friendly(e), "mint"); }
     finally { setBusy(null); }
   };
 
@@ -131,7 +148,9 @@ export function CertifyConsole() {
       let sig: string, recovered = false;
       if (existing) {
         if (existing.passport.toBase58() !== passportPda(sh).toBase58()) throw new Error(`This seal is already attached to another passport (${existing.passport.toBase58().slice(0, 8)}…)`);
-        sig = (await creatingSignature(connection, pda)) ?? ""; recovered = true;
+        const found = await creatingSignature(connection, pda);
+        if (!found) throw new Error("The seal is on chain, but its attach transaction was not found. Try again in a moment.");
+        sig = found; recovered = true;
       } else {
         const tx = await program.methods.attachSeal(Array.from(uh), form.kind)
           .accountsStrict({ registry: registryPda(), passport: passportPda(sh), seal: pda, signer: wallet.publicKey, systemProgram: SystemProgram.programId }).transaction();
@@ -140,23 +159,37 @@ export function CertifyConsole() {
       setTxs((t) => ({ ...t, seal: sig }));
       await api.events({ serial: form.serial, type: 1, txSig: sig, actor: wallet.publicKey.toBase58(), payload: { uid: form.uid.toUpperCase(), kind: form.kind, siteId: form.siteId } });
       note(recovered ? `Seal was already on chain · log backfilled (${sig.slice(0, 12)}…)` : `attach_seal ${form.uid.toUpperCase()} · ${sig.slice(0, 12)}…`);
-    } catch (e) { setError(friendly(e)); }
+    } catch (e) { setError(friendly(e), "seal"); }
     finally { setBusy(null); }
   };
 
   const newSimTag = async () => {
     setBusy("tag"); setError(null);
     try {
-      const t = await fetch(`${PUBLIC_VERIFY_URL}/api/dev/tag`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: form.kind }) }).then((r) => r.json());
+      const t = await api.simNewTag(form.kind);
       setForm((f) => ({ ...f, uid: t.uid })); setSimTags((s) => [...s, t]); note(`Virtual tag ${t.uid}`);
-    } catch (e) { setError(friendly(e)); } finally { setBusy(null); }
+    } catch (e) { setError(friendly(e), "uid"); } finally { setBusy(null); }
   };
+  /** One read: the reader is released after the first chip (or on leaving the page). */
   const readNfc = async () => {
-    const w = window as unknown as { NDEFReader?: new () => { scan: () => Promise<void>; onreading: ((ev: { serialNumber?: string }) => void) | null } };
-    if (!w.NDEFReader) { setError("WebNFC only in Android Chrome"); return; }
-    const r = new w.NDEFReader(); await r.scan();
-    r.onreading = (ev) => { const uid = (ev.serialNumber ?? "").replace(/:/g, "").toUpperCase(); if (uid.length === 14) setForm((f) => ({ ...f, uid })); };
-    note("NFC ready — hold the chip to the phone (UID is taken over)");
+    const w = window as unknown as { NDEFReader?: new () => NdefReaderLike };
+    if (!w.NDEFReader) { setError("WebNFC only in Android Chrome", "uid"); return; }
+    setError(null);
+    nfcAbort.current?.abort();
+    const ctrl = new AbortController(); nfcAbort.current = ctrl;
+    const release = () => { ctrl.abort(); if (nfcAbort.current === ctrl) nfcAbort.current = null; };
+    try {
+      const r = new w.NDEFReader();
+      r.onreading = (ev) => {
+        const uid = (ev.serialNumber ?? "").replace(/:/g, "").toUpperCase();
+        release();
+        if (uid.length === 14) { setForm((f) => ({ ...f, uid })); note(`UID ${uid} read via NFC`); }
+        else setError(`The chip did not report a 7-byte UID (${uid || "none"}). Press “Read UID via NFC” and try again.`, "uid");
+      };
+      r.onreadingerror = () => note("NFC read error — hold the chip to the phone again");
+      await r.scan({ signal: ctrl.signal });
+      note("NFC ready — hold the chip to the phone (UID is taken over)");
+    } catch (e) { release(); setError(`NFC: ${friendly(e)}`, "uid"); }
   };
   const printCard = async () => {
     setBusy("print");
@@ -166,7 +199,7 @@ export function CertifyConsole() {
       const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
       const a = document.createElement("a"); a.href = url; a.download = `Insert-card_${form.serial}.svg`; a.click();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
-    } catch (e) { setError(friendly(e)); } finally { setBusy(null); }
+    } catch (e) { setError(friendly(e), "scan"); } finally { setBusy(null); }
   };
 
   const field = (k: keyof typeof form, label: string, extra?: React.InputHTMLAttributes<HTMLInputElement>) => (
@@ -190,7 +223,7 @@ export function CertifyConsole() {
         {wallet.connected && <button onClick={loadRegistry} className="btn-outline btn-sm">Reload registry</button>}
         {wallet.connected && DEV_SIMULATOR && <button onClick={airdrop} disabled={busy !== null} className="btn-outline btn-sm">1 SOL airdrop (test)</button>}
       </div>
-      {error && <p className="mt-4 rounded-xl border border-bad/40 px-4 py-3 text-sm text-bad">{error}</p>}
+      {errorAt("top")}
 
       <div className="mt-8 grid gap-8 lg:grid-cols-[1fr_360px]">
         <div className="space-y-6">
@@ -212,9 +245,10 @@ export function CertifyConsole() {
               <div className="mt-2 flex flex-wrap gap-2">
                 <button onClick={readNfc} className="btn-outline btn-sm">Read UID via NFC</button>
                 {recent && <button onClick={() => setForm({ ...form, uid: recent.uid })} className="btn-outline btn-sm">UID from the last tap: <span className="mono">{recent.uid}</span></button>}
-                {DEV_SIMULATOR && <button onClick={newSimTag} disabled={busy !== null} className="btn-outline btn-sm">Create new virtual tag</button>}
-                {DEV_SIMULATOR && simTags.filter((t) => !t.serial).map((t) => <button key={t.uid} onClick={() => setForm({ ...form, uid: t.uid })} className="btn-outline btn-sm mono">{t.uid}</button>)}
+                {simOn && <button onClick={newSimTag} disabled={busy !== null} className="btn-outline btn-sm">Create new virtual tag</button>}
+                {simOn && simTags.filter((t) => !t.serial).map((t) => <button key={t.uid} onClick={() => setForm({ ...form, uid: t.uid })} className="btn-outline btn-sm mono">{t.uid}</button>)}
               </div>
+              {errorAt("uid")}
             </div>
           </section>
 
@@ -222,20 +256,22 @@ export function CertifyConsole() {
             <p className="text-sm font-medium">1 · Core asset</p>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <button onClick={mintCore} disabled={busy !== null || !wallet.connected} className="btn btn-sm">{busy === "core" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Mint Metaplex Core</button>
-              <button onClick={usePlaceholder} className="btn-outline btn-sm">Placeholder (localnet)</button>
+              {DEV_SIMULATOR && <button onClick={placeholderAsset} className="btn-outline btn-sm">Placeholder (localnet)</button>}
               {asset && <span className="mono text-xs text-muted">Asset {asset.slice(0, 10)}…</span>}
             </div>
             {!wallet.connected && <p className="mt-2 text-xs text-muted">Connect the wallet above first; the button then becomes active.</p>}
             {busy === "core" && <p className="mt-2 text-xs text-muted">Waiting for confirmation in the wallet app … If Phantom does not open by itself: open the app, confirm the request, return to Chrome.</p>}
-            {error && busy === null && <p className="mt-3 rounded-xl border border-bad/40 px-3 py-2 text-xs text-bad">{error}</p>}
+            {errorAt("core")}
           </section>
           <section className="card p-5">
             <p className="text-sm font-medium">2 · Create passport (mint_passport)</p>
             <p className="mt-1 text-xs text-muted">binding_hash = sha256(serial ‖ batch ‖ uid_hash of the first seal)</p>
             <div className="mt-3 flex items-center gap-3">
-              <button onClick={mintPassport} disabled={busy !== null || !isPartner || !asset} className="btn btn-sm">{busy === "mint" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Mint passport</button>
+              <button onClick={mintPassport} disabled={busy !== null || !isPartner} className="btn btn-sm">{busy === "mint" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Mint passport</button>
               {txs.mint && <a href={txUrl(txs.mint)} target="_blank" rel="noreferrer" className="link text-xs text-muted">tx {txs.mint.slice(0, 10)}…</a>}
             </div>
+            {!asset && !txs.mint && <p className="mt-2 text-xs text-muted">No Core asset in this page yet. If the passport is already on chain, its asset is taken from there.</p>}
+            {errorAt("mint")}
           </section>
           <section className="card p-5">
             <p className="text-sm font-medium">3 · Attach seal (attach_seal)</p>
@@ -243,6 +279,7 @@ export function CertifyConsole() {
               <button onClick={attachSeal} disabled={busy !== null || !isPartner} className="btn btn-sm">{busy === "seal" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Attach seal</button>
               {txs.seal && <a href={txUrl(txs.seal)} target="_blank" rel="noreferrer" className="link text-xs text-muted">tx {txs.seal.slice(0, 10)}…</a>}
             </div>
+            {errorAt("seal")}
           </section>
           <section className="card p-5">
             <p className="text-sm font-medium">4 · First scan tier 4 (birth) with photo</p>
@@ -251,6 +288,7 @@ export function CertifyConsole() {
               <button onClick={printCard} disabled={busy !== null} className="btn-outline btn-sm"><Printer className="h-3.5 w-3.5" aria-hidden /> Print card with QR (SVG)</button>
               {txs.mint && <Link href={`/p/${form.serial}`} className="link text-sm">View passport</Link>}
             </div>
+            {errorAt("scan")}
           </section>
         </div>
         <aside>

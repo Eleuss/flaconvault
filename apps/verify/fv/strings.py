@@ -20,8 +20,8 @@ HEAT_TRIGGERED_LONG = ("Heat: above 40 °C recorded — the temperature at which
 HUMIDITY_TRIGGERED = "Humidity: above 60 % RH recorded"
 HUMIDITY_TRIGGERED_LONG = "Humidity: above 60 % RH recorded — the limit for carton and label"
 UV_MISSING = "Light: not fitted (Rev D)"
-NOT_OPENED = "Not opened since certification"
-ORIGIN_DOCUMENTED = "Origin documented from source"
+NOT_OPENED = "Seal responding · no break recorded"
+ORIGIN_DOCUMENTED = "Registered by a partner"
 WITNESSED = "Witnessed by {n} wallets, {c} of them certified"
 GRADE_CD_NOTE = "The indicator documents the handling, not the condition of the contents."
 

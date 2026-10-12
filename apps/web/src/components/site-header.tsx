@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { Menu } from "lucide-react";
-import { DEV_SIMULATOR } from "@/lib/config";
 import { WalletButton } from "./wallet-button";
 
 const links = [
@@ -22,7 +21,6 @@ export function SiteHeader() {
         </Link>
         <nav className="hidden items-center gap-5 text-sm text-muted md:flex">
           {links.map((l) => <Link key={l.href} href={l.href} className="hover:text-ink">{l.label}</Link>)}
-          {DEV_SIMULATOR && <Link href="/dev" className="rounded-full border border-line px-3 py-1 text-xs hover:border-ink hover:text-ink">Simulator</Link>}
           <WalletButton />
         </nav>
         {/* mobile: compact menu, wallet inside. The header's backdrop-blur makes a stacking context; it must sit above
@@ -31,8 +29,6 @@ export function SiteHeader() {
           <summary className="btn-outline btn-sm list-none cursor-pointer" aria-label="Menu"><Menu className="h-4 w-4" aria-hidden /> Menu</summary>
           <div className="absolute right-0 top-11 z-50 w-56 rounded-2xl border border-line bg-surface p-2 shadow-soft">
             {links.map((l) => <Link key={l.href} href={l.href} className="block rounded-xl px-3 py-2 text-sm hover:bg-bg">{l.label}</Link>)}
-            {DEV_SIMULATOR && <Link href="/dev" className="block rounded-xl px-3 py-2 text-sm hover:bg-bg">Simulator</Link>}
-            {DEV_SIMULATOR && <Link href="/dev/vision" className="block rounded-xl px-3 py-2 text-sm hover:bg-bg">Indicator reading</Link>}
             <div className="mt-1 border-t border-line px-1 pt-2"><WalletButton /></div>
           </div>
         </details>

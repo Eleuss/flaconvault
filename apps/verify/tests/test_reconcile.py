@@ -7,7 +7,7 @@ from solders.pubkey import Pubkey
 import fv.reconcile as rc
 from fv import proof
 from fv.chain import pda_passport, pda_registry, pda_scan, pda_seal
-from tests.conftest import PROGRAM_ID
+from tests.conftest import ADMIN, PROGRAM_ID
 from tests.test_chain import ISSUER, SELLER, passport_bytes, registry_bytes, scan_proof_bytes, seal_bytes
 
 SERIAL = "SN-2026-000001"
@@ -55,7 +55,7 @@ def test_reconcile_transitions(chain_client, monkeypatch):
     rpc.accounts[str(pda2)] = _account_for(v2, fill=81)
     rpc.signatures[str(pda1)] = ["5" * 87 + "A"]
 
-    s = c.post("/api/reconcile").json()
+    s = c.post("/api/reconcile", headers=ADMIN).json()
     assert s == {"checked": 3, "confirmed": 2, "failed": 0, "pending": 1, "mismatched": 1,
                  "refreshed": {"passports": 0, "seals": 0}, "enabled": True}
     e1, e2, e3 = (_event(c, v["eventId"]) for v in (v1, v2, v3))
@@ -65,21 +65,23 @@ def test_reconcile_transitions(chain_client, monkeypatch):
     assert e3["status"] == "pending" and "reconcile" not in e3["payload"]
     assert "getSignaturesForAddress" in rpc.calls and "getAccountInfo" not in rpc.calls
 
-    # an existing tx_sig is left alone when the chain is checked again (nothing pending → no-op)
-    c.post("/api/events", json={"eventId": v3["eventId"], "txSig": "7" * 88, "status": "pending"})
-    assert c.post("/api/reconcile").json()["pending"] == 1
+    # an existing tx_sig is left alone when the chain is checked again (the client can no longer set one without
+    # a verified tx, so it is planted directly)
+    with c.app.state.db.connect() as conn:
+        conn.execute("UPDATE events SET tx_sig=? WHERE id=?", ("7" * 88, v3["eventId"]))
+    assert c.post("/api/reconcile", headers=ADMIN).json()["pending"] == 1
     assert _event(c, v3["eventId"])["txSig"] == "7" * 88
 
     # after the timeout without a ScanProof → failed, tx_sig untouched
     real_now = rc.now
     monkeypatch.setattr(rc, "now", lambda: real_now() + 601)
-    s = c.post("/api/reconcile").json()
+    s = c.post("/api/reconcile", headers=ADMIN).json()
     assert s["checked"] == 1 and s["failed"] == 1 and s["pending"] == 0
     e3 = _event(c, v3["eventId"])
     assert e3["status"] == "failed" and e3["txSig"] == "7" * 88 and "no ScanProof" in e3["payload"]["reconcile"]["reason"]
     # failed events are not counted as scans
     assert c.get(f"/api/passport/{SERIAL}").json()["stats"]["scanCount"] == 14 + 2
-    assert c.post("/api/reconcile").json()["checked"] == 0
+    assert c.post("/api/reconcile", headers=ADMIN).json()["checked"] == 0
 
 
 def test_chain_refresh_of_passport_and_seal(chain_client):
@@ -92,17 +94,17 @@ def test_chain_refresh_of_passport_and_seal(chain_client):
 
     before = c.get(f"/api/passport/{SERIAL}").json()
     assert before["grade"] == 0 and before["seals"][0]["lastCounter"] == 14 and before["seals"][0]["dead"] is False
-    s = c.post("/api/reconcile").json()
+    s = c.post("/api/reconcile", headers=ADMIN).json()
     assert s["refreshed"] == {"passports": 1, "seals": 1}
     after = c.get(f"/api/passport/{SERIAL}").json()
     assert after["grade"] == 2 and after["void"] is False                       # chain wins
     assert after["seals"][0]["lastCounter"] == 14 and after["seals"][0]["dead"] is True   # counter never lowered, dead from chain
     assert after["sealStatus"] == "NO_RESPONSE"
-    assert c.post("/api/reconcile").json()["refreshed"] == {"passports": 0, "seals": 0}   # idempotent
+    assert c.post("/api/reconcile", headers=ADMIN).json()["refreshed"] == {"passports": 0, "seals": 0}   # idempotent
 
     # a raised seal counter pulls the simulator tag along (no REPLAY storm), and the dead flag is kept
     rpc.accounts[str(s_pda)] = seal_bytes(uid_hash=proof.uid_hash(bytes.fromhex("04A1B2C3D4E5F6")), last_counter=16, dead=False)
-    assert c.post("/api/reconcile").json()["refreshed"]["seals"] == 1
+    assert c.post("/api/reconcile", headers=ADMIN).json()["refreshed"]["seals"] == 1
     after = c.get(f"/api/passport/{SERIAL}").json()
     assert after["seals"][0]["lastCounter"] == 16 and after["seals"][0]["dead"] is True
     tag = next(t for t in c.get("/api/dev/tags").json() if t["uid"] == "04A1B2C3D4E5F6")
@@ -111,21 +113,23 @@ def test_chain_refresh_of_passport_and_seal(chain_client):
     # a passport PDA with no on-chain scan (mint default grade A, not void) does not override the DB
     p2 = pda_passport(PROGRAM_ID, proof.serial_hash("SN-2026-000002"))
     rpc.accounts[str(p2)] = passport_bytes(serial_hash=proof.serial_hash("SN-2026-000002"), grade=0, scan_count=0, void=False)
-    assert c.post("/api/reconcile").json()["refreshed"]["passports"] == 0
+    assert c.post("/api/reconcile", headers=ADMIN).json()["refreshed"]["passports"] == 0
     assert c.get("/api/passport/SN-2026-000002").json()["grade"] == 2
     rpc.accounts[str(p2)] = passport_bytes(serial_hash=proof.serial_hash("SN-2026-000002"), grade=4, scan_count=0, void=True)
-    assert c.post("/api/reconcile").json()["refreshed"]["passports"] == 1
+    assert c.post("/api/reconcile", headers=ADMIN).json()["refreshed"]["passports"] == 1
     assert c.get("/api/passport/SN-2026-000002").json()["void"] is True
 
     # a passport with something pending is not refreshed from chain
     rpc.accounts[str(p_pda)] = passport_bytes(serial_hash=proof.serial_hash(SERIAL), grade=1)
-    c.post("/api/events", json={"serial": SERIAL, "type": "LIST", "payload": {"priceUsdc": 480}})   # pending (no txSig)
-    assert c.post("/api/reconcile").json()["refreshed"]["passports"] == 0
+    with c.app.state.db.connect() as conn:   # e.g. an old pending event (clients cannot create pending events any more)
+        conn.execute("INSERT INTO events(serial, type, ts, status, payload_json) VALUES(?,?,?,?,?)",
+                     (SERIAL, 3, 1790000000, "pending", '{"priceUsdc": 480}'))
+    assert c.post("/api/reconcile", headers=ADMIN).json()["refreshed"]["passports"] == 0
     assert c.get(f"/api/passport/{SERIAL}").json()["grade"] == 2
 
 
 def test_reconcile_disabled_without_program_id(client):
-    s = client.post("/api/reconcile").json()
+    s = client.post("/api/reconcile", headers=ADMIN).json()
     assert s["enabled"] is False and s["checked"] == 0
     assert client.get("/api/registry").json()["source"] == "fallback"
 

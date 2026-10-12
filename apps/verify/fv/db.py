@@ -6,6 +6,7 @@ so counter/nonce updates are atomic.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -27,7 +28,9 @@ class Database:
     def init(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
-            conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+            schema = SCHEMA_PATH.read_text(encoding="utf-8")
+            conn.executescript(schema)
+            migrate(conn, schema)
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, isolation_level=None, timeout=10, check_same_thread=False)
@@ -46,6 +49,41 @@ class Database:
     def is_empty(self) -> bool:
         with self.connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM passports").fetchone()[0] == 0
+
+
+def migrate(conn: sqlite3.Connection, schema: str) -> None:
+    """
+    Bring a database created by an older schema.sql up to date (CREATE TABLE IF NOT EXISTS never alters a table):
+      * taps.adopt_hash / taps.adopted_at (one-time /t adoption tokens),
+      * events.status CHECK constraint gains 'reported' — SQLite cannot alter a CHECK, so the table is rebuilt.
+    Idempotent; a no-op on a fresh database.
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(taps)").fetchall()}
+    for col, decl in (("adopt_hash", "TEXT"), ("adopted_at", "INTEGER")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE taps ADD COLUMN {col} {decl}")
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='events'").fetchone()
+    if row and "'reported'" not in row["sql"]:
+        m = re.search(r"CREATE TABLE IF NOT EXISTS events \((.*?)\n\);", schema, re.S)
+        if not m:
+            raise RuntimeError("schema.sql: events table definition not found")
+        old_cols = [r["name"] for r in conn.execute("PRAGMA table_info(events)").fetchall()]
+        cols_sql = ", ".join(old_cols)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            seq = conn.execute("SELECT seq FROM sqlite_sequence WHERE name='events'").fetchone()
+            conn.execute(f"CREATE TABLE events_new ({m.group(1)}\n)")
+            conn.execute(f"INSERT INTO events_new({cols_sql}) SELECT {cols_sql} FROM events")
+            conn.execute("DROP TABLE events")
+            conn.execute("ALTER TABLE events_new RENAME TO events")
+            conn.execute("CREATE INDEX IF NOT EXISTS events_serial_ts ON events(serial, ts)")
+            conn.execute("CREATE INDEX IF NOT EXISTS events_actor ON events(actor_pubkey)")
+            if seq is not None:
+                conn.execute("UPDATE sqlite_sequence SET seq=MAX(seq, ?) WHERE name='events'", (seq[0],))
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
 
 
 @contextmanager
@@ -119,6 +157,11 @@ def seals_for(conn, serial: str) -> list[dict]:
 
 def upsert_seal(conn, *, uid_hash: str, uid_hex: str, serial: str, kind: int, last_counter: int = 0,
                 dead: bool = False, attached_at: int) -> dict:
+    """
+    Create/update a seal. The counter is seeded with the highest counter of any CMAC-valid tap already seen for this
+    uid (taken while it was unregistered), so a SUN URL captured before the attach can never be replayed afterwards.
+    """
+    last_counter = max(int(last_counter), last_counter_unregistered(conn, uid_hex))
     conn.execute(
         """INSERT INTO seals(uid_hash, uid_hex, serial, kind, last_counter, dead, attached_at) VALUES(?,?,?,?,?,?,?)
            ON CONFLICT(uid_hash) DO UPDATE SET serial=excluded.serial, kind=excluded.kind,
@@ -160,32 +203,49 @@ def get_event(conn, event_id: int) -> dict | None:
     return _row(conn.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone())
 
 
-def confirm_event(conn, event_id: int, tx_sig: str | None, status: str = "confirmed") -> dict | None:
-    conn.execute("UPDATE events SET tx_sig=COALESCE(?, tx_sig), status=? WHERE id=?", (tx_sig, status, event_id))
-    return get_event(conn, event_id)
-
-
 def events_for(conn, serial: str) -> list[dict]:
     return _rows(conn.execute("SELECT * FROM events WHERE serial=? ORDER BY ts ASC, id ASC", (serial,)).fetchall())
 
 
+MISSING_INDICATOR = 3   # enums.json indicator.MISSING
+
+
+def _reads_indicators(payload: dict) -> bool:
+    ind = payload.get("indicators")
+    if not isinstance(ind, dict):
+        return False
+    return ind.get("heat", MISSING_INDICATOR) != MISSING_INDICATOR or ind.get("humidity", MISSING_INDICATOR) != MISSING_INDICATOR
+
+
 def latest_scan_with_indicators(conn, serial: str) -> dict | None:
-    """Most recent SCAN event (tier ≥ 1, i.e. one that carries a bundle), not failed."""
-    for r in conn.execute("SELECT * FROM events WHERE serial=? AND type=2 AND status!='failed' ORDER BY ts DESC, id DESC",
+    """
+    Latest *confirmed* SCAN that actually read an indicator (heat or humidity not MISSING) — the passport header.
+    Pending/failed scans and no-photo scans (both indicators MISSING) never blank or overwrite it.
+    """
+    for r in conn.execute("SELECT * FROM events WHERE serial=? AND type=2 AND status='confirmed' ORDER BY ts DESC, id DESC",
                           (serial,)).fetchall():
-        payload = json.loads(r["payload_json"] or "{}")
-        if "indicators" in payload:
+        if _reads_indicators(json.loads(r["payload_json"] or "{}")):
             return dict(r)
     return None
 
 
 def previous_scan_before(conn, serial: str, before_id: int) -> dict | None:
-    for r in conn.execute("SELECT * FROM events WHERE serial=? AND type=2 AND id<? AND status!='failed' ORDER BY id DESC",
+    """The confirmed bundle-carrying SCAN right before `before_id` (attester agreement statistics)."""
+    for r in conn.execute("SELECT * FROM events WHERE serial=? AND type=2 AND id<? AND status='confirmed' ORDER BY id DESC",
                           (serial, before_id)).fetchall():
         payload = json.loads(r["payload_json"] or "{}")
         if "indicators" in payload:
             return dict(r)
     return None
+
+
+def newer_confirmed_scan_exists(conn, serial: str, event_id: int, ts: int) -> bool:
+    """True if a confirmed bundle-carrying SCAN newer than (ts, event_id) exists — its grade then stays authoritative."""
+    for r in conn.execute("""SELECT payload_json FROM events WHERE serial=? AND type=2 AND status='confirmed' AND id!=?
+                             AND (ts>? OR (ts=? AND id>?))""", (serial, event_id, ts, ts, event_id)).fetchall():
+        if "indicators" in json.loads(r["payload_json"] or "{}"):
+            return True
+    return False
 
 
 def passport_stats(conn, serial: str) -> dict:
@@ -199,8 +259,16 @@ def passport_stats(conn, serial: str) -> dict:
             "certifiedCount": int(r["certified_count"] or 0)}
 
 
-def has_event_type(conn, serial: str, type: int) -> bool:
-    return conn.execute("SELECT 1 FROM events WHERE serial=? AND type=? LIMIT 1", (serial, type)).fetchone() is not None
+def has_event_type(conn, serial: str, type: int, *, status: str | None = None) -> bool:
+    if status is None:
+        return conn.execute("SELECT 1 FROM events WHERE serial=? AND type=? LIMIT 1", (serial, type)).fetchone() is not None
+    return conn.execute("SELECT 1 FROM events WHERE serial=? AND type=? AND status=? LIMIT 1", (serial, type, status)).fetchone() is not None
+
+
+def event_actors(conn, serial: str, type: int) -> list[str]:
+    """Distinct actor pubkeys of the events of one type for a serial (e.g. the sellers that listed it)."""
+    return [r[0] for r in conn.execute("SELECT DISTINCT actor_pubkey FROM events WHERE serial=? AND type=? AND actor_pubkey IS NOT NULL",
+                                       (serial, type)).fetchall()]
 
 
 # ---------- attesters ----------
@@ -256,10 +324,16 @@ def purge_nonces(conn, before: int) -> None:
 # ---------- taps ----------
 
 def insert_tap(conn, *, ts: int, source: str, uid_hex: str | None, ctr: int | None, cmac: str | None, verdict: str,
-               serial: str | None, message: str) -> dict:
-    cur = conn.execute("INSERT INTO taps(ts, source, uid_hex, ctr, cmac, verdict, serial, message) VALUES(?,?,?,?,?,?,?,?)",
-                       (ts, source, uid_hex.upper() if uid_hex else None, ctr, cmac.upper() if cmac else None, verdict, serial, message))
+               serial: str | None, message: str, adopt_hash: str | None = None) -> dict:
+    cur = conn.execute("INSERT INTO taps(ts, source, uid_hex, ctr, cmac, verdict, serial, message, adopt_hash) VALUES(?,?,?,?,?,?,?,?,?)",
+                       (ts, source, uid_hex.upper() if uid_hex else None, ctr, cmac.upper() if cmac else None, verdict, serial,
+                        message, adopt_hash))
     return get_tap(conn, cur.lastrowid)  # type: ignore[return-value]
+
+
+def mark_tap_adopted(conn, tap_id: int, ts: int) -> bool:
+    """Atomically claim a tap for adoption; False if it was already adopted (single use)."""
+    return conn.execute("UPDATE taps SET adopted_at=? WHERE id=? AND adopted_at IS NULL", (ts, tap_id)).rowcount == 1
 
 
 def get_tap(conn, tap_id: int) -> dict | None:

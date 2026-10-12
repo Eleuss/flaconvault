@@ -10,7 +10,7 @@ const enc = (s: string) => new TextEncoder().encode(s);
 /** Mirrors programs/escrow/src/constants.rs (ORDER_STATE_*). */
 export const OrderState = { LISTED: 0, RESERVED: 1, PRESHIP_SCANNED: 2, SHIPPED: 3, RECEIPT_SCANNED: 4, RELEASED: 5, MISMATCH: 6, DISPUTE: 7, CANCELLED: 8 } as const;
 export const orderStateLabel: Record<number, string> = {
-  0: "Listed", 1: "Reserved", 2: "Shipping scan recorded", 3: "Shipped", 4: "Receiving scan recorded",
+  0: "Listed", 1: "Reserved", 2: "Shipping scan recorded", 3: "Shipped", 4: "Receipt scan recorded",
   5: "Released", 6: "Mismatch", 7: "Dispute", 8: "Cancelled",
 };
 export const orderStateTone = (s: number): "ok" | "warn" | "bad" | "none" =>
@@ -60,7 +60,7 @@ export async function fetchOrders(program: Program): Promise<OrderView[]> {
 /** Optional accounts are passed as null; the untyped Program's accountsStrict typing does not know that. */
 const acc = (o: Record<string, PublicKey | null>) => o as never;
 
-/** Instruction builders — each returns the Anchor method builder (call .rpc() / .instruction()). */
+/** Instruction builders — each returns the Anchor method builder. In the browser: `.transaction()` → `sendAsV0` (v0; legacy `.rpc()` fails with mobile wallets). */
 export const escrowIx = {
   list: (p: Program, passport: PublicKey, seller: PublicKey, priceUsdc: number) =>
     p.methods.list(new BN(Math.round(priceUsdc * 1e6))).accountsStrict({ config: configPda(), passport, order: orderPda(passport, seller), seller, systemProgram: SystemProgram.programId }),

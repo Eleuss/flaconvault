@@ -30,7 +30,8 @@ def test_health(client, vectors):
     assert h["ok"] and h["keyId"] == 1 and h["simulator"] is True and h["pubkeyHex"] == vectors["serverTestKey"]["pubkeyHex"]
 
 
-def test_full_simulated_flow(client, vectors, monkeypatch):
+def test_full_simulated_flow(chain_client, vectors, monkeypatch):
+    client = chain_client
     pub = bytes.fromhex(vectors["serverTestKey"]["pubkeyHex"])
     before = client.get(f"/api/passport/{SERIAL}").json()
 
@@ -128,7 +129,8 @@ def test_full_simulated_flow(client, vectors, monkeypatch):
     r = client.get(tap3["url"], headers={"Accept": "application/json"})
     assert r.status_code == 200 and r.json()["verdict"] == "VALID" and r.json()["counter"] == tap3["ctr"]
     assert r.json()["serial"] == SERIAL and r.json()["message"] == f"Seal genuine · tap {tap3['ctr']}"
-    assert client.get(f"/api/tap/{r.json()['tapId']}").json() == r.json()
+    assert r.json()["uid"] is None and r.json()["tapToken"]          # registered seal: no raw uid; one-time adoption token
+    assert client.get(f"/api/tap/{r.json()['tapId']}").json() == {k: v for k, v in r.json().items() if k != "tapToken"}
     r2 = client.get(tap3["url"] + "&format=json")
     assert r2.json()["verdict"] == "REPLAY"
     r3 = client.get(tap3["url"], follow_redirects=False)
@@ -142,19 +144,27 @@ def test_full_simulated_flow(client, vectors, monkeypatch):
     assert len(p["events"]) >= 8 and len(before["events"]) >= 8
     assert p["stats"]["scanCount"] == len(scan_events) == before["stats"]["scanCount"] + 3  # verify ×2 + one /t sighting
     assert [e["ts"] for e in p["events"]] == sorted(e["ts"] for e in p["events"])
-    assert p["sealStatus"] == "INTACT" and len(p["seals"]) == 2 and p["latest"]["counter"] == 2 and p["latest"]["reviewRecommended"]
+    assert p["sealStatus"] == "INTACT" and len(p["seals"]) == 2
+    # unconfirmed scans change neither the header indicators nor the grade
+    assert p["latest"] == before["latest"] and p["grade"] == before["grade"]
     pend = next(e for e in p["events"] if e["id"] == v["eventId"])
     assert pend["status"] == "pending" and pend["payload"]["server"]["sig"] == v["serverSig"] and pend["gradeAfter"] == 0
     assert pend["location"] == {"country": "DE", "city": "Wickede"} and pend["actor"] == SELLER
     assert client.get("/api/passport/SN-0000-000000").status_code == 404
 
-    # confirm the pending scan with a tx sig
-    e = client.post("/api/events", json={"eventId": v["eventId"], "txSig": "5" * 88}).json()
-    assert e["status"] == "confirmed" and e["txSig"] == "5" * 88
+    # nothing moved for the attester yet (the scans are only pending)
+    assert client.get(f"/api/attester/{SELLER}").json()["scanCount"] == before_scans(vectors)
 
-    # attester stats moved
+    # confirm the pending scan with its record_scan tx (actor defaults to the scan's attester, as the web sends it)
+    client.rpc.scan_tx("5" * 88, v, SELLER)
+    e = client.post("/api/events", json={"eventId": v["eventId"], "txSig": "5" * 88, "serial": SERIAL, "type": 2}).json()
+    assert e["status"] == "confirmed" and e["txSig"] == "5" * 88 and e["actor"] == SELLER
+
+    # attester stats moved for the confirmed scan only; the header now shows it
     a = client.get(f"/api/attester/{SELLER}").json()
-    assert a["scanCount"] == before_scans(vectors) + 2 and a["recentSerials"][0] == SERIAL and a["agreeRate"] is not None
+    assert a["scanCount"] == before_scans(vectors) + 1 and a["recentSerials"][0] == SERIAL and a["agreeRate"] is not None
+    p = client.get(f"/api/passport/{SERIAL}").json()
+    assert p["latest"]["eventId"] == v["eventId"] and p["latest"]["counter"] == 1 and p["grade"] == 0
 
 
 def before_scans(_vectors) -> int:
@@ -195,32 +205,49 @@ def test_seeded_tag_taps_after_seed_counter(client):
     assert dead["responds"] is False and client.get(f"/api/tap/{dead['tapId']}").json()["serial"] == "SN-2026-000003"
 
 
-def test_events_mint_and_seal_attach_create_rows(client):
-    e = client.post("/api/events", json={"serial": "SN-2026-000010", "type": "MINT", "actor": "PxPGKQsGTYE2ti3awtEae4Yjk64NF2tcxQN1oDchhyR",
+PARTNER = "PxPGKQsGTYE2ti3awtEae4Yjk64NF2tcxQN1oDchhyR"
+
+
+def test_events_mint_and_seal_attach_create_rows(chain_client):
+    client, rpc = chain_client, chain_client.rpc
+    rpc.mint_tx("4" * 88, "SN-2026-000010", PARTNER, block_time=1790000100)
+    e = client.post("/api/events", json={"serial": "SN-2026-000010", "type": "MINT", "actor": PARTNER, "ts": 1,
                                          "txSig": "4" * 88, "payload": {"brand": "Amouage", "name": "Interlude Man", "batch": "AM01"},
                                          "location": {"country": "DE", "city": "Düsseldorf"}}).json()
     assert e["type"] == 0 and e["status"] == "confirmed" and e["actorLabel"] == "Parfümerie X, Düsseldorf"
-    e2 = client.post("/api/events", json={"serial": "SN-2026-000010", "type": "SEAL_ATTACH", "payload": {"uid": "04111111111111", "kind": 1}}).json()
-    assert e2["status"] == "pending" and e2["sealUidHash"] == "0x" + proof.uid_hash(bytes.fromhex("04111111111111")).hex()
+    assert e["ts"] == 1790000100                                    # blockTime, never the client ts
+
+    # a chip tapped while still unassigned: its counter carries over into the seal on attach (no replay window)
+    client.post("/api/dev/tag", json={"uid": "04111111111111"})
+    early = client.post("/api/dev/tap", json={"uid": "04111111111111"}).json()
+    assert client.get(early["url"] + "&format=json").json()["verdict"] == "UNREGISTERED"
+
+    rpc.attach_tx("A" * 88, "SN-2026-000010", "04111111111111", PARTNER, block_time=1790000200)
+    e2 = client.post("/api/events", json={"serial": "SN-2026-000010", "type": "SEAL_ATTACH", "txSig": "A" * 88, "actor": PARTNER,
+                                          "payload": {"uid": "04111111111111", "kind": 1}}).json()
+    assert e2["status"] == "confirmed" and e2["sealUidHash"] == "0x" + proof.uid_hash(bytes.fromhex("04111111111111")).hex()
     p = client.get("/api/passport/SN-2026-000010").json()
     assert p["brand"] == "Amouage" and p["seals"][0]["kind"] == 1 and p["issuerLabel"] == "Parfümerie X, Düsseldorf"
-    # a simulator tag for that uid now verifies as VALID
-    client.post("/api/dev/tag", json={"uid": "04111111111111"})
+    assert p["seals"][0]["lastCounter"] == early["ctr"]
+    assert client.post("/api/preview", json={"uid": early["uid"], "ctr": early["ctr"], "cmac": early["cmac"]}).json()["verdict"] == "REPLAY"
+    # the simulator tag for that uid (created before the attach) now verifies as VALID
     tap = client.post("/api/dev/tap", json={"uid": "04111111111111"}).json()
     assert client.post("/api/preview", json={"uid": tap["uid"], "ctr": tap["ctr"], "cmac": tap["cmac"]}).json()["serial"] == "SN-2026-000010"
-    # SEAL_DEAD voids the passport
-    d = client.post("/api/events", json={"serial": "SN-2026-000010", "type": "SEAL_DEAD", "sealUidHash": e2["sealUidHash"], "txSig": "6" * 88}).json()
-    assert d["gradeAfter"] == 4
+    # SEAL_DEAD backed by a partner's mark_seal_dead tx voids the passport
+    rpc.dead_tx("6" * 88, "SN-2026-000010", "04111111111111", PARTNER)
+    d = client.post("/api/events", json={"serial": "SN-2026-000010", "type": "SEAL_DEAD", "sealUidHash": e2["sealUidHash"],
+                                         "txSig": "6" * 88, "actor": PARTNER}).json()
+    assert d["gradeAfter"] == 4 and d["status"] == "confirmed"
     p = client.get("/api/passport/SN-2026-000010").json()
     assert p["void"] and p["grade"] == 4 and p["sealStatus"] == "NO_RESPONSE"
     assert client.post("/api/preview", json={"uid": tap["uid"], "ctr": tap["ctr"], "cmac": tap["cmac"]}).json()["verdict"] == "NO_RESPONSE"
-    assert client.post("/api/events", json={"serial": "SN-nope", "type": "LIST"}).status_code == 404
+    assert client.post("/api/events", json={"serial": "SN-nope", "type": "LIST", "txSig": "L" * 88, "actor": PARTNER}).status_code == 404
     assert client.post("/api/events", json={"serial": "SN-2026-000010", "type": "WHAT"}).status_code == 422
 
 
 def test_media_upload(client, settings):
-    data = b"frame-bytes-" * 100
-    r = client.post("/api/media", files={"file": ("frames.bin", io.BytesIO(data), "application/octet-stream")})
+    data = b"\xff\xd8\xff\xe0frame-bytes-" * 100
+    r = client.post("/api/media", files={"file": ("frames.jpg", io.BytesIO(data), "image/jpeg")})
     assert r.status_code == 200
     j = r.json()
     assert j["sha256"] == "0x" + proof.sha256(data).hex() and j["ar"] is None and j["bytes"] == len(data) and j["files"] == 1
@@ -228,25 +255,94 @@ def test_media_upload(client, settings):
     assert client.post("/api/media").status_code == 422
 
 
+def test_media_limits(client, monkeypatch):
+    import fv.routes_api as ra
+    img = lambda i: ("files", (f"f{i}.png", io.BytesIO(b"\x89PNG" + bytes([i]) * 10), "image/png"))  # noqa: E731
+    assert client.post("/api/media", files=[img(i) for i in range(6)]).status_code == 200
+    assert client.post("/api/media", files=[img(i) for i in range(7)]).status_code == 413          # > 6 files
+    for ctype in ("application/octet-stream", "text/html", "image/svg+xml", "image/gif"):
+        r = client.post("/api/media", files={"file": ("x", io.BytesIO(b"<svg/>"), ctype)})
+        assert r.status_code == 415, ctype
+    # mixed batch: one bad part rejects the whole upload
+    mixed = [img(1), ("files", ("x.html", io.BytesIO(b"<html>"), "text/html"))]
+    assert client.post("/api/media", files=mixed).status_code == 415
+    monkeypatch.setattr(ra, "MEDIA_MAX_BYTES", 1000)                                                 # 8 MB in production
+    assert client.post("/api/media", files={"file": ("big.webp", io.BytesIO(b"R" * 1001), "image/webp")}).status_code == 413
+    assert client.post("/api/media", files={"file": ("ok.webp", io.BytesIO(b"R" * 1000), "image/webp")}).status_code == 200
+
+
 def test_dev_routes_404_when_simulator_off(settings):
     from fastapi.testclient import TestClient
     from fv.main import create_app
     settings.dev_simulator = False
+    settings.master_key_hex = "0123456789ABCDEF0123456789ABCDEF"     # a real deployment has a non-zero master key
     with TestClient(create_app(settings)) as c:
         assert c.get("/health").json()["simulator"] is False
         assert c.get("/api/dev/tags").status_code == 404
         assert c.post("/api/dev/tap", json={"uid": "04A1B2C3D4E5F6"}).status_code == 404
+        assert c.post("/api/dev/tag", json={"uid": "04A1B2C3D4E5F6"}).status_code == 404
+        assert c.post("/api/dev/reset", headers={"x-admin-token": settings.admin_token}).status_code == 404
+
+
+def test_refuses_to_start_without_simulator_and_zero_master_key(settings):
+    import pytest
+    from fastapi.testclient import TestClient
+    from fv.config import Settings
+    from fv.main import create_app
+    settings.dev_simulator = False
+    assert settings.master_key == bytes(16)
+    with pytest.raises(RuntimeError, match="FV_MASTER_KEY is all zeros"):
+        with TestClient(create_app(settings)):
+            pass
+    # the simulator is off unless explicitly enabled
+    assert Settings(server_seed_hex="11" * 32).dev_simulator is False
+
+
+def test_simulator_default_off_in_env(monkeypatch):
+    from fv.config import settings_from_env
+    monkeypatch.delenv("FV_DEV_SIMULATOR", raising=False)
+    monkeypatch.setenv("FV_SERVER_ED25519_SEED", "11" * 32)
+    assert settings_from_env().dev_simulator is False
+    monkeypatch.setenv("FV_DEV_SIMULATOR", "true")
+    assert settings_from_env().dev_simulator is True
+
+
+def test_dev_tag_refuses_registered_seal(client):
+    # 04DE5F1EACC040 is the seeded BOX seal of SN-2026-000002 — and it has a sim tag, so the simulator may serve it
+    assert client.post("/api/dev/tag", json={"uid": "04DE5F1EACC040"}).status_code == 200
+    # a registered seal without a virtual tag of its own (a real chip): never a CMAC oracle
+    with client.app.state.db.connect() as conn:
+        conn.execute("DELETE FROM sim_tags WHERE uid_hex='04DE5F1EACC040'")
+    r = client.post("/api/dev/tag", json={"uid": "04DE5F1EACC040"})
+    assert r.status_code == 409
+    assert client.post("/api/dev/tap", json={"uid": "04DE5F1EACC040"}).status_code == 404
+    assert client.post("/api/dev/tag", json={"uid": "04DE5F1EACC040", "serial": "SN-2026-000001"}).status_code == 409
+    assert client.post("/api/dev/tag", json={"uid": "nothex"}).status_code == 422
 
 
 def test_reset_reseeds(client):
     client.post("/api/dev/tag", json={"serial": SERIAL})
     assert len(client.get("/api/dev/tags").json()) == 5
-    assert client.post("/api/dev/reset").json()["ok"]
+    assert client.post("/api/dev/reset").status_code == 403                                    # FV_ADMIN_TOKEN is set
+    assert client.post("/api/dev/reset", headers={"x-admin-token": "wrong"}).status_code == 403
+    assert len(client.get("/api/dev/tags").json()) == 5
+    assert client.post("/api/dev/reset", headers={"x-admin-token": "test-admin-token"}).json()["ok"]
     assert len(client.get("/api/dev/tags").json()) == 4
 
 
-def test_certify_console_mint_and_seal_attach_idempotent(client):
-    partner = "PxPGKQsGTYE2ti3awtEae4Yjk64NF2tcxQN1oDchhyR"
+def test_reset_without_admin_token_env(settings):
+    from fastapi.testclient import TestClient
+    from fv.main import create_app
+    settings.admin_token = ""
+    with TestClient(create_app(settings)) as c:
+        assert c.post("/api/dev/reset").json()["ok"]                                           # simulator-only dev box
+
+
+def test_certify_console_mint_and_seal_attach_idempotent(chain_client):
+    client, rpc = chain_client, chain_client.rpc
+    partner = PARTNER
+    rpc.mint_tx("M" * 88, "SN-2026-000042", partner, block_time=1790000300)
+    rpc.mint_tx("N" * 88, "SN-2026-000042", partner, block_time=1790000301)
     mint = {"serial": "SN-2026-000042", "type": "MINT", "actor": partner, "txSig": "M" * 88,
             "payload": {"serial": "SN-2026-000042", "brand": "Amouage", "name": "Interlude Man", "batch": "AM01",
                         "asset": "4FQoaiZa5NGcjJK5qzZ2VnXFa8MBM7TZEtyruU2wu6ck", "issuerLabel": "Parfümerie X, Düsseldorf", "siteId": 1},
@@ -256,11 +352,19 @@ def test_certify_console_mint_and_seal_attach_idempotent(client):
     p = client.get("/api/passport/SN-2026-000042").json()
     assert p["asset"] == "4FQoaiZa5NGcjJK5qzZ2VnXFa8MBM7TZEtyruU2wu6ck" and p["issuer"] == partner and p["batch"] == "AM01"
     assert p["issuerLabel"] == "Parfümerie X, Düsseldorf" and p["grade"] == 0
-    # second MINT for the same serial: same event row, tx_sig updated, no duplicate
-    e1b = client.post("/api/events", json={**mint, "txSig": "N" * 88}).json()
-    assert e1b["id"] == e1["id"] and e1b["txSig"] == "N" * 88 and e1b["status"] == "confirmed"
-    assert [e["type"] for e in client.get("/api/passport/SN-2026-000042").json()["events"]] == [0]
+    # second MINT for the same serial by the issuer: same event row, a confirmed event is never changed, no duplicate;
+    # the issuer may rename the passport
+    e1b = client.post("/api/events", json={**mint, "txSig": "N" * 88, "payload": {**mint["payload"], "name": "Interlude Man EDP"}}).json()
+    assert e1b["id"] == e1["id"] and e1b["txSig"] == "M" * 88 and e1b["status"] == "confirmed" and e1b["ts"] == e1["ts"]
+    p = client.get("/api/passport/SN-2026-000042").json()
+    assert [e["type"] for e in p["events"]] == [0] and p["name"] == "Interlude Man EDP"
+    # the same tx again (recovered path of the certify console) is idempotent too
+    assert client.post("/api/events", json=mint).json()["id"] == e1["id"]
 
+    # the simulator tag exists before the attach (dev/tag refuses registered seals without one)
+    client.post("/api/dev/tag", json={"uid": "04C0FFEE000042"})
+    rpc.attach_tx("S" * 88, "SN-2026-000042", "04C0FFEE000042", partner, block_time=1790000400)
+    rpc.attach_tx("T" * 88, "SN-2026-000042", "04C0FFEE000042", partner, block_time=1790000401)
     att = {"serial": "SN-2026-000042", "type": "SEAL_ATTACH", "actor": partner, "txSig": "S" * 88,
            "payload": {"uid": "04c0ffee000042", "kind": 1}}
     e2 = client.post("/api/events", json=att).json()
@@ -268,11 +372,11 @@ def test_certify_console_mint_and_seal_attach_idempotent(client):
     assert e2["type"] == 1 and e2["status"] == "confirmed" and e2["sealUidHash"] == uid_hash and e2["payload"]["kindName"] == "NECK"
     p = client.get("/api/passport/SN-2026-000042").json()
     assert p["seals"] == [{"uidHash": uid_hash, "kind": 1, "lastCounter": 0, "dead": False, "attachedAt": e2["ts"]}]
+    assert e2["ts"] == 1790000400
     e2b = client.post("/api/events", json={**att, "txSig": "T" * 88}).json()
-    assert e2b["id"] == e2["id"] and e2b["txSig"] == "T" * 88
+    assert e2b["id"] == e2["id"] and e2b["txSig"] == "S" * 88
     p = client.get("/api/passport/SN-2026-000042").json()
     assert len(p["seals"]) == 1 and [e["type"] for e in p["events"]] == [0, 1]
     # the attached uid now verifies against this passport
-    client.post("/api/dev/tag", json={"uid": "04C0FFEE000042"})
     tap = client.post("/api/dev/tap", json={"uid": "04C0FFEE000042"}).json()
     assert client.post("/api/preview", json={"uid": tap["uid"], "ctr": tap["ctrHex"], "cmac": tap["cmac"]}).json()["serial"] == "SN-2026-000042"

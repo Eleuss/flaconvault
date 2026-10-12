@@ -8,7 +8,7 @@ from fv.config import Settings
 from fv.db import get_seal_by_uid, get_tap, insert_event, insert_tap, now, transaction
 from fv.deps import get_conn, get_settings
 from fv.enums import EventType, VALID
-from fv.service import check_tap
+from fv.service import check_tap, new_adopt_token
 from fv.strings import tap_message
 from fv.views import tap_view
 
@@ -28,11 +28,16 @@ def tag_landing(request: Request, uid: str | None = None, ctr: str | None = None
                 conn=Depends(get_conn), settings: Settings = Depends(get_settings)):
     """Plain mirror: ?uid&ctr&cmac — encrypted SUN (NFC Developer App / sdm-backend `/tag`, `/tagtt`): ?picc_data&cmac[&enc]."""
     ts = now()
+    token = None
     with transaction(conn):
         chk = check_tap(conn, settings, uid, ctr, cmac, consume=True, picc_data=picc_data, enc=enc)
         message = tap_message(chk.verdict, chk.counter)
+        adopt_hash = None
+        if chk.verdict == VALID:
+            # one-time capability for /api/verify to adopt this tap (only its sha256 is stored)
+            token, adopt_hash = new_adopt_token()
         tap = insert_tap(conn, ts=ts, source="t", uid_hex=chk.uid_hex, ctr=chk.counter, cmac=chk.cmac_hex,
-                         verdict=chk.verdict, serial=chk.serial, message=message)
+                         verdict=chk.verdict, serial=chk.serial, message=message, adopt_hash=adopt_hash)
         if chk.verdict == VALID and chk.seal:
             # Tier-0 sighting: off-chain only, nothing pending on chain.
             p = conn.execute("SELECT grade, void FROM passports WHERE serial=?", (chk.serial,)).fetchone()
@@ -41,8 +46,12 @@ def tag_landing(request: Request, uid: str | None = None, ctr: str | None = None
                          payload={"tier": 0, "verdict": VALID, "counter": chk.counter, "tapId": tap["id"]},
                          grade_after=(4 if p and p["void"] else (p["grade"] if p else None)), country=None, city=None)
     if _wants_json(request):
-        return JSONResponse(tap_view(tap, chk.seal))
-    return RedirectResponse(url=f"{settings.web_url}/t?tap={tap['id']}", status_code=302)
+        out = tap_view(tap, chk.seal)
+        if token:
+            out["tapToken"] = token
+        return JSONResponse(out)
+    url = f"{settings.web_url}/t?tap={tap['id']}" + (f"&k={token}" if token else "")
+    return RedirectResponse(url=url, status_code=302)
 
 
 @router.get("/api/tap/{tap_id}")

@@ -33,11 +33,13 @@ export default async function PassportPage({ params }: { params: { serial: strin
           <p className="eyebrow">Passport · {p.serial}</p>
           <h1 className="mt-3 font-serif text-4xl leading-tight sm:text-5xl">{p.brand} <span className="text-muted">·</span> {p.name}</h1>
           <p className="mt-3 text-sm text-muted">
-            Batch {p.batch || "–"} · Provenance documented from source{p.issuerLabel ? ` · ${p.issuerLabel}` : ""} · since {fmtDate(p.createdAt)}
+            Batch {p.batch || "–"}{p.issuerLabel ? ` · Registered by ${p.issuerLabel}` : ""} · since {fmtDate(p.createdAt)}
           </p>
           <div className="mt-5 flex flex-wrap gap-2">
             <Pill tone={seal.tone}>{seal.label}</Pill>
-            <Pill tone="none">Witnessed by {p.stats.attesterCount} wallets, {p.stats.certifiedCount} of them certified</Pill>
+            {p.stats.attesterCount > 0 && (
+              <Pill tone="none">Witnessed by {p.stats.attesterCount} {p.stats.attesterCount === 1 ? "wallet" : "wallets"}, {p.stats.certifiedCount} of them certified</Pill>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-5 md:flex-col md:items-end">
@@ -84,7 +86,7 @@ export default async function PassportPage({ params }: { params: { serial: strin
               );
             })}
           </div>
-          <p className="mt-2 text-xs text-muted">The other five fields are context, not a statement.</p>
+          <p className="mt-2 text-xs text-muted">Only the 40 °C field is evaluated; the others are shown for context.</p>
         </section>
       )}
 

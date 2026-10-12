@@ -24,6 +24,8 @@ Two services. The **web app** runs on Vercel (stable domain for the stickers and
 | `FV_MEDIA_DIR` | `/data/media` | set in the Dockerfile |
 | `FV_WEB_URL` | `https://flaconvault.vercel.app` | redirect target of `/t` |
 | `FV_VERIFIER_HOST` | `https://verify-production-00e9.up.railway.app` | host in simulator tag URLs |
+| `FV_ADMIN_TOKEN` | random, `secrets.token_urlsafe(32)` | required for `POST /api/reconcile` and `/api/dev/reset`; kept only in Railway + ignored `apps/verify/.env` |
+| `FV_DEV_SIMULATOR` | `false` in production | default is now false; with it off the server refuses to start on an all-zero master key |
 | `FV_CORS_ORIGINS` | `https://flaconvault.vercel.app,http://localhost:3000` | comma-separated |
 | `FV_ARWEAVE` | `true` | |
 | `FV_IRYS_KEY_JSON` | contents of `~/.config/solana/irys.json` | **secret** — a separate keypair (`7oSB1jK7btf5hhG9tbjUdtEJ18npuyA7dcD77CJyL3iB`, 0.05 devnet SOL), not the deploy wallet |

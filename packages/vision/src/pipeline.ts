@@ -196,7 +196,7 @@ export function readCard(cv: CV, frame: FrameLike, cfg: HeatFieldsConfig, opts: 
     const idList: number[] = Array.from(ids.data32S ?? []);
     const idx = idList.indexOf(ARUCO_ID);
     if (idx < 0 && cfg.frame) return readCardFrame(cv, src, gray, cfg, opts, t0, log, dbg);
-    if (idx < 0) return notFound(idList.length ? `Marker ${idList.join(",")} gefunden, aber nicht ID ${ARUCO_ID}` : "Karte nicht erkannt", t0);
+    if (idx < 0) return notFound(idList.length ? `Marker ${idList.join(",")} found, but not ID ${ARUCO_ID}` : "Card not detected", t0);
     const cm = corners.get(idx);
     const c: number[] = Array.from(cm.data32F);
     cm.delete();
@@ -345,7 +345,7 @@ function readCardFrame(cv: CV, src: CV, gray: CV, cfg: HeatFieldsConfig, opts: {
   try {
     const win = fr.window_mm;
     const quad = detectCardQuad(cv, gray, win.w / win.h, dbg);
-    if (!quad) return notFound("Karte nicht erkannt (kein Kartenfenster im Bild)", t0);
+    if (!quad) return notFound("Card not detected (no card window in frame)", t0);
     const winPx = (Math.hypot(quad[1][0] - quad[0][0], quad[1][1] - quad[0][1]) + Math.hypot(quad[2][0] - quad[3][0], quad[2][1] - quad[3][1])) / 2;
     const dstWin: Pt[] = [[win.x, win.y], [win.x + win.w, win.y], [win.x + win.w, win.y + win.h], [win.x, win.y + win.h]];
     let srcPts: Pt[] = [...quad], dstPts: Pt[] = dstWin.map(mmToPx);

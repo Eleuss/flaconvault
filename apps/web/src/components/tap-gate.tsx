@@ -37,6 +37,7 @@ export function TapGate({ params }: { params: TagParams }) {
 
 /** On the /t result page: remember the chip for /certify ("UID vom letzten Tap übernehmen"). */
 export function RememberTap({ uid, serial, counter }: { uid: string | null; serial: string | null; counter: number | null }) {
-  useEffect(() => { if (uid) import("@/lib/handoff").then((m) => m.lastTap.set({ uid: uid.toUpperCase(), serial, counter })); }, [uid, serial, counter]);
+  // a tap without a UID (registered seal) clears an older unregistered UID, so certify never offers a stale chip
+  useEffect(() => { import("@/lib/handoff").then((m) => (uid ? m.lastTap.set({ uid: uid.toUpperCase(), serial, counter }) : m.lastTap.clear())); }, [uid, serial, counter]);
   return null;
 }

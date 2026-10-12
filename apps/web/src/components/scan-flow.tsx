@@ -1,16 +1,17 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { ArrowRight, Camera, Loader2, Nfc, RefreshCw, ShieldOff, Zap } from "lucide-react";
-import { Grade, Indicator, Role, Tier, NONCE_TTL_S } from "@flaconvault/proof";
+import { Indicator, Role, Tier, NONCE_TTL_S } from "@flaconvault/proof";
 import type { CardReading, FrameLike, HeatFieldsConfig } from "@flaconvault/vision";
 import { VisionClient, frameFromSource } from "@/vision/client";
 import { api, parseTagUrl, sha256Hex, type Preview, type Session, type SimTag, type TagParams } from "@/lib/verify-api";
 import { scanSession, tapHandoff } from "@/lib/handoff";
 import { buildRecordScanTx, flaconProgram, type VerifyResponse } from "@/lib/flacon";
-import { sendAsV0 } from "@/lib/send-tx";
+import { creatingSignature, sendAsV0 } from "@/lib/send-tx";
+import { ApiError, friendly } from "@/lib/errors";
 import { DEV_SIMULATOR, PROGRAM_ID } from "@/lib/config";
 import { gradeLetter, gradeSentence, indicatorText, txUrl, verdictText } from "@/lib/format";
 import { GradeMark, Lamp, Pill } from "./badges";
@@ -19,7 +20,8 @@ import { isIOS, noInjectedWallet, resumeState, resumeUrl, walletBrowseLinks } fr
 import { WalletReadyState } from "@solana/wallet-adapter-base";
 
 type Step = "session" | "tap" | "preview" | "camera" | "read" | "verify" | "tx" | "done" | "dead";
-interface Tag extends TagParams { source: "nfc" | "simulator"; serial?: string | null; tapId?: number }
+/** `tapId` + `tapToken`: a tap /t already verified (adopted via ?adopt=&k=); the token proves this browser saw that tap. */
+interface Tag extends TagParams { source: "nfc" | "simulator"; serial?: string | null; tapId?: number; tapToken?: string }
 const platform = () => (typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent) ? "ANDROID_WEB" : typeof navigator !== "undefined" && /iPhone|iPad/i.test(navigator.userAgent) ? "IOS_WEB" : "DESKTOP_WEB");
 const nonceCode = (nonce: string) => nonce.replace(/^0x/, "").slice(0, 6).toUpperCase();
 
@@ -47,9 +49,13 @@ export function ScanFlow() {
   const [reading, setReading] = useState<CardReading | null>(null);
   const [fill, setFill] = useState(92);
   const params = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
   const qRole = Number(params.get("role")), qTier = Number(params.get("tier")), qSite = Number(params.get("site"));
-  const [role, setRole] = useState<number>(qRole >= 0 && qRole <= 4 ? qRole : Role.OWNER);
   const certified = qTier === Tier.CERTIFIED || qTier === Tier.BIRTH;
+  // Vault/Partner roles only exist in the certified flow (the role select offers them only there)
+  const defaultRole = Number.isInteger(qRole) && qRole >= 0 && qRole <= 4 && (certified || qRole <= Role.BUYER) ? qRole : Role.OWNER;
+  const [role, setRole] = useState<number>(defaultRole);
   const siteId = certified && qSite > 0 ? qSite : 0;
   const [city, setCity] = useState("");
   const [country, setCountry] = useState("DE");
@@ -64,31 +70,39 @@ export function ScanFlow() {
   const video = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
   const nfcAbort = useRef<AbortController | null>(null);
+  const deadNonceSpent = useRef<string | null>(null);
   const [tierOverride, setTierOverride] = useState<number | null>(null);
   const tier = tierOverride ?? (certified ? qTier : frames ? Tier.SELF_MEDIA : Tier.SELF);
 
   // ---- 1. session -------------------------------------------------------
   const startSession = useCallback(async () => {
     setError(null); setTag(null); setPreview(null); setFrames(null); setReading(null); setVerify(null); setTxSig(null);
+    // a resumed scan (?resume=) may have set tier and role: a new scan starts from the page's own defaults again
+    setTierOverride(null); setRole(defaultRole); setNfcState(""); setDeadSerial("");
     try {
       const s = await api.session();
       scanSession.set({ nonce: s.nonce, expiresAt: s.expiresAt, ttl: s.ttl, issuedAt: s.issuedAt });
       setSession(s); setLeft(s.ttl ?? NONCE_TTL_S); setStep("tap");
       if (DEV_SIMULATOR) api.simTags().then(setSimTags).catch(() => setSimTags([]));
-    } catch (e) { setError(`Server unreachable: ${(e as Error).message}`); }
-  }, []);
+    } catch (e) { setError(friendly(e)); }
+  }, [defaultRole]);
   useEffect(() => {
     vision.current = new VisionClient();
     fetch("/heat_fields.json").then((r) => r.json()).then((c) => { cfg.current = c; });
-    return () => { vision.current?.terminate(); stream.current?.getTracks().forEach((t) => t.stop()); };
+    return () => { vision.current?.terminate(); stream.current?.getTracks().forEach((t) => t.stop()); nfcAbort.current?.abort(); };
   }, []);
+  // The 90 s window covers tap → photo → server signature. Once the server has signed ("tx"), the signed scan stays
+  // anchorable: the countdown stops and expiry no longer hides or blocks the anchor step.
+  const timed = step !== "tx" && step !== "done" && step !== "dead";
   useEffect(() => {
-    if (!session || step === "done" || step === "dead") return;
+    if (!session || !timed) return;
     const id = setInterval(() => setLeft(Math.max(0, Math.round(session.expiresAt - Date.now() / 1000))), 500);
     return () => clearInterval(id);
-  }, [session, step]);
-  const expired = session != null && left <= 0 && step !== "done" && step !== "dead";
-  useEffect(() => { if (step === "done" || step === "dead" || expired) scanSession.clear(); }, [step, expired]);
+  }, [session, timed]);
+  const expired = session != null && left <= 0 && timed;
+  useEffect(() => { if (!timed || expired) scanSession.clear(); }, [timed, expired]);
+  // WebNFC: release the reader whenever the tap step is left (or the session runs out)
+  useEffect(() => { if (step !== "tap" || expired) { nfcAbort.current?.abort(); nfcAbort.current = null; } }, [step, expired]);
 
   // ---- 2. tap -----------------------------------------------------------
   const onTag = useCallback(async (t: Tag) => {
@@ -97,7 +111,7 @@ export function ScanFlow() {
       const p = await api.preview(t);
       setPreview(p);
       setStep(p.verdict === "NO_RESPONSE" ? "dead" : "preview");
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { setError(friendly(e)); }
     finally { setBusy(null); }
   }, []);
   // Resume: Safari (iPhone) loads the sticker link into THIS tab, so the page restarts. A session that is still
@@ -114,7 +128,7 @@ export function ScanFlow() {
     setStep("tap");
     if (DEV_SIMULATOR) api.simTags().then(setSimTags).catch(() => setSimTags([]));
   }, [step]);
-  // Resume at step 8 inside a wallet app's browser (iPhone): state travels in ?resume= (see lib/wallet-links.ts)
+  // Resume at the anchor step inside a wallet app's browser (iPhone): state travels in ?resume= (see lib/wallet-links.ts)
   const resumedTx = useRef(false);
   useEffect(() => {
     if (resumedTx.current) return;
@@ -129,7 +143,7 @@ export function ScanFlow() {
   // Adopt a tap that already landed on /t (phone background NFC read): one tap, then straight on to the card photo.
   const adopted = useRef(false);
   useEffect(() => {
-    const id = params.get("adopt");
+    const id = params.get("adopt"), k = params.get("k");
     if (!id || adopted.current) return;
     adopted.current = true;
     (async () => {
@@ -139,23 +153,37 @@ export function ScanFlow() {
         scanSession.set({ nonce: s.nonce, expiresAt: s.expiresAt, ttl: s.ttl, issuedAt: s.issuedAt });
         setSession(s); setLeft(s.ttl ?? NONCE_TTL_S);
         if (Date.now() / 1000 - t.ts > 170) { setPreview({ ...t, verdict: "REPLAY" }); setStep("preview"); setNfcState("Tap is older than 3 minutes — please tap again"); return; }
-        setTag({ uid: t.uid ?? "", ctr: t.counter != null ? t.counter.toString(16).padStart(6, "0").toUpperCase() : "", cmac: "", source: "nfc", serial: t.serial ?? undefined, tapId: t.tapId });
+        setTag({ uid: t.uid ?? "", ctr: t.counter != null ? t.counter.toString(16).padStart(6, "0").toUpperCase() : "", cmac: "", source: "nfc", serial: t.serial ?? undefined, tapId: t.tapId, tapToken: k ?? undefined });
         setPreview({ verdict: t.verdict, counter: t.counter, serial: t.serial, serialHash: t.serialHash, uidHash: t.uidHash, sealKind: t.sealKind, sealDead: !!t.sealDead });
         setNfcState("Tap handed over");
         setStep("preview");
-      } catch (e) { setError(`Tap could not be handed over: ${(e as Error).message}`); }
+      } catch (e) { setError(`Tap could not be handed over: ${friendly(e)}`); }
     })();
   }, [params]);
+  // adopt / k / resume are one-shot: drop them from the address bar once read (keeps tier, role, site)
+  useEffect(() => {
+    if (!params.has("adopt") && !params.has("k") && !params.has("resume")) return;
+    const keep = new URLSearchParams();
+    for (const key of ["tier", "role", "site"]) { const v = params.get(key); if (v != null) keep.set(key, v); }
+    const q = keep.toString();
+    router.replace(q ? `${pathname}?${q}` : pathname, { scroll: false });
+  }, [params, pathname, router]);
   // Tap handoff: a tap that opened /t (other tab, or this tab before the reload) is handed over through localStorage
   useEffect(() => {
-    if (step !== "tap") return;
-    const pick = () => { const h = tapHandoff.take(); if (h) { setNfcState("Tap handed over from the browser"); onTag({ uid: h.uid, ctr: h.ctr, cmac: h.cmac, piccData: h.piccData, enc: h.enc, source: "nfc" }); } };
+    if (step !== "tap" || expired) return;
+    let alive = true;
+    const pick = async () => {
+      const h = await tapHandoff.take();
+      if (!h || !alive) return;
+      setNfcState("Tap handed over from the browser");
+      onTag({ uid: h.uid, ctr: h.ctr, cmac: h.cmac, piccData: h.piccData, enc: h.enc, source: "nfc" });
+    };
     pick();
     const id = setInterval(pick, 1000);
     const onStorage = (e: StorageEvent) => { if (e.key === tapHandoff.key) pick(); };
     window.addEventListener("storage", onStorage);
-    return () => { clearInterval(id); window.removeEventListener("storage", onStorage); };
-  }, [step, onTag]);
+    return () => { alive = false; clearInterval(id); window.removeEventListener("storage", onStorage); };
+  }, [step, expired, onTag]);
   const simTap = async (t: SimTag) => {
     setBusy(`tap-${t.uid}`);
     try {
@@ -164,7 +192,7 @@ export function ScanFlow() {
       const parsed = parseTagUrl(r.url);
       if (!parsed) throw new Error("Simulator URL unreadable");
       await onTag({ ...parsed, source: "simulator", serial: t.serial });
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { setError(friendly(e)); }
     finally { setBusy(null); }
   };
   const startNfc = async () => {
@@ -195,7 +223,7 @@ export function ScanFlow() {
         ctrl.abort(); nfcAbort.current = null;
         setNfcState(`Chrome could not read the chip (${seen.join(" | ") || "empty"}). NFC reader stopped — now simply hold the seal to the phone: Android opens the link, “Tap handed over”, then return to this tab.`);
       };
-    } catch (e) { setNfcState(`NFC: ${(e as Error).message}`); }
+    } catch (e) { setNfcState(`NFC: ${friendly(e)}`); }
   };
 
   // ---- 4. camera --------------------------------------------------------
@@ -204,7 +232,7 @@ export function ScanFlow() {
       const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
       stream.current = s;
       if (video.current) { video.current.srcObject = s; await video.current.play(); }
-    } catch (e) { setError(`Camera: ${(e as Error).message}`); }
+    } catch (e) { setError(`Camera: ${friendly(e)}`); }
   };
   const stopCam = () => { stream.current?.getTracks().forEach((t) => t.stop()); stream.current = null; };
   useEffect(() => { if (step === "camera") startCam(); else stopCam(); return stopCam; /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [step]);
@@ -234,7 +262,7 @@ export function ScanFlow() {
         if (!best && !r.found) best = r;
       }
       setReading(best);
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { setError(friendly(e)); }
     finally { setBusy(null); }
   };
   const captureFrames = async () => {
@@ -260,7 +288,7 @@ export function ScanFlow() {
         }));
       }
       await processFrames(imgs);
-    } catch (e) { setError((e as Error).message); setBusy(null); }
+    } catch (e) { setError(friendly(e)); setBusy(null); }
   };
   const skipCamera = () => { setFrames(null); setReading(null); setStep("read"); };
 
@@ -277,7 +305,8 @@ export function ScanFlow() {
       }
       const r = reading && reading.found ? reading : null;
       const body = {
-        uid: tag.tapId ? undefined : tag.uid || undefined, ctr: tag.tapId ? undefined : tag.ctr || undefined, cmac: tag.tapId ? undefined : tag.cmac, piccData: tag.piccData, enc: tag.enc, tapId: tag.tapId, nonce: session.nonce, role, tier,
+        uid: tag.tapId ? undefined : tag.uid || undefined, ctr: tag.tapId ? undefined : tag.ctr || undefined, cmac: tag.tapId ? undefined : tag.cmac, piccData: tag.piccData, enc: tag.enc,
+        tapId: tag.tapId, tapToken: tag.tapId ? tag.tapToken : undefined, nonce: session.nonce, role, tier,
         indicators: { heat: r ? r.heat : Indicator.MISSING, humidity: r ? r.humidity : Indicator.MISSING, uv: r ? r.uv : Indicator.MISSING },
         heatLevels: r ? r.heatLevels : [0, 0, 0, 0, 0, 0], fill, mediaHash,
         serial: preview?.serial ?? undefined, location: { country: country || null, city: city || null },
@@ -286,42 +315,54 @@ export function ScanFlow() {
       const v = await api.verify(body);
       setVerify(v);
       setStep(v.verdict === "VALID" ? "tx" : "verify");
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { setError(friendly(e)); }
     finally { setBusy(null); }
   };
 
-  // ---- 8. transaction ---------------------------------------------------
+  // ---- anchor step: transaction -----------------------------------------
   const sendTx = async () => {
     if (!verify || !anchorWallet || !wallet.publicKey) return;
     setBusy("tx"); setError(null);
     try {
-      const program = flaconProgram(connection, anchorWallet);
-      const { tx } = await buildRecordScanTx(program, wallet.publicKey, verify, { tier, role, siteId });
-      const sig = await sendAsV0(wallet, connection, tx);
-      setTxSig(sig);
-      await api.events({ eventId: verify.eventId, txSig: sig, serial: verify.serial, type: 2 });
+      let sig = txSig; // set when the transaction landed but the server confirmation failed: only that is retried
+      if (!sig) {
+        const program = flaconProgram(connection, anchorWallet);
+        const { tx, scanProof } = await buildRecordScanTx(program, wallet.publicKey, verify, { tier, role, siteId });
+        // Already anchored (the wallet sent it but the answer never reached this page): take the signature from the chain.
+        sig = (await connection.getAccountInfo(scanProof, "confirmed")) ? await creatingSignature(connection, scanProof) : null;
+        if (!sig) sig = await sendAsV0(wallet, connection, tx);
+        setTxSig(sig);
+      }
+      await api.events({ eventId: verify.eventId, txSig: sig, actor: wallet.publicKey.toBase58(), serial: verify.serial, type: 2 });
       setStep("done");
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) {
+      if (e instanceof ApiError && e.code === "tx_failed") setTxSig(null); // the server saw it fail on chain: send again
+      setError(friendly(e));
+    }
     finally { setBusy(null); }
   };
   const airdropBurner = async () => {
     if (!wallet.publicKey) return;
     setBusy("airdrop");
     try { const s = await connection.requestAirdrop(wallet.publicKey, 1e9); await connection.confirmTransaction(s, "confirmed"); }
-    catch (e) { setError(`Airdrop: ${(e as Error).message}`); }
+    catch (e) { setError(`Airdrop: ${friendly(e)}`); }
     finally { setBusy(null); }
   };
 
   // ---- dead seal --------------------------------------------------------
+  /** SEAL_DEAD without a transaction: recorded as an unverified report (needs an unused session nonce); a partner confirms it on chain. */
   const reportDead = async () => {
-    setBusy("dead");
+    setBusy("dead"); setError(null);
     try {
-      const serial = preview?.serial ?? tag?.serial ?? deadSerial;
+      const serial = (preview?.serial ?? tag?.serial ?? deadSerial).trim();
       if (!serial) throw new Error("Enter the passport serial number");
-      await api.events({ serial, type: 9, actor: wallet.publicKey?.toBase58() ?? null, payload: { source: tag?.source ?? "manual", uid: tag?.uid ?? null, note: "Seal not responding" } });
+      let s = session;
+      if (!s || s.nonce === deadNonceSpent.current || s.expiresAt <= Date.now() / 1000 + 2) { s = await api.session(); setSession(s); }
+      deadNonceSpent.current = s.nonce; // a failed attempt may still have used it: the next attempt takes a fresh session
+      await api.events({ serial, type: 9, nonce: s.nonce, actor: wallet.publicKey?.toBase58() ?? null, payload: { source: tag?.source ?? "manual", uid: tag?.uid || null, note: "Seal not responding" } });
       setDeadSerial(serial);
       setStep("done");
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { setError(friendly(e)); }
     finally { setBusy(null); }
   };
 
@@ -334,7 +375,7 @@ export function ScanFlow() {
   return (
     <div className="page-in container-page py-10">
       {/* countdown */}
-      {session && step !== "done" && (
+      {session && timed && (
         <div className="mb-6 flex items-center justify-between text-xs text-muted">
           <span>Session <span className="mono text-ink">{nonceCode(session.nonce)}</span></span>
           <span className={`tabular ${left <= 15 ? "text-bad" : ""}`}>{expired ? "expired" : `${left} s`}</span>
@@ -343,7 +384,7 @@ export function ScanFlow() {
       {expired && (
         <div className="card mb-6 p-4 text-sm">
           <p className="font-medium">Session expired</p>
-          <p className="mt-1 text-muted">Tap through transaction must happen within 90 seconds. Please restart.</p>
+          <p className="mt-1 text-muted">Tap, photo and signature must happen within 90 seconds. Please restart.</p>
           <button onClick={startSession} className="btn btn-sm mt-3"><RefreshCw className="h-3.5 w-3.5" aria-hidden /> Restart</button>
         </div>
       )}
@@ -356,7 +397,7 @@ export function ScanFlow() {
             <button onClick={startSession} className="btn">Start session <ArrowRight className="h-4 w-4" aria-hidden /></button>
             <WalletButton />
           </div>
-          {!PROGRAM_ID && <p className="mt-4 text-xs text-muted">Note: no program ID set — the transaction (step 8) is disabled.</p>}
+          {!PROGRAM_ID && <p className="mt-4 text-xs text-muted">Note: no program ID set — the anchor step is disabled.</p>}
         </div>
       )}
 
@@ -411,7 +452,7 @@ export function ScanFlow() {
 
       {step === "camera" && !expired && (
         <div>
-          <StepHeader n={4} title="Photograph the card" hint="Place the flag with marker and indicators inside the frame. Five frames; the session code is overlaid and captured in the photo. No gallery upload." />
+          <StepHeader n={4} title="Photograph the card" hint="Place the card in its holder fully inside the frame. Five frames; the session code is overlaid." />
           <div className="relative mt-6 overflow-hidden rounded-2xl border border-line bg-line">
             <video ref={video} playsInline muted className="block w-full" />
             <div className="pointer-events-none absolute inset-0">
@@ -434,7 +475,7 @@ export function ScanFlow() {
 
       {step === "read" && !expired && (
         <div>
-          <StepHeader n={5} title="Indicators" hint={frames ? "Read from the frames: marker → dewarp → white balance → ΔE." : "Without photo: indicators count as not read (MISSING), tier 1."} />
+          <StepHeader n={5} title="Indicators" hint={frames ? "Read from the frames: card outline → rectification → white balance → colour distance." : "Without photo: indicators count as not read (MISSING), tier 1."} />
           {busy === "read" && <p className="mt-6 flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Reading the card …</p>}
           {reading && !reading.found && (
             <div className="card mt-6 p-4 text-sm"><p className="font-medium">Card not recognized</p><p className="mt-1 text-muted">{reading.reason}. Photograph again or continue without a reading (indicators MISSING).</p></div>
@@ -482,7 +523,7 @@ export function ScanFlow() {
         </div>
       )}
 
-      {step === "tx" && verify && !expired && (
+      {step === "tx" && verify && (
         <div>
           <StepHeader n={6} title="Server signed — now anchor it" hint={`Server verdict ${verify.verdict} · counter ${verify.counter} · Grade ${gradeLetter(verify.grade)} preliminary. The transaction contains the Ed25519 check of the server signature and record_scan.`} />
           {!wallet.connected && isIOS() && noInjectedWallet(wallet.wallets.map((w) => ({ name: w.adapter.name, installed: w.readyState === WalletReadyState.Installed }))) && (
@@ -500,7 +541,8 @@ export function ScanFlow() {
           <div className="mt-6 flex flex-wrap items-center gap-3">
             {!wallet.connected ? <WalletButton /> : (
               <>
-                <button onClick={sendTx} disabled={busy !== null || !PROGRAM_ID} className="btn">{busy === "tx" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Sign and send with {wallet.wallet?.adapter.name}</button>
+                <button onClick={sendTx} disabled={busy !== null || !PROGRAM_ID} className="btn">{busy === "tx" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} {txSig ? "Retry confirmation with the server" : `Sign and send with ${wallet.wallet?.adapter.name ?? "wallet"}`}</button>
+                {txSig && <a href={txUrl(txSig)} target="_blank" rel="noreferrer" className="link text-xs text-muted">Transaction landed · explorer</a>}
                 {DEV_SIMULATOR && <button onClick={airdropBurner} disabled={busy !== null} className="btn-outline btn-sm">1 SOL airdrop (test)</button>}
               </>
             )}
@@ -511,9 +553,9 @@ export function ScanFlow() {
 
       {step === "done" && (
         <div>
-          <StepHeader n={7} title={txSig ? "Scan anchored" : "Seal not responding — reported"} />
+          <StepHeader n={7} title={txSig ? "Scan anchored" : "Seal not responding — report recorded"} />
           <div className="mt-6 flex items-center gap-5">
-            <GradeMark grade={txSig ? finalGrade : Grade.VOID} />
+            {txSig ? <GradeMark grade={finalGrade} /> : <ShieldOff className="h-12 w-12 shrink-0 text-warn" aria-hidden />}
             <div className="text-sm text-muted">
               {txSig && verify && (
                 <>
@@ -522,7 +564,7 @@ export function ScanFlow() {
                   <a href={txUrl(txSig)} target="_blank" rel="noreferrer" className="link mt-1 block">Transaction in explorer</a>
                 </>
               )}
-              {!txSig && <p>Grade preview VOID · event SEAL_DEAD reported. No release without a valid scan.</p>}
+              {!txSig && <p>Your SEAL_DEAD report is recorded as unverified. A partner checks the seal and confirms it on chain; the report alone does not change the passport.</p>}
             </div>
           </div>
           {reading?.found && heatTxt && humTxt && (
@@ -537,7 +579,7 @@ export function ScanFlow() {
 
       {step === "dead" && (
         <div>
-          <StepHeader n={3} title="No seal found" hint="Seal separated, removed or out of range. A photo of the spot documents it; the passport gets event SEAL_DEAD and grade preview VOID." />
+          <StepHeader n={3} title="No seal found" hint="Seal separated, removed or out of range. Your report is recorded as unverified; a partner checks the seal and confirms it on chain." />
           <div className="mt-6 flex items-center gap-3 text-bad"><ShieldOff className="h-5 w-5" aria-hidden /><span className="font-serif text-2xl">Seal not responding</span></div>
           {!(preview?.serial ?? tag?.serial) && (
             <label className="mt-4 block text-sm">Passport serial number <input value={deadSerial} onChange={(e) => setDeadSerial(e.target.value)} placeholder="SN-2026-000001" className="ml-2 rounded-full border border-line bg-surface px-3 py-0.5 font-mono text-sm" /></label>

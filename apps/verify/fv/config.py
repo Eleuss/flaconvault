@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 APP_DIR = Path(__file__).resolve().parent.parent          # apps/verify
 REPO_DIR = APP_DIR.parent.parent                          # flaconvault/
 DEFAULT_SEED_PATH = REPO_DIR / "docs" / "seed" / "passports.json"
+DEFAULT_ESCROW_PROGRAM_ID = "9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL"
 
 # Load apps/verify/.env once, without overriding variables already in the environment.
 load_dotenv(APP_DIR / ".env", override=False)
@@ -35,12 +36,14 @@ class Settings:
     sdm_derive: str = "legacy"                             # FV_SDM_DERIVE for sdmbackend: legacy (NFC Developer App, sdm-backend default) | standard (derive.py)
     server_seed_hex: str = ""                              # 32 byte hex, REQUIRED
     server_key_id: int = 1
-    dev_simulator: bool = True
+    dev_simulator: bool = False                            # FV_DEV_SIMULATOR — /api/dev/* (off unless explicitly enabled)
+    admin_token: str = ""                                  # FV_ADMIN_TOKEN — x-admin-token for POST /api/reconcile and /api/dev/reset
     nonce_ttl_s: int = 90
     irys_key: str = ""                                     # FV_IRYS_KEY — path to a Solana keypair json, or "default"
     irys_key_json: str = ""                                # FV_IRYS_KEY_JSON — the keypair inline (64-number array) for hosted deployments
     solana_rpc: str = "https://api.devnet.solana.com"
     program_id: str = ""
+    escrow_program_id: str = DEFAULT_ESCROW_PROGRAM_ID     # FV_ESCROW_PROGRAM_ID — escrow program whose txs back LIST…DISPUTE events
     db_path: Path = field(default_factory=lambda: _resolve("./data/flaconvault.db"))
     media_dir: Path = field(default_factory=lambda: _resolve("./data/media"))
     web_url: str = "http://localhost:3000"
@@ -74,12 +77,15 @@ class Settings:
             )
         self.server_seed_hex = seed
         self.program_id = (self.program_id or "").strip()
-        if self.program_id:
-            from solders.pubkey import Pubkey
-            try:
-                Pubkey.from_string(self.program_id)
-            except Exception as exc:  # noqa: BLE001
-                raise ValueError(f"FV_PROGRAM_ID is not a valid base58 pubkey: {self.program_id!r}") from exc
+        self.escrow_program_id = (self.escrow_program_id or "").strip()
+        for env, value in (("FV_PROGRAM_ID", self.program_id), ("FV_ESCROW_PROGRAM_ID", self.escrow_program_id)):
+            if value:
+                from solders.pubkey import Pubkey
+                try:
+                    Pubkey.from_string(value)
+                except Exception as exc:  # noqa: BLE001
+                    raise ValueError(f"{env} is not a valid base58 pubkey: {value!r}") from exc
+        self.admin_token = (self.admin_token or "").strip()
         self.db_path = _resolve(self.db_path)
         self.media_dir = _resolve(self.media_dir)
         self.seed_path = Path(self.seed_path)
@@ -90,6 +96,16 @@ class Settings:
         if "127.0.0.1" in self.solana_rpc or "localhost" in self.solana_rpc:
             return "https://api.devnet.solana.com" if self.irys_network == "devnet" else "https://api.mainnet-beta.solana.com"
         return self.solana_rpc
+
+    def check_startup(self) -> None:
+        """
+        Refuse to serve real taps with a key anyone can compute. Called from the app lifespan (startup), so a
+        misconfigured deployment fails loudly instead of accepting forged SUN URLs.
+        """
+        if not self.dev_simulator and self.master_key == bytes(16):
+            raise RuntimeError(
+                "refusing to start: FV_DEV_SIMULATOR is off and FV_MASTER_KEY is all zeros — set FV_MASTER_KEY to the "
+                "16-byte SDM master key of your tags (or FV_DEV_SIMULATOR=true for local development only)")
 
     @property
     def master_key(self) -> bytes:
@@ -109,12 +125,14 @@ def settings_from_env() -> Settings:
         sdm_derive=e("FV_SDM_DERIVE") or "legacy",
         server_seed_hex=e("FV_SERVER_ED25519_SEED") or "",
         server_key_id=int(e("FV_SERVER_KEY_ID") or 1),
-        dev_simulator=_bool(e("FV_DEV_SIMULATOR"), True),
+        dev_simulator=_bool(e("FV_DEV_SIMULATOR"), False),
+        admin_token=e("FV_ADMIN_TOKEN") or "",
         nonce_ttl_s=int(e("FV_NONCE_TTL_S") or 90),
         irys_key=e("FV_IRYS_KEY") or "",
         irys_key_json=e("FV_IRYS_KEY_JSON") or "",
         solana_rpc=e("FV_SOLANA_RPC") or "https://api.devnet.solana.com",
         program_id=e("FV_PROGRAM_ID") or "",
+        escrow_program_id=e("FV_ESCROW_PROGRAM_ID") or DEFAULT_ESCROW_PROGRAM_ID,
         db_path=_resolve(e("FV_DB_PATH") or "./data/flaconvault.db"),
         media_dir=_resolve(e("FV_MEDIA_DIR") or "./data/media"),
         web_url=(e("FV_WEB_URL") or "http://localhost:3000").rstrip("/"),

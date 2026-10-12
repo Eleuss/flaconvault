@@ -55,6 +55,13 @@ def pda_seal(program_id: str | Pubkey, uid_hash: bytes) -> Pubkey:
     return Pubkey.find_program_address([b"seal", uid_hash], pid)[0]
 
 
+def pda_order(escrow_program_id: str | Pubkey, passport: Pubkey, seller: str | Pubkey) -> Pubkey:
+    """escrow Order PDA ["order", passport, seller] (programs/escrow/src/state.rs)."""
+    pid = escrow_program_id if isinstance(escrow_program_id, Pubkey) else program_pubkey(escrow_program_id)
+    seller_pk = seller if isinstance(seller, Pubkey) else Pubkey.from_string(seller)
+    return Pubkey.find_program_address([b"order", bytes(passport), bytes(seller_pk)], pid)[0]
+
+
 def pda_scan(program_id: str | Pubkey, seal: Pubkey, counter: int) -> Pubkey:
     pid = program_id if isinstance(program_id, Pubkey) else program_pubkey(program_id)
     return Pubkey.find_program_address([b"scan", bytes(seal), struct.pack("<I", counter)], pid)[0]
@@ -167,6 +174,11 @@ class Rpc:
             values = (res or {}).get("value") or [None] * len(chunk)
             out.extend(self._data(v) for v in values)
         return out
+
+    def get_transaction(self, signature: str) -> dict | None:
+        """Confirmed transaction (json encoding, v0 allowed) or None while it is not visible yet."""
+        return self.call("getTransaction", [signature, {"encoding": "json", "commitment": "confirmed",
+                                                        "maxSupportedTransactionVersion": 0}])
 
     def get_signatures_for_address(self, pubkey: str | Pubkey, limit: int = 5) -> list[str]:
         res = self.call("getSignaturesForAddress", [str(pubkey), {"limit": limit, "commitment": "confirmed"}]) or []

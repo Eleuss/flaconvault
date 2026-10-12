@@ -3,16 +3,16 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from fv import proof
 from fv.config import Settings
 from fv.db import (get_passport, get_seal_by_uid, get_sim_tag, insert_tap, list_sim_tags, now, transaction,
                    update_sim_tag, upsert_seal, upsert_sim_tag)
-from fv.deps import get_conn, get_db, get_settings
+from fv.deps import admin_token_ok, get_conn, get_db, get_settings
 from fv.enums import NO_RESPONSE, SealKind
-from fv.sdm import ctr_hex, key_for_uid, parse_uid, sdm_cmac, tag_url
+from fv.sdm import TagParamError, ctr_hex, key_for_uid, parse_uid, sdm_cmac, tag_url
 from fv.seed import run_seed
 from fv.strings import tap_message
 from fv.views import sim_tag_view
@@ -46,12 +46,19 @@ def _tag(conn, uid: str) -> dict:
 @router.post("/tag")
 def create_tag(body: TagBody, conn=Depends(get_conn), settings: Settings = Depends(get_settings)):
     ts = now()
-    uid_b = parse_uid(body.uid) if body.uid else (b"\x04" + os.urandom(6))
+    try:
+        uid_b = parse_uid(body.uid) if body.uid else (b"\x04" + os.urandom(6))
+    except TagParamError as exc:
+        raise HTTPException(422, str(exc)) from exc
     uid_hex = uid_b.hex().upper()
     key = key_for_uid(settings.key_mode, settings.master_key, uid_b, settings.sdm_derive)
     with transaction(conn):
         if body.serial and not get_passport(conn, body.serial):
             raise HTTPException(404, "passport not found")
+        # Never mint CMACs for a real chip: a uid that is already a registered seal without a virtual tag of its own
+        # stays out of the simulator (otherwise /api/dev/tap would be a CMAC oracle for that seal).
+        if get_seal_by_uid(conn, uid_hex) and not get_sim_tag(conn, uid_hex):
+            raise HTTPException(409, "uid belongs to a registered seal")
         t = upsert_sim_tag(conn, uid_hex=uid_hex, key_hex=key.hex(), counter=0, alive=True, created_at=ts, serial=body.serial)
         seal = get_seal_by_uid(conn, uid_hex)
         if body.serial:
@@ -101,6 +108,8 @@ def tags(conn=Depends(get_conn)):
 
 
 @router.post("/reset")
-def reset(db=Depends(get_db), settings: Settings = Depends(get_settings)):
+def reset(request: Request, db=Depends(get_db), settings: Settings = Depends(get_settings)):
+    if settings.admin_token and not admin_token_ok(settings, request.headers.get("x-admin-token")):
+        raise HTTPException(403, "admin token required")
     counts = run_seed(db, settings, wipe=True)
     return {"ok": True, "seeded": counts}

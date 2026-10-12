@@ -1,13 +1,14 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { PublicKey } from "@solana/web3.js";
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import type { PublicKey, Transaction } from "@solana/web3.js";
 import { ArrowRight, Loader2 } from "lucide-react";
 import { EventType, hexToBytes, serialHash } from "@flaconvault/proof";
 import { passportPda, scanPda, sealPda } from "@/lib/flacon";
 import { escrowProgram, escrowIx, fetchConfig, fetchOrders, OrderState, orderStateLabel, orderStateTone, FILL_TOLERANCE, type EscrowConfigView, type OrderView } from "@/lib/escrow";
 import { api } from "@/lib/verify-api";
+import { sendAsV0 } from "@/lib/send-tx";
 import type { Passport, PassportEvent } from "@/lib/api";
 import { PUBLIC_VERIFY_URL } from "@/lib/config";
 import { fmtDate, gradeLetter, short, txUrl } from "@/lib/format";
@@ -20,7 +21,6 @@ interface ScanOpt { counter: number; ts: number; fill: number | null; pda: Publi
 export function OrderDetail({ serial }: { serial: string }) {
   const { connection } = useConnection();
   const wallet = useWallet();
-  const anchorWallet = useAnchorWallet();
   const [passport, setPassport] = useState<Passport | null>(null);
   const [order, setOrder] = useState<OrderView | null | undefined>(undefined);
   const orderRef = useRef<OrderView | null | undefined>(undefined);
@@ -78,23 +78,26 @@ export function OrderDetail({ serial }: { serial: string }) {
       if (ev) await api.events({ serial, type: ev.type, txSig: sig, actor: wallet.publicKey.toBase58(), payload: ev.payload ?? {} });
     } catch (e) { setError((e as Error).message); } finally { setBusy(null); }
   };
-  const prog = () => escrowProgram(connection, anchorWallet!);
+  // build with the read-only program (accountsStrict needs no provider wallet), then the wallet signs a v0 tx —
+  // Anchor's .rpc() sends a legacy tx, which mobile wallets (MWA) return unsigned
+  const prog = () => escrowProgram(connection);
+  const send = async (b: { transaction(): Promise<Transaction> }) => sendAsV0(wallet, connection, await b.transaction());
   const chosen = myScans.find((s) => s.pda.toBase58() === scanChoice) ?? myScans[0];
   const sellerScanCounter = passport?.events.find((e) => e.type === EventType.SHIP)?.payload.preShipScanCounter as number | undefined;
   const now = Date.now() / 1000;
   const timeoutReached = !!(order && order.state === OrderState.SHIPPED && now > order.shippedAt + order.disputeAfterS);
 
   const act = {
-    reserve: () => run("reserve", () => escrowIx.reserve(prog(), order!, wallet.publicKey!, config!.usdcMint).rpc(), { type: EventType.RESERVE, payload: { priceUsdc: order!.priceUsdc, currency: "USDC" } }),
-    preShip: () => run("preShip", () => escrowIx.preShip(prog(), order!, chosen!.pda, sealKey!).rpc()),
-    ship: () => run("ship", () => escrowIx.ship(prog(), order!).rpc(), { type: EventType.SHIP, payload: { carrier: "DHL", preShipScanCounter: chosen?.counter ?? sellerScanCounter ?? null } }),
-    receipt: () => run("receipt", () => escrowIx.receipt(prog(), order!, chosen!.pda, sealKey!).rpc(), (after) => ({
+    reserve: () => run("reserve", () => send(escrowIx.reserve(prog(), order!, wallet.publicKey!, config!.usdcMint)), { type: EventType.RESERVE, payload: { priceUsdc: order!.priceUsdc, currency: "USDC" } }),
+    preShip: () => run("preShip", () => send(escrowIx.preShip(prog(), order!, chosen!.pda, sealKey!))),
+    ship: () => run("ship", () => send(escrowIx.ship(prog(), order!)), { type: EventType.SHIP, payload: { carrier: "DHL", preShipScanCounter: chosen?.counter ?? sellerScanCounter ?? null } }),
+    receipt: () => run("receipt", () => send(escrowIx.receipt(prog(), order!, chosen!.pda, sealKey!)), (after) => ({
       type: EventType.RECEIVE,
       payload: { receiptScanCounter: chosen!.counter, preShipScanCounter: sellerScanCounter ?? null, match: after?.state === OrderState.RECEIPT_SCANNED, fillDelta: null },
     })),
-    release: () => run("release", () => escrowIx.release(prog(), order!, wallet.publicKey!, config!.usdcMint).rpc(), { type: EventType.RELEASE, payload: { priceUsdc: order!.priceUsdc, currency: "USDC", to: order!.seller.toBase58(), passportTo: order!.buyer?.toBase58() } }),
-    dispute: () => run("dispute", () => escrowIx.dispute(prog(), order!, wallet.publicKey!, config!.usdcMint, seal?.dead && sealKey ? sealKey : null).rpc(), { type: EventType.DISPUTE, payload: { reason: seal?.dead ? "Seal not responding" : timeoutReached ? "no receiving scan within the deadline" : order!.state === OrderState.MISMATCH ? "scans disagree" : "admin" } }),
-    cancel: () => run("cancel", () => escrowIx.cancel(prog(), order!).rpc()),
+    release: () => run("release", () => send(escrowIx.release(prog(), order!, wallet.publicKey!, config!.usdcMint)), { type: EventType.RELEASE, payload: { priceUsdc: order!.priceUsdc, currency: "USDC", to: order!.seller.toBase58(), passportTo: order!.buyer?.toBase58() } }),
+    dispute: () => run("dispute", () => send(escrowIx.dispute(prog(), order!, wallet.publicKey!, config!.usdcMint, seal?.dead && sealKey ? sealKey : null)), { type: EventType.DISPUTE, payload: { reason: seal?.dead ? "Seal not responding" : timeoutReached ? "no receipt scan within the deadline" : order!.state === OrderState.MISMATCH ? "scans disagree" : "admin" } }),
+    cancel: () => run("cancel", () => send(escrowIx.cancel(prog(), order!))),
   };
 
   if (order === undefined) return <div className="container-page py-16 text-sm text-muted"><Loader2 className="inline h-4 w-4 animate-spin" aria-hidden /> Loading order …</div>;
@@ -105,7 +108,7 @@ export function OrderDetail({ serial }: { serial: string }) {
       <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="font-serif text-4xl">{passport ? `${passport.brand} · ${passport.name}` : serial}</h1>
-          {passport && <p className="mt-2 text-sm text-muted">Grade {gradeLetter(passport.void ? 4 : passport.grade)} · {passport.stats.scanCount} scans · seal {passport.sealStatus === "INTACT" ? "intact" : passport.sealStatus === "NO_RESPONSE" ? "not responding" : "opened"} · <Link href={`/p/${serial}`} className="link">View passport</Link></p>}
+          {passport && <p className="mt-2 text-sm text-muted">Grade {gradeLetter(passport.void ? 4 : passport.grade)} · {passport.stats.scanCount} scans · seal {passport.sealStatus === "INTACT" ? "responding" : passport.sealStatus === "NO_RESPONSE" ? "not responding" : "opened"} · <Link href={`/p/${serial}`} className="link">View passport</Link></p>}
         </div>
         {passport && <GradeMark grade={passport.void ? 4 : passport.grade} />}
       </div>
@@ -135,7 +138,7 @@ export function OrderDetail({ serial }: { serial: string }) {
               <div><dt>Buyer</dt><dd className="text-ink">{order.buyer ? <Link href={`/wallet/${order.buyer.toBase58()}`} className="link">{short(order.buyer.toBase58())}</Link> : "–"}</dd></div>
               <div><dt>Listed</dt><dd className="text-ink">{fmtDate(order.listedAt)}</dd></div>
               <div><dt>Shipping scan</dt><dd className="mono text-ink">{order.sellerScan ? short(order.sellerScan.toBase58()) : "–"}</dd></div>
-              <div><dt>Receiving scan</dt><dd className="mono text-ink">{order.buyerScan ? short(order.buyerScan.toBase58()) : "–"}</dd></div>
+              <div><dt>Receipt scan</dt><dd className="mono text-ink">{order.buyerScan ? short(order.buyerScan.toBase58()) : "–"}</dd></div>
               <div><dt>Deadline</dt><dd className="text-ink">{order.shippedAt ? `${fmtDate(order.shippedAt + order.disputeAfterS)}${timeoutReached ? " · expired" : ""}` : `${Math.round(order.disputeAfterS / 86400)} days after shipping`}</dd></div>
             </dl>
           </section>
@@ -170,12 +173,12 @@ export function OrderDetail({ serial }: { serial: string }) {
                   <div className="space-y-2">
                     <p className="text-muted">After receipt: do a scan (tier 2, with photo) and record it. Release happens when heat and humidity match and the fill level differs by at most {FILL_TOLERANCE} %.</p>
                     <div className="flex flex-wrap items-center gap-2">
-                      <Link href="/scan?role=2" className="btn-outline btn-sm">Do receiving scan <ArrowRight className="h-3.5 w-3.5" aria-hidden /></Link>
+                      <Link href="/scan?role=2" className="btn-outline btn-sm">Do receipt scan <ArrowRight className="h-3.5 w-3.5" aria-hidden /></Link>
                       <select value={chosen?.pda.toBase58() ?? ""} onChange={(e) => setScanChoice(e.target.value)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
                         {myScans.length === 0 && <option value="">— no own scan yet —</option>}
                         {myScans.map((s) => <option key={s.pda.toBase58()} value={s.pda.toBase58()}>{s.label}</option>)}
                       </select>
-                      <button onClick={act.receipt} disabled={busy !== null || !chosen} className="btn btn-sm">{busy === "receipt" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Record receiving scan</button>
+                      <button onClick={act.receipt} disabled={busy !== null || !chosen} className="btn btn-sm">{busy === "receipt" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Record receipt scan</button>
                     </div>
                   </div>
                 )}
@@ -186,7 +189,7 @@ export function OrderDetail({ serial }: { serial: string }) {
                 {[OrderState.RELEASED, OrderState.DISPUTE, OrderState.CANCELLED].includes(order.state as 5 | 7 | 8) && <p className="text-muted">Completed. The history is on the <Link href={`/p/${serial}`} className="link">passport</Link>.</p>}
                 {order.state === OrderState.RESERVED && !isSeller && <p className="text-muted">Waiting for the seller’s shipping scan.</p>}
                 {order.state === OrderState.PRESHIP_SCANNED && !isSeller && <p className="text-muted">Waiting for shipment.</p>}
-                {order.state === OrderState.SHIPPED && !isBuyer && <p className="text-muted">In transit. The buyer records the receiving scan.</p>}
+                {order.state === OrderState.SHIPPED && !isBuyer && <p className="text-muted">In transit. The buyer records the receipt scan.</p>}
               </div>
             )}
           </section>

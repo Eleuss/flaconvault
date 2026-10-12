@@ -3,13 +3,17 @@ Shared tap check used by GET /t, POST /api/preview and POST /api/verify (briefin
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import re
-
+import secrets
 from dataclasses import dataclass
 
 from fv import proof
 from fv.config import Settings
-from fv.db import advance_seal_counter, get_seal_by_uid, get_tap, last_counter_unregistered
+from fv.db import (advance_seal_counter, bump_attester, get_seal_by_uid, get_tap, last_counter_unregistered, mark_tap_adopted,
+                   newer_confirmed_scan_exists, previous_scan_before, set_passport_grade)
 from fv.enums import INVALID, REPLAY, UNREGISTERED, VALID
 from fv.sdm import TagParamError, decrypt_tap, key_for_uid, parse_cmac, parse_ctr, parse_hex_len, parse_uid, validate_tap
 
@@ -99,24 +103,72 @@ def check_tap(conn, settings: Settings, uid: str | None, ctr: str | int | None, 
 ADOPT_WINDOW_S = 180
 
 
-def adopt_tap(conn, tap_id: int, now_ts: int) -> TapCheck:
+def adopt_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def new_adopt_token() -> tuple[str, str]:
+    """(token handed to the browser once via the /t redirect, sha256 hex stored on the tap row)."""
+    token = secrets.token_urlsafe(16)
+    return token, adopt_token_hash(token)
+
+
+def adopt_tap(conn, tap_id: int, token: str | None, now_ts: int) -> TapCheck:
     """
     A sticker tap that landed on /t (background NFC read on the phone) already passed CMAC + counter and advanced the
-    seal. A scan session started right afterwards may adopt it once, within ADOPT_WINDOW_S, instead of asking for a
-    second tap. The adoption is recorded as the usual source="verify" tap row, which also blocks a second use.
+    seal. A scan session started right afterwards may adopt it instead of asking for a second tap — but only with the
+    unguessable one-time token /t put into the redirect (`k`), once (adopted_at is set in the caller's transaction),
+    within ADOPT_WINDOW_S, and only for a VALID /t tap. A wrong or missing token is indistinguishable from an unknown
+    tap (INVALID).
     """
     tap = get_tap(conn, tap_id)
-    if not tap or tap["source"] != "t":
+    stored = (tap or {}).get("adopt_hash") or ""
+    given = adopt_token_hash(token) if token else ""
+    # always run the comparison (constant time), even for unknown taps
+    token_ok = hmac.compare_digest(given.encode(), stored.encode()) and bool(stored) and bool(given)
+    if not tap or tap["source"] != "t" or not token_ok:
         return TapCheck(INVALID, error="tap not found")
     if tap["verdict"] != VALID or not tap["uid_hex"] or tap["ctr"] is None:
-        return TapCheck(tap["verdict"], uid_hex=tap["uid_hex"], counter=tap["ctr"], cmac_hex=tap["cmac"], error="tap not adoptable")
+        return TapCheck(INVALID, error="tap not adoptable")
+    ctr, uid_hex = int(tap["ctr"]), tap["uid_hex"]
+    if tap["adopted_at"] is not None:
+        return TapCheck(REPLAY, uid_hex=uid_hex, counter=ctr, cmac_hex=tap["cmac"], error="tap already used")
     if now_ts - int(tap["ts"]) > ADOPT_WINDOW_S:
-        return TapCheck(REPLAY, uid_hex=tap["uid_hex"], counter=int(tap["ctr"]), cmac_hex=tap["cmac"], error="tap too old")
-    used = conn.execute("SELECT 1 FROM taps WHERE uid_hex=? AND ctr=? AND source='verify' LIMIT 1",
-                        (tap["uid_hex"], int(tap["ctr"]))).fetchone()
-    if used:
-        return TapCheck(REPLAY, uid_hex=tap["uid_hex"], counter=int(tap["ctr"]), cmac_hex=tap["cmac"], error="tap already used")
-    seal = get_seal_by_uid(conn, tap["uid_hex"])
-    uid_hash_hex = proof.uid_hash(bytes.fromhex(tap["uid_hex"])).hex()
-    return TapCheck(VALID if seal else UNREGISTERED, uid_hex=tap["uid_hex"], uid_hash_hex=uid_hash_hex, counter=int(tap["ctr"]),
+        return TapCheck(REPLAY, uid_hex=uid_hex, counter=ctr, cmac_hex=tap["cmac"], error="tap too old")
+    if not mark_tap_adopted(conn, tap_id, now_ts):
+        return TapCheck(REPLAY, uid_hex=uid_hex, counter=ctr, cmac_hex=tap["cmac"], error="tap already used")
+    seal = get_seal_by_uid(conn, uid_hex)
+    uid_hash_hex = proof.uid_hash(bytes.fromhex(uid_hex)).hex()
+    return TapCheck(VALID if seal else UNREGISTERED, uid_hex=uid_hex, uid_hash_hex=uid_hash_hex, counter=ctr,
                     cmac_hex=tap["cmac"], seal=seal)
+
+
+def apply_confirmed_scan(conn, event: dict, attester: str | None, ts: int) -> None:
+    """
+    Shared state a SCAN may change, applied once — when the event turns confirmed (POST /api/events with a verified
+    record_scan tx, or the reconcile job finding the ScanProof PDA). `attester` is the verified signer, never the
+    pubkey the client claimed at /api/verify.
+      * passport grade ← the scan's grade, unless a newer confirmed scan already set it (void passports stay VOID);
+      * attester stats: scans (+certified for tier ≥ 3); agreement with the previous confirmed scan by someone else.
+    """
+    payload = json.loads(event.get("payload_json") or "{}")
+    if "indicators" not in payload:
+        return                                     # Tier-0 sightings carry no grade and no attester
+    serial = event["serial"]
+    grade = payload.get("grade")
+    if grade is not None and not newer_confirmed_scan_exists(conn, serial, event["id"], int(event["ts"])):
+        set_passport_grade(conn, serial, int(grade))
+    if not attester:
+        return
+    tier = int((payload.get("attester") or {}).get("tier", payload.get("tier", 0)) or 0)
+    bump_attester(conn, attester, ts, scans=1, certified=1 if tier >= 3 else 0)
+    prev = previous_scan_before(conn, serial, event["id"])
+    if prev and prev["actor_pubkey"] and prev["actor_pubkey"] != attester:
+        pb = json.loads(prev["payload_json"] or "{}")
+        pi, ci = pb.get("indicators") or {}, payload.get("indicators") or {}
+        try:
+            fill_close = abs(int(pb.get("fill", -100)) - int(payload.get("fill", 100))) <= 5
+        except (TypeError, ValueError):
+            fill_close = False
+        agree = pi.get("heat") == ci.get("heat") and pi.get("humidity") == ci.get("humidity") and fill_close
+        bump_attester(conn, prev["actor_pubkey"], ts, compare=1, agree=1 if agree else 0)

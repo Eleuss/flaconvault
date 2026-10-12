@@ -1,4 +1,4 @@
-"""Chain-facing reads: POST /api/reconcile, GET /api/registry, GET /api/sites."""
+"""Chain-facing reads: POST /api/reconcile (x-admin-token), GET /api/registry, GET /api/sites."""
 from __future__ import annotations
 
 import logging
@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from fv.chain import DecodeError, RpcError, decode_registry, pda_registry
 from fv.config import Settings
 from fv.db import partner_pubkeys
-from fv.deps import get_conn, get_db, get_rpc, get_settings
+from fv.deps import get_conn, get_db, get_rpc, get_settings, require_admin
 from fv.reconcile import reconcile_once
 
 log = logging.getLogger("fv.chain")
@@ -41,6 +41,6 @@ def sites(conn=Depends(get_conn), settings: Settings = Depends(get_settings), rp
     return registry_info(conn, settings, rpc)["sites"]
 
 
-@router.post("/api/reconcile")
+@router.post("/api/reconcile", dependencies=[Depends(require_admin)])
 def reconcile(db=Depends(get_db), settings: Settings = Depends(get_settings), rpc=Depends(get_rpc)):
     return reconcile_once(db, settings, rpc)

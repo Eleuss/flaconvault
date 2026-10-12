@@ -5,6 +5,7 @@ This code was implemented based on the examples provided in:
 * AN12196: NTAG 424 DNA and NTAG 424 DNA TagTamper features and hints
 """
 
+import hmac
 import io
 import struct
 from enum import Enum
@@ -168,7 +169,7 @@ def validate_plain_sun(uid: bytes, read_ctr: bytes, sdmmac: bytes, sdm_file_read
                                      data_stream.getvalue(),
                                      mode=mode)
 
-    if sdmmac != proper_sdmmac:
+    if not hmac.compare_digest(sdmmac, proper_sdmmac):
         raise InvalidMessage("Message is not properly signed - invalid MAC")
 
     read_ctr_num = struct.unpack('>I', b"\x00" + read_ctr)[0]
@@ -255,11 +256,11 @@ def decrypt_sun_message(param_mode: ParamMode,
 
     file_key = sdm_file_read_key(uid)
 
-    if sdmmac != calculate_sdmmac(param_mode,
-                                  file_key,
-                                  data_stream.getvalue(),
-                                  enc_file_data,
-                                  mode=mode):
+    if not hmac.compare_digest(sdmmac, calculate_sdmmac(param_mode,
+                                                        file_key,
+                                                        data_stream.getvalue(),
+                                                        enc_file_data,
+                                                        mode=mode)):
         raise InvalidMessage("Message is not properly signed - invalid MAC")
 
     if enc_file_data:

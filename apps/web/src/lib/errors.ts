@@ -1,0 +1,97 @@
+/**
+ * Readable error messages. HTTP errors from the verifier arrive as `ApiError` (status + FastAPI `detail`), chain
+ * failures from `sendAsV0` as `TxFailedError`; everything else is matched on its message.
+ */
+
+/** HTTP error from the verifier. `detail` is FastAPI's `detail` flattened to text, `code` a machine code like "tx_not_visible". */
+export class ApiError extends Error {
+  constructor(readonly path: string, readonly status: number, readonly detail: string | null, readonly code: string | null) {
+    super(`${path}: ${detail ?? `HTTP ${status}`}`);
+    this.name = "ApiError";
+  }
+}
+
+/** The transaction was included in a block but failed (confirmation reported `err`). */
+export class TxFailedError extends Error {
+  constructor(readonly signature: string, readonly reason: string) {
+    super(`The transaction failed on chain: ${reason}`);
+    this.name = "TxFailedError";
+  }
+}
+
+/** Builds an `ApiError` from a non-OK response without dumping raw JSON into the message. */
+export async function apiError(path: string, r: Response): Promise<ApiError> {
+  const text = await r.text().catch(() => "");
+  let detail: string | null = null, code: string | null = null;
+  try {
+    const j = JSON.parse(text) as Record<string, unknown>;
+    const d = j?.detail ?? j?.error ?? j?.message;
+    if (typeof d === "string") detail = d;
+    else if (Array.isArray(d)) {
+      // FastAPI validation errors: [{ loc: ["body", "tapToken"], msg: "Field required", ... }]
+      detail = d.map((x: { loc?: unknown[]; msg?: string }) => {
+        const loc = Array.isArray(x?.loc) ? x.loc.filter((l) => l !== "body").join(".") : "";
+        return `${loc ? `${loc}: ` : ""}${x?.msg ?? "invalid"}`;
+      }).join("; ");
+    } else if (d && typeof d === "object") {
+      const o = d as Record<string, unknown>;
+      code = typeof o.code === "string" ? o.code : null;
+      detail = typeof o.message === "string" ? o.message : typeof o.detail === "string" ? o.detail : code;
+    }
+  } catch {
+    // not JSON: keep short plain text, never an HTML error page
+    const t = text.trim();
+    detail = t && !t.startsWith("<") ? t.slice(0, 160) : null;
+  }
+  if (!code && detail && /^[a-z][a-z0-9_]*$/.test(detail)) code = detail;
+  return new ApiError(path, r.status, detail, code);
+}
+
+const CODES: Record<string, string> = {
+  tx_not_visible: "The network has not shown the transaction yet. Try again in a few seconds.",
+  tx_failed: "The transaction failed on chain.",
+  tx_mismatch: "This wallet did not sign that transaction.",
+};
+
+const sentence = (s: string) => { const t = s.trim().replace(/\s+/g, " "); return t ? t[0].toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? "" : ".") : t; };
+
+function fromApi(e: ApiError): string {
+  if (e.code && CODES[e.code]) return CODES[e.code];
+  const d = e.detail ?? "";
+  if (e.path.startsWith("/api/verify")) {
+    if (e.status === 409) { const m = /belongs to (\S+)/.exec(d); return m ? `This seal belongs to a different passport (${m[1]}).` : "This seal belongs to a different passport."; }
+    if (e.status === 422) {
+      if (/mediaHash/i.test(d)) return "This tier needs a photo of the card. Photograph the card and try again.";
+      if (/heat/i.test(d)) return "The indicator reading is inconsistent. Photograph the card again.";
+      return "The server rejected the scan data. Restart the scan.";
+    }
+  }
+  if (e.path.startsWith("/api/media") && e.status === 422) return "No photo arrived at the server. Photograph the card again.";
+  if (e.status === 404) return d ? sentence(d) : "Not found.";
+  if (e.status === 429) return "Too many requests. Wait a few seconds, then try again.";
+  if (e.status >= 500) return `The verification server had a problem (HTTP ${e.status}). Try again in a moment.`;
+  if (e.status === 422 || e.status === 409 || e.status === 400 || e.status === 403) return d ? `The server refused this: ${d.replace(/[.\s]+$/, "")}.` : `The server refused this request (HTTP ${e.status}).`;
+  return d ? sentence(d) : `Request failed (HTTP ${e.status}).`;
+}
+
+/** One readable sentence for any error shown to the user. */
+export function friendly(e: unknown): string {
+  if (e instanceof ApiError) return fromApi(e);
+  if (e instanceof TxFailedError) return e.message;
+  const name = (e as { name?: string })?.name ?? "";
+  const m = (e as Error)?.message ?? String(e);
+  if (name === "NotAllowedError" && !/wallet|transaction|sign/i.test(m)) return "Permission denied by the browser. Allow it in the site settings and try again.";
+  if (/prior credit|insufficient|0x1\b/i.test(m)) return "This wallet has no SOL on devnet. Send the address (above) to the operator or press “1 SOL airdrop (test)”.";
+  if (/rejected|declined|cancel|abgelehnt/i.test(m)) return "Signature rejected or cancelled in the wallet app. Press again and confirm in Phantom.";
+  if (/not connected|wallet.*connect|No wallet/i.test(m)) return "Wallet is no longer connected. Reconnect above.";
+  if (/ChunkLoadError|Loading chunk|dynamically imported module/i.test(m)) return "Page is outdated (new version online). Reload the page and retry.";
+  if (/429|Too Many Requests/i.test(m)) return "Devnet RPC overloaded (429). Wait 10 seconds, then press again.";
+  if (/blockhash not found|block ?height exceeded|has expired/i.test(m)) return "The transaction expired before it was confirmed. Press again and confirm promptly in the wallet.";
+  if (/Failed to fetch|Load failed|NetworkError|network request failed/i.test(m)) return "The server is unreachable. Check the connection and try again.";
+  // Anchor / simulation errors: keep the program's own message, drop the log dump
+  const anchor = /Error Message: ([^."\]]+)/.exec(m);
+  if (anchor) return `The program refused the transaction: ${anchor[1].trim()}.`;
+  const sim = /Transaction simulation failed: ([^.]+)/.exec(m);
+  if (sim) return `The transaction would fail: ${sim[1].trim()}.`;
+  return m.length > 300 ? `${m.slice(0, 300)}…` : m;
+}

@@ -42,6 +42,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        settings.check_startup()      # simulator off + all-zero master key → refuse to start
+        if not settings.dev_simulator and settings.key_mode == "factory":
+            log.warning("FV_KEY_MODE=factory with the simulator off: tags with factory (null) keys can be forged by anyone")
+        if not settings.admin_token:
+            log.info("FV_ADMIN_TOKEN not set: POST /api/reconcile is disabled (the background loop still runs)")
         db.init()
         settings.media_dir.mkdir(parents=True, exist_ok=True)
         if db.is_empty() and settings.seed_path.exists():

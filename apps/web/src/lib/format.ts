@@ -10,6 +10,9 @@ export const short = (s: string | null | undefined, n = 4) => (s ? `${s.slice(0,
 export const txUrl = (sig: string) => `https://explorer.solana.com/tx/${sig}?cluster=${CLUSTER}`;
 export const addrUrl = (a: string) => `https://explorer.solana.com/address/${a}?cluster=${CLUSTER}`;
 
+/** Test passports (brand "Test", any case) stay reachable by URL but are kept out of public lists. */
+export const isTestPassport = (p: { brand?: string | null }) => (p.brand ?? "").trim().toLowerCase() === "test";
+
 export const gradeLetter = (g: number | null | undefined) => (g == null ? "–" : GradeName[g] ?? "?");
 export const gradeTone = (g: number | null | undefined): "ok" | "warn" | "bad" | "none" =>
   g === Grade.A || g === Grade.B ? "ok" : g === Grade.C || g === Grade.D ? "warn" : g === Grade.VOID ? "bad" : "none";
@@ -26,7 +29,7 @@ export function indicatorText(kind: "heat" | "humidity" | "uv", code: number): {
       case Indicator.INTACT: return { label: "Light", detail: "no UV exposure recorded", tone: "ok" };
       case Indicator.TRIGGERED: return { label: "Light", detail: "UV exposure recorded — fragrance compounds age under light", tone: "warn" };
       case Indicator.UNREADABLE: return { label: "Light", detail: "unreadable — review recommended", tone: "none" };
-      default: return { label: "Light", detail: "not fitted", tone: "none" };
+      default: return { label: "Light", detail: "no reading yet", tone: "none" };
     }
   }
   const name = kind === "heat" ? "Heat" : "Humidity";
@@ -36,11 +39,11 @@ export function indicatorText(kind: "heat" | "humidity" | "uv", code: number): {
       ? { label: name, detail: "above 40 °C recorded — the temperature at which cosmetics and pharma test for accelerated ageing", tone: "warn" }
       : { label: name, detail: "above 60 % RH recorded — the limit for carton and label", tone: "warn" };
     case Indicator.UNREADABLE: return { label: name, detail: "unreadable — review recommended", tone: "none" };
-    default: return { label: name, detail: "not fitted", tone: "none" };
+    default: return { label: name, detail: "no reading yet", tone: "none" };
   }
 }
 export function sealStatusText(s: "INTACT" | "NO_RESPONSE" | "OPENED"): { label: string; tone: "ok" | "warn" | "bad" } {
-  if (s === "INTACT") return { label: "Seal intact · not opened since certification", tone: "ok" };
+  if (s === "INTACT") return { label: "Seal responding · no break recorded", tone: "ok" };
   if (s === "NO_RESPONSE") return { label: "Seal not responding", tone: "bad" };
   return { label: "Seal opened", tone: "bad" };
 }
@@ -57,7 +60,9 @@ export function verdictText(v: string, counter: number | null): { title: string;
 }
 
 const str = (v: unknown) => (typeof v === "string" ? v : typeof v === "number" ? String(v) : null);
-const ok = (code: unknown) => (code === Indicator.TRIGGERED ? "triggered" : code === Indicator.UNREADABLE ? "unreadable" : "ok");
+/** Detail word for a heat/humidity indicator code; null for MISSING (scan without photo) or anything unknown — never "ok". */
+const indicatorWord = (code: unknown): string | null =>
+  code === Indicator.INTACT ? "ok" : code === Indicator.TRIGGERED ? "triggered" : code === Indicator.UNREADABLE ? "unreadable" : null;
 
 export function eventLine(e: PassportEvent): { title: string; details: string[] } {
   const p = e.payload ?? {};
@@ -81,7 +86,9 @@ export function eventLine(e: PassportEvent): { title: string; details: string[] 
       if (role != null && !e.actorLabel) details.push(roleLabel[role] ?? "Wallet");
       if (typeof p.counter === "number") details.push(`Counter ${p.counter}`);
       if (tier != null && tier >= Tier.SELF) {
-        details.push(`Heat ${ok(ind.heat)}`, `Humidity ${ok(ind.humidity)}`);
+        const heat = indicatorWord(ind.heat), humidity = indicatorWord(ind.humidity);
+        if (heat) details.push(`Heat ${heat}`);
+        if (humidity) details.push(`Humidity ${humidity}`);
         if (typeof p.fill === "number") details.push(`Fill level ${p.fill} %`);
       }
       if (p.match === true) details.push("matching");

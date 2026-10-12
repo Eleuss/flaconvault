@@ -8,7 +8,7 @@ export interface PassportLatest {
 }
 export interface PassportEvent {
   id: number; type: number; ts: number; actor: string | null; actorLabel: string | null;
-  txSig: string | null; status: "pending" | "confirmed" | "failed"; sealUidHash: Hex32 | null;
+  txSig: string | null; status: "pending" | "confirmed" | "failed" | "reported"; sealUidHash: Hex32 | null;
   payload: Record<string, unknown>; arBundle: string | null; arMedia: string | null;
   gradeAfter: number | null; location: { country: string | null; city: string | null } | null;
 }

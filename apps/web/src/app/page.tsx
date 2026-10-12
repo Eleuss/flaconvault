@@ -1,12 +1,13 @@
 import Link from "next/link";
 import { ArrowRight, Nfc, ScanLine, ShieldCheck } from "lucide-react";
 import { getPassports } from "@/lib/api";
+import { isTestPassport } from "@/lib/format";
 import { GradeMark } from "@/components/badges";
 
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const passports = (await getPassports()) ?? [];
+  const passports = ((await getPassports()) ?? []).filter((p) => !isTestPassport(p));
   return (
     <div className="page-in">
       <section className="container-page py-16 md:py-24">

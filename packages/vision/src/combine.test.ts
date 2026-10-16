@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Indicator } from "@flaconvault/proof";
-import { combineReadings, notFoundReading, type CardReading } from "./index.ts";
+import { combineReadings, frameCounts, majority, notFoundReading, type CardReading } from "./index.ts";
 
 const { INTACT: I, TRIGGERED: T, UNREADABLE: U, MISSING: M } = Indicator;
 const LEVELS: Record<number, number[]> = { [I]: [1, 1, 1, 0, 0, 0], [T]: [1, 1, 1, 1, 1, 0] };
@@ -56,14 +56,77 @@ test("combineReadings: frames that are mostly UNREADABLE stay UNREADABLE", () =>
   assert.equal(r.reason, undefined, "UNREADABLE by majority is not a disagreement");
 });
 
-test("combineReadings: frames without a card do not vote", () => {
+test("combineReadings: frames without a card do not vote, but the quorum is a majority of ALL frames", () => {
   const miss = notFoundReading("Card not detected", 5);
   const r = combineReadings([miss, reading(T), miss, reading(T), reading(I)]);
-  assert.equal(r.heat, T);
-  assert.deepEqual(r.votes, { frames: 5, found: 3, heat: 2, humidity: 3, uv: 3 });
+  assert.equal(r.heat, U, "2 of 5 is not a majority, although 2 of the 3 found frames agree");
+  assert.deepEqual(r.heatLevels, [0, 0, 0, 0, 0, 0]);
+  assert.equal(r.confidence.heat, 0);
+  assert.deepEqual([r.humidity, r.uv], [I, I], "3 of 5 agree");
+  assert.deepEqual(r.votes, { frames: 5, found: 3, heat: 0, humidity: 3, uv: 3 });
+  assert.match(r.reason ?? "", /Frames disagree on heat \(3 of 5 frames counted\)/);
   assert.equal(r.ms, 40);
-  const single = combineReadings([miss, reading(I)]);
-  assert.equal(single.heat, I, "one found frame decides alone");
+  assert.equal(combineReadings([miss, reading(T), miss, reading(T), reading(T)]).heat, T, "3 of 5 decide");
+});
+
+test("combineReadings: one found frame never decides alone", () => {
+  const miss = notFoundReading("Card not detected", 5);
+  const g = reading(I); // e.g. a highlight frame of a triggered card
+  const r = combineReadings([miss, miss, miss, miss, g]);
+  assert.equal(r.found, true);
+  assert.deepEqual(verdicts(r), [U, U, U]);
+  assert.deepEqual(r.heatLevels, [0, 0, 0, 0, 0, 0]);
+  assert.deepEqual(r.confidence, { heat: 0, humidity: 0 });
+  assert.deepEqual(r.votes, { frames: 5, found: 1, heat: 0, humidity: 0, uv: 0 });
+  assert.match(r.reason ?? "", /Only 1 of 5 frames could be read/);
+  assert.equal(combineReadings([miss, g]).heat, U, "1 of 2");
+  assert.equal(combineReadings([g]).heat, I, "a single captured frame is its own majority");
+});
+
+test("combineReadings: `total` counts frames that were captured but not passed in", () => {
+  assert.equal(combineReadings([reading(T), reading(T), reading(T)], 5).heat, T);
+  assert.equal(combineReadings([reading(T), reading(T)], 5).heat, U);
+  assert.equal(combineReadings([reading(T), reading(T)], 5).votes?.frames, 5);
+  assert.equal(combineReadings([reading(T), reading(T), reading(T)], 1).votes?.frames, 3, "never fewer than the readings given");
+});
+
+test("combineReadings: frame-mode frames without the heat label abstain (they still count towards the quorum)", () => {
+  const noLabel = reading(U, U, U, { quality: { ...reading(I).quality, anchors: [] } });
+  assert.equal(frameCounts(noLabel), false);
+  assert.equal(frameCounts(reading(I)), true);
+  assert.equal(frameCounts(notFoundReading("x")), false);
+  assert.equal(frameCounts(reading(I, I, M, { quality: { ...reading(I).quality, anchors: [], mode: "marker" } })), true, "marker mode has no heat-label anchor");
+  const r = combineReadings([reading(T), reading(T), noLabel, noLabel, noLabel]);
+  assert.equal(r.heat, U);
+  assert.equal(r.votes?.found, 2);
+  assert.equal(combineReadings([reading(T), reading(T), noLabel, reading(T), noLabel]).heat, T);
+  // no voter at all: a not-found reading that says why
+  const none = combineReadings([noLabel, notFoundReading("Card not detected", 2), noLabel]);
+  assert.equal(none.found, false);
+  assert.deepEqual(verdicts(none), [M, M, M]);
+  assert.deepEqual(none.heatLevels, [0, 0, 0, 0, 0, 0]);
+  assert.match(none.reason ?? "", /heat label was not recognized in any frame/);
+  assert.equal(none.ms, 22);
+});
+
+test("combineReadings: a single highlight frame cannot outvote four triggered frames", () => {
+  const highlight = reading(I, I, I, { confidence: { heat: 1, humidity: 1 } });
+  const r = combineReadings([reading(T), reading(T), highlight, reading(T), reading(T)]);
+  assert.equal(r.heat, T);
+  assert.deepEqual(r.heatLevels, [1, 1, 1, 1, 1, 0]);
+  assert.equal(r.reason, undefined);
+});
+
+test("combineReadings: an indicator no frame read stays MISSING even below the quorum", () => {
+  const miss = notFoundReading("Card not detected");
+  const r = combineReadings([reading(I, I, M), reading(I, I, M), miss, miss, miss]);
+  assert.deepEqual(verdicts(r), [U, U, M], "Light: not fitted, never 'unreadable, inspection recommended'");
+  assert.match(r.reason ?? "", /Only 2 of 5 frames/);
+  assert.equal(majority([M, M], 3), M);
+  assert.equal(majority([I, M], 3), U, "a split between a reading and MISSING is decided by the quorum");
+  assert.equal(majority([], 3), U);
+  assert.equal(majority([T, T, T, I, I], 3), T);
+  assert.equal(majority([T, T, I, I, U], 3), U);
 });
 
 test("combineReadings: no frame with a card → the first not-found reading; no frames → not found", () => {
@@ -89,6 +152,12 @@ test("combineReadings: heat levels are a per-field majority over the agreeing fr
   assert.equal(r.heat, I);
   assert.deepEqual(r.heatLevels, [1, 1, 0, 0, 0, 0]);
   assert.equal(r.heatLevels[4], r.heat);
+  // a tie on a field gives 0; the decisive field always equals the verdict
+  const tie = combineReadings([
+    reading(T, I, I, { heatLevels: [1, 1, 1, 1, 1, 1] }), reading(T, I, I, { heatLevels: [1, 1, 1, 1, 1, 0] }),
+    reading(T, I, I, { heatLevels: [1, 1, 1, 1, 1, 1] }), reading(T, I, I, { heatLevels: [1, 1, 1, 1, 1, 0] }),
+  ]);
+  assert.deepEqual(tie.heatLevels, [1, 1, 1, 1, 1, 0]);
 });
 
 test("combineReadings: the representative frame agrees with the combined verdicts", () => {

@@ -240,15 +240,6 @@ def previous_scan_before(conn, serial: str, before_id: int) -> dict | None:
     return None
 
 
-def newer_confirmed_scan_exists(conn, serial: str, event_id: int, ts: int) -> bool:
-    """True if a confirmed bundle-carrying SCAN newer than (ts, event_id) exists — its grade then stays authoritative."""
-    for r in conn.execute("""SELECT payload_json FROM events WHERE serial=? AND type=2 AND status='confirmed' AND id!=?
-                             AND (ts>? OR (ts=? AND id>?))""", (serial, event_id, ts, ts, event_id)).fetchall():
-        if "indicators" in json.loads(r["payload_json"] or "{}"):
-            return True
-    return False
-
-
 # Tier of a confirmed SCAN: the on-chain ScanProof tier written by reconcile (payload.chain) wins, then the verified tier
 # written on confirmation (payload.tier), then, for rows confirmed before either existed, the tier claimed in the bundle —
 # but only when the confirmed signer is the claimed attester (a claim anchored by someone else counts as tier 0).

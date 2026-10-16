@@ -14,8 +14,8 @@ from dataclasses import dataclass
 from fv import proof
 from fv.config import Settings
 from fv.db import (advance_seal_counter, bump_attester, drop_superseded_sighting, get_seal_by_uid, get_tap,
-                   last_counter_unregistered, mark_tap_adopted, newer_confirmed_scan_exists, previous_scan_before,
-                   set_passport_grade, update_event_payload)
+                   last_counter_unregistered, mark_tap_adopted, previous_scan_before, set_passport_grade,
+                   update_event_payload)
 from fv.enums import INVALID, REPLAY, UNREGISTERED, VALID
 from fv.sdm import TagParamError, decrypt_tap, key_for_uid, parse_cmac, parse_ctr, parse_uid, validate_tap
 
@@ -250,7 +250,9 @@ def apply_confirmed_scan(conn, event: dict, attester: str | None, ts: int, chain
     args or the decoded ScanProof — the reconcile job should pass its decoded account).
       * payload.confirmed ← verified attester, tier, role, site and the differences to the claim; payload.tier/role ←
         the verified values (what the timeline and the certified count read); actor_label ← the verified signer's label;
-      * passport grade ← the scan's grade, unless a newer confirmed scan already set it (void passports stay VOID);
+      * passport grade ← the worse of the passport's grade and the scan's (set_passport_grade, MAX): the order in which
+        confirmations arrive does not matter — an older heat-triggered C confirmed after a newer clean scan (lost or
+        retried confirm POST, a failed scan recovered by reconcile) still lowers the grade, and VOID stays VOID;
       * the Tier-0 /t sighting of the same physical tap (same seal and counter) is dropped, so it is not counted twice;
       * attester stats: scans (+certified for a verified tier ≥ 3); agreement with the previous confirmed scan by
         someone else.
@@ -269,7 +271,7 @@ def apply_confirmed_scan(conn, event: dict, attester: str | None, ts: int, chain
     update_event_payload(conn, event["id"], payload)
     conn.execute("UPDATE events SET actor_label=(SELECT label FROM attesters WHERE pubkey=?) WHERE id=?", (attester, event["id"]))
     grade = payload.get("grade")
-    if grade is not None and not newer_confirmed_scan_exists(conn, serial, event["id"], int(event["ts"])):
+    if grade is not None:
         set_passport_grade(conn, serial, int(grade))
     if event.get("seal_uid_hash") and payload.get("counter") is not None:
         drop_superseded_sighting(conn, serial, event["seal_uid_hash"], int(payload["counter"]), event["id"])

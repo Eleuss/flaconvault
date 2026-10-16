@@ -219,7 +219,7 @@ def test_invalid_taps_are_purged_after_a_day(client):
     j = client.get("/t?uid=04A1B2C3D4E5F6&ctr=0000FF&cmac=0000000000000000&format=json").json()
     with client.app.state.db.connect() as conn:
         conn.execute("UPDATE taps SET ts=ts-? WHERE id=?", (rt.INVALID_TAP_RETENTION_S + 10, j["tapId"]))
-    rt._last_purge[0] = 0.0
+    rt._last_purge[0] = float("-inf")
     client.get("/t?uid=04A1B2C3D4E5F6&ctr=0000FE&cmac=0000000000000000&format=json")
     assert client.get(f"/api/tap/{j['tapId']}").status_code == 404
 

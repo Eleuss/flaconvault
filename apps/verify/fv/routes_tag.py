@@ -24,7 +24,7 @@ _UID_HEX = re.compile(r"^[0-9A-Fa-f]{14}$")
 INVALID_TAP_RETENTION_S = 24 * 3600
 PURGE_EVERY_S = 600.0
 _purge_lock = threading.Lock()
-_last_purge = [0.0]
+_last_purge = [float("-inf")]   # never purged yet: the first /t after start purges (monotonic clocks start near 0 on fresh hosts)
 
 
 def _wants_json(request: Request) -> bool:

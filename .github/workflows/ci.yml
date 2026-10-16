@@ -153,8 +153,11 @@ jobs:
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
       - name: Install Anchor CLI
         run: |
-          cargo install --git https://github.com/solana-foundation/anchor --tag "v${ANCHOR_VERSION}" avm --locked
-          avm install "${ANCHOR_VERSION}"
+          # The Anchor tooling needs a newer rustc than the programs (avm 1.2.0's lockfile wants >= 1.91);
+          # the programs themselves still build with rust-toolchain.toml.
+          rustup toolchain install stable --profile minimal
+          cargo +stable install --git https://github.com/solana-foundation/anchor --tag "v${ANCHOR_VERSION}" avm --locked
+          RUSTUP_TOOLCHAIN=stable avm install "${ANCHOR_VERSION}"
           avm use "${ANCHOR_VERSION}"
       # A throwaway wallet for the local validator, and fresh program keypairs: the real program keypairs are not in
       # the repo, so `anchor keys sync` points declare_id! and Anchor.toml at the generated ones (CI checkout only).

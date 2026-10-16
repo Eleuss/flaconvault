@@ -72,7 +72,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     log.exception("arweave probe failed")
             try:
                 summary = await asyncio.to_thread(reconcile_once, db, settings, app.state.rpc)
-                if summary["checked"] or summary["failed"] or summary["refreshed"]["passports"] or summary["refreshed"]["seals"]:
+                media = summary.get("media") or {}
+                if (summary["checked"] or summary["failed"] or summary["refreshed"]["passports"] or summary["refreshed"]["seals"]
+                        or media.get("rows") or media.get("files")):
                     log.info("reconcile: %s", summary)
             except Exception:  # noqa: BLE001 — keep the loop alive (validator down, RPC error, …)
                 log.exception("reconcile cycle failed")

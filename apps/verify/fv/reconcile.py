@@ -20,7 +20,11 @@ Reconcile job (briefing §10). One cycle:
      escrow_orders → attesters.escrows_ok / escrows_disputed.
   5. Arweave: the archiving queue (arweave.backfill) — confirmed scans whose bundle or media is not archived yet, a
      bounded number per cycle, a failing row retried later without blocking the others, nothing while in backoff.
-     This is the only place uploads happen; a confirm request never waits for the Irys sidecar.
+     This is the only place uploads happen; a confirm request never waits for the Irys sidecar. Per scan the media
+     is archived first (arweave.archive_scan), then its link is copied to ar_media, then the bundle is uploaded.
+  6. Media retention (media_store.retention, also without FV_PROGRAM_ID): staged uploads of expired / consumed session
+     nonces, and — after FV_MEDIA_RETENTION_S (default 7 days, 0 = never) — kept blobs that no pending, confirmed or
+     still recoverable failed scan references, plus blob files without a media row.
 
 All RPC reads happen before the write transaction (a slow RPC must never hold the SQLite write lock).
 """
@@ -30,7 +34,7 @@ import json
 import logging
 import time
 
-from fv import arweave, proof
+from fv import arweave, media_store, proof
 from fv.chain import (ORDER_LEN, DecodeError, Rpc, RpcError, decode_order, decode_passport, decode_registry, decode_scan_proof,
                       decode_seal, pda_passport, pda_registry, pda_scan, pda_seal, program_pubkey)
 from fv.config import Settings
@@ -167,9 +171,11 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
     """
     ts = ts if ts is not None else now()
     summary = {"checked": 0, "confirmed": 0, "recovered": 0, "failed": 0, "pending": 0, "mismatched": 0, "ignoredAccounts": 0,
-               "refreshed": {"passports": 0, "seals": 0}, "registry": None, "escrow": None, "arweave": None,
+               "refreshed": {"passports": 0, "seals": 0}, "registry": None, "escrow": None, "arweave": None, "media": None,
                "enabled": bool(settings.program_id)}
     if not settings.program_id:
+        with db.connect() as conn:
+            summary["media"] = _media_retention(conn, settings, ts)
         return summary
     pid = program_pubkey(settings.program_id)
 
@@ -324,4 +330,15 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
         # ---- 4. Arweave (sidecar subprocess) after the commit: the queue, newly confirmed scans included ----
         if arweave.enabled(settings):
             summary["arweave"] = arweave.backfill(conn, settings, now_ts=ts)
+        # ---- 5. media retention (after archiving: a confirmed scan's media is referenced and always kept) ----
+        summary["media"] = _media_retention(conn, settings, ts)
     return summary
+
+
+def _media_retention(conn, settings: Settings, ts: int) -> dict | None:
+    """media_store.retention; a failed scan inside FAILED_RECHECK_S still counts as a reference. Never aborts a cycle."""
+    try:
+        return media_store.retention(conn, settings, ts, failed_since=ts - FAILED_RECHECK_S)
+    except Exception:  # noqa: BLE001 — disk or DB trouble: the next cycle tries again
+        log.exception("reconcile: media retention failed")
+        return None

@@ -7,8 +7,13 @@ Seal frames uploaded to POST /api/media, kept only when a signed scan uses them.
             row — only when a VALID /api/verify consumes that nonce with mediaHash = sha256 (promote()). Nothing else
             ever leaves staging.
   purge     a staging directory whose nonce is expired, consumed or unknown is deleted, opportunistically from
-            POST /api/session and POST /api/media (at most every PURGE_EVERY_S per media directory). Junk uploads
-            therefore live no longer than a session nonce (FV_NONCE_TTL_S) plus that interval.
+            POST /api/session and POST /api/media (at most every PURGE_EVERY_S per media directory) and on every
+            reconcile cycle (retention()). Junk uploads therefore live no longer than a session nonce (FV_NONCE_TTL_S)
+            plus that interval.
+  retention promoted blobs (and their media rows) that no scan references any more — no pending or confirmed event,
+            no failed one the reconcile job may still recover — are deleted once they are older than
+            FV_MEDIA_RETENTION_S (default 7 days, 0 = never), and so are blob files without a media row; run by the
+            reconcile job (retention()), at most RETENTION_BATCH per cycle.
 
 Budgets, checked from Content-Length before the body is parsed and charged with the bytes actually staged:
   * free space: less than FV_MEDIA_MIN_FREE_BYTES (default 256 MiB) left on the media volume after the upload → 507
@@ -17,8 +22,9 @@ Budgets, checked from Content-Length before the body is parsed and charged with 
     → 429 media_limited;
   * whole server: FV_MEDIA_MAX_BYTES_PER_HOUR (default 2 GiB) → 503 media_busy.
 Each file is streamed to disk in CHUNK-sized pieces: a request never holds the whole upload in memory.
-Arweave: media is archived only once its scan is confirmed (POST /api/events, or the reconcile backfill), never at
-upload, so junk uploads cannot spend the Irys balance.
+Arweave: media is archived only by the reconcile job's archiving queue (arweave.backfill → archive_scan, media first,
+then the bundle) once its scan is confirmed — never at upload and never inside a request, so junk uploads cannot spend
+the Irys balance.
 """
 from __future__ import annotations
 
@@ -35,8 +41,9 @@ from pathlib import Path
 
 from fastapi import HTTPException, Request
 
+from fv import proof
 from fv.config import Settings
-from fv.db import get_media, get_nonce, upsert_media
+from fv.db import get_media, get_nonce, transaction, upsert_media
 from fv.ratelimit import RateLimiter, client_key, limiter, setting
 
 log = logging.getLogger("fv.media")
@@ -49,6 +56,8 @@ DEFAULT_MIN_FREE_BYTES = 256 * 1024 * 1024
 DEFAULT_MAX_BYTES_PER_IP_DAY = 200 * 1024 * 1024
 DEFAULT_MAX_BYTES_PER_HOUR = 2 * 1024 * 1024 * 1024
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_BLOB = re.compile(r"^([0-9a-f]{64})\.(?:bin|preview\.(?:jpg|png|webp))$")   # promoted files; nothing else is ever touched
+RETENTION_BATCH = 200            # media rows / orphan files deleted per retention() call at most
 _purge_lock = threading.Lock()
 _last_purge: dict[str, float] = {}
 
@@ -247,3 +256,74 @@ def maybe_purge(conn, settings: Settings, now_ts: int) -> int:
     except OSError as exc:
         log.warning("media: staging purge failed: %s", exc)
         return 0
+
+
+# ---------- retention (reconcile job) ----------
+
+def referenced_media(conn, failed_since: int) -> set[str]:
+    """sha256 (lowercase hex) of every media an event still references: any event that is not failed, or failed at or
+    after `failed_since` (the reconcile job may still recover it from its ScanProof)."""
+    rows = conn.execute(
+        """SELECT DISTINCT CASE WHEN m.type = 'object' THEN json_extract(m.value, '$.sha256') END
+           FROM events e, json_each(e.payload_json, '$.media') m
+           WHERE e.status != 'failed' OR e.ts >= ?""", (failed_since,)).fetchall()
+    return {proof.strip0x(r[0]).lower() for r in rows if isinstance(r[0], str)}
+
+
+def _unlink_blob(media_dir: Path, sha: str) -> int:
+    freed = 0
+    for f in [media_dir / f"{sha}.bin", *media_dir.glob(f"{sha}.preview.*")]:
+        try:
+            freed += f.stat().st_size
+            f.unlink()
+        except FileNotFoundError:
+            continue
+    return freed
+
+
+def retention(conn, settings: Settings, now_ts: int, *, failed_since: int, batch: int = RETENTION_BATCH) -> dict:
+    """
+    Media housekeeping of the reconcile job: staging directories of expired / consumed nonces (purge), then — unless
+    FV_MEDIA_RETENTION_S is 0 — promoted blobs no event references (referenced_media) whose media row is older than the
+    retention, and blob files without a media row whose mtime is. Runs in one write transaction, so a VALID /api/verify
+    promoting the same bytes at the same time (it moves the blob and writes the row under the same lock) can never lose
+    its file. → {staging, rows, files, bytes} deleted.
+    """
+    out = {"staging": 0, "rows": 0, "files": 0, "bytes": 0}
+    try:
+        out["staging"] = purge(conn, settings, now_ts)
+    except OSError as exc:
+        log.warning("media: staging purge failed: %s", exc)
+    ttl = int(getattr(settings, "media_retention_s", 0) or 0)
+    media_dir = Path(settings.media_dir)
+    if ttl <= 0 or not media_dir.is_dir():
+        return out
+    cutoff = now_ts - ttl
+    with transaction(conn):
+        keep = referenced_media(conn, failed_since)
+        old = [r[0] for r in conn.execute("SELECT sha256 FROM media WHERE created_at < ? ORDER BY created_at", (cutoff,))]
+        doomed = [sha for sha in old if sha not in keep][:batch]
+        for sha in doomed:
+            conn.execute("DELETE FROM media WHERE sha256=?", (sha,))
+            out["bytes"] += _unlink_blob(media_dir, sha)
+        out["rows"] = len(doomed)
+        known = {r[0] for r in conn.execute("SELECT sha256 FROM media")}
+        for f in media_dir.iterdir():
+            if out["files"] >= batch:
+                break
+            m = _BLOB.match(f.name)
+            if not m or m.group(1) in known or m.group(1) in keep or not f.is_file():
+                continue
+            try:
+                st = f.stat()
+                if st.st_mtime >= cutoff:
+                    continue
+                f.unlink()
+            except FileNotFoundError:
+                continue
+            out["files"] += 1
+            out["bytes"] += st.st_size
+    if out["rows"] or out["files"]:
+        log.info("media retention: deleted %d unreferenced media row(s), %d orphan file(s), %d bytes", out["rows"],
+                 out["files"], out["bytes"])
+    return out

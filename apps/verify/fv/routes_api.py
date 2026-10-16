@@ -356,7 +356,8 @@ async def media(request: Request, conn=Depends(get_conn), settings: Settings = D
     Content-Length before anything is read, together with the free space and the byte budgets (fv.media_store: 507
     storage_full · 429 media_limited · 503 media_busy). The upload is only *staged* under its nonce: it is kept when a
     VALID /api/verify consumes that nonce with this mediaHash, and deleted otherwise once the nonce has expired. Nothing
-    is archived to Arweave here (that happens when the scan is confirmed).
+    is archived to Arweave here: the reconcile job's archiving queue does that once the scan is confirmed, and its media
+    retention deletes kept frames no scan references any more (FV_MEDIA_RETENTION_S).
     """
     cl = request.headers.get("content-length")
     if cl is None or not cl.isdigit():

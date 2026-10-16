@@ -19,11 +19,9 @@ export function WalletButton() {
   // iPhone: Safari gets no injected wallet and there is no Mobile Wallet Adapter on iOS — continue in the wallet app's browser
   const iosLinks = ios && !connected && href && noInjectedWallet(wallets.map((w) => ({ name: w.adapter.name, installed: w.readyState === WalletReadyState.Installed }))) ? walletBrowseLinks(href) : null;
   const mwa = wallets.find((w) => w.adapter.name === SolanaMobileWalletAdapterWalletName);
-  const viaApp = async () => {
-    if (!mwa) return;
-    select(mwa.adapter.name);
-    try { await mwa.adapter.connect(); } catch (e) { console.error("[wallet] mobile connect", e); }
-  };
+  // select only: the provider connects a wallet the user picked and reports failures through its error handler
+  // (MWA's own connect() does not return its inner promise, so awaiting it here would never see an error)
+  const viaApp = () => { if (mwa) select(mwa.adapter.name); };
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
       <MultiButton />

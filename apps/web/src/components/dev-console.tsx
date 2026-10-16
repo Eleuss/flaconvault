@@ -4,7 +4,40 @@ import Link from "next/link";
 import { Loader2, Plus, RotateCcw, Skull, Sparkles, Zap } from "lucide-react";
 import { PUBLIC_VERIFY_URL } from "@/lib/config";
 import type { PassportListItem } from "@/lib/api";
+import { demoMode, setDemoMode } from "@/lib/demo";
+import { passportHref } from "@/lib/format";
 import { Lamp } from "./badges";
+
+/**
+ * Demo mode switch for this browser: /dev?demo=1 on, /dev?demo=0 off (lib/demo.ts). On localhost demo mode is
+ * always on. The query parameter is applied once and then removed from the address bar.
+ */
+export function DemoSwitch() {
+  const [on, setOn] = useState<boolean | null>(null);
+  const [local, setLocal] = useState(false);
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get("demo");
+    if (q === "1" || q === "0") {
+      setDemoMode(q === "1");
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+    setLocal(/^(localhost|127\.0\.0\.1|\[::1\])$/.test(window.location.hostname));
+    setOn(demoMode());
+  }, []);
+  if (on === null) return null;
+  if (local) return <p className="mt-6 text-sm text-muted">Demo mode is always on for localhost.</p>;
+  return (
+    <div className="card mt-6 p-4 text-sm">
+      <p className="font-medium">Demo mode {on ? "on" : "off"} in this browser</p>
+      <p className="mt-1 text-muted">
+        Demo mode shows the dev wallets (keys in plain text in this browser, signing without a prompt), the burner wallet,
+        airdrop buttons, test images and virtual taps. Never use these wallets for anything of value.
+      </p>
+      {/* full page loads: the wallet list is built once per page load */}
+      <a href={on ? "/dev?demo=0" : "/dev?demo=1"} className="btn-outline btn-sm mt-3">{on ? "Switch demo mode off" : "Switch demo mode on"}</a>
+    </div>
+  );
+}
 
 interface SimTag { uid: string; serial: string | null; kind: number | null; counter: number; alive: boolean; lastUrl?: string | null }
 interface TapResult { responds: boolean; uid: string; ctr?: number; ctrHex?: string; cmac?: string; url: string | null; tapId?: number }
@@ -32,10 +65,14 @@ export function DevConsole() {
   const push = (text: string, tone: "ok" | "bad" | "none" = "none", url?: string | null) => setLog((l) => [{ t: Date.now(), text, url, tone }, ...l].slice(0, 30));
 
   const refresh = useCallback(async () => {
+    let h: Health;
+    try { h = await api<Health>("/health"); } catch (e) { setHealth(null); setError((e as Error).message); return; }
+    setHealth(h);
+    if (!h.simulator) return; // /api/dev/* only exists with FV_DEV_SIMULATOR=true
     try {
-      const [h, t, p] = await Promise.all([api<Health>("/health"), api<SimTag[]>("/api/dev/tags"), api<PassportListItem[]>("/api/passports")]);
-      setHealth(h); setTags(t); setPassports(p); setError(null);
-    } catch (e) { setHealth(null); setError((e as Error).message); }
+      const [t, p] = await Promise.all([api<SimTag[]>("/api/dev/tags"), api<PassportListItem[]>("/api/passports")]);
+      setTags(t); setPassports(p); setError(null);
+    } catch (e) { setError((e as Error).message); }
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -64,6 +101,12 @@ export function DevConsole() {
       <button onClick={refresh} className="btn-outline btn-sm mt-3">Try again</button>
     </div>
   );
+  if (!health.simulator) return (
+    <div className="card mt-8 p-5 text-sm">
+      <p className="font-medium">Simulator disabled on this server</p>
+      <p className="mt-1 text-muted">The verification server at {PUBLIC_VERIFY_URL} is running with FV_DEV_SIMULATOR off, so it accepts only real seals. Virtual seals are available on a local verifier.</p>
+    </div>
+  );
 
   return (
     <div className="mt-8 grid gap-8 lg:grid-cols-[1fr_380px]">
@@ -88,7 +131,7 @@ export function DevConsole() {
               <Lamp tone={t.alive ? "ok" : "bad"} />
               <span className="mono w-32">{t.uid}</span>
               <span className="min-w-0 flex-1 text-sm text-muted">
-                {t.serial ? <Link href={`/p/${t.serial}`} className="link text-ink">{t.serial}</Link> : "unregistered"}
+                {t.serial ? <Link href={passportHref(t.serial)} className="link text-ink">{t.serial}</Link> : "unregistered"}
                 {t.kind != null && <> · {t.kind === 0 ? "Box" : "Neck"}</>} · counter <span className="tabular">{t.counter}</span>
               </span>
               <span className="flex gap-1.5">

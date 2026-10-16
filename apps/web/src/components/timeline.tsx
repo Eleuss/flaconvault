@@ -2,7 +2,7 @@ import Link from "next/link";
 import { EventType } from "@flaconvault/proof";
 import { Award, Camera, Coins, ExternalLink, FileCheck2, PackageCheck, Scan, ShieldOff, Stamp, Truck, Unlock, type LucideIcon } from "lucide-react";
 import type { PassportEvent } from "@/lib/api";
-import { eventLine, fmtDate, txUrl } from "@/lib/format";
+import { eventLine, fmtDate, txUrl, visibleEvents } from "@/lib/format";
 import { GradeMark } from "./badges";
 
 /** ar://<id> → a gateway URL a browser can open (Irys devnet data is served by the Irys gateway). */
@@ -14,16 +14,19 @@ const icons: Record<number, LucideIcon> = {
   [EventType.RELEASE]: Unlock, [EventType.DISPUTE]: ShieldOff, [EventType.SEAL_DEAD]: ShieldOff,
 };
 
-/** Event status as served; "reported" (an unverified SEAL_DEAD report from a buyer) may be newer than the api.ts type. */
-type EventStatus = PassportEvent["status"] | "reported";
-const statusBadge = (s: EventStatus): string | null =>
+/** "reported" is an unverified SEAL_DEAD report from a buyer: shown, but it changes nothing (see eventLine). */
+const statusBadge = (s: PassportEvent["status"]): string | null =>
   s === "pending" ? "awaiting confirmation" : s === "reported" ? "reported · unverified" : null;
 
 export function Timeline({ events }: { events: PassportEvent[] }) {
-  // failed attempts never landed on-chain — they are not part of the public history
-  const shown = events.filter((e) => (e.status as EventStatus) !== "failed");
-  const hidden = events.length - shown.length;
-  const hiddenNote = hidden > 0 && <p className="mt-4 text-xs text-muted">{hidden} failed {hidden === 1 ? "attempt" : "attempts"} not shown</p>;
+  // failed attempts never landed on-chain — they are not part of the public history; of the unverified reports only
+  // the newest few are listed, so anonymous reports cannot bury the history
+  const { shown, failed, reportsHidden } = visibleEvents(events);
+  const hiddenNote = (failed > 0 || reportsHidden > 0) && (
+    <p className="mt-4 text-xs text-muted">
+      {[failed > 0 && `${failed} failed ${failed === 1 ? "attempt" : "attempts"}`, reportsHidden > 0 && `${reportsHidden} older unverified ${reportsHidden === 1 ? "report" : "reports"}`].filter(Boolean).join(" and ")} not shown
+    </p>
+  );
   if (shown.length === 0) return <><p className="text-sm text-muted">No entries yet.</p>{hiddenNote}</>;
   return (
     <>
@@ -45,7 +48,7 @@ export function Timeline({ events }: { events: PassportEvent[] }) {
               <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
                 {details.map((d, i) => <span key={i}>{i > 0 && <span className="mr-2 opacity-50">·</span>}{d}</span>)}
                 {e.actor && (
-                  <span>{details.length > 0 && <span className="mr-2 opacity-50">·</span>}<Link href={`/wallet/${e.actor}`} className="link">{e.actorLabel ?? `${e.actor.slice(0, 4)}…${e.actor.slice(-4)}`}</Link></span>
+                  <span>{details.length > 0 && <span className="mr-2 opacity-50">·</span>}<Link href={`/wallet/${encodeURIComponent(e.actor)}`} className="link">{e.actorLabel ?? `${e.actor.slice(0, 4)}…${e.actor.slice(-4)}`}</Link></span>
                 )}
                 {loc && <span><span className="mr-2 opacity-50">·</span>{loc}</span>}
               </div>

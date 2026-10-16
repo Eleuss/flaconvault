@@ -1,13 +1,14 @@
 import Link from "next/link";
 import { ArrowRight, Nfc, ScanLine, ShieldCheck } from "lucide-react";
 import { getPassports } from "@/lib/api";
-import { isTestPassport } from "@/lib/format";
+import { isTestPassport, passportHref } from "@/lib/format";
 import { GradeMark } from "@/components/badges";
 
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const passports = ((await getPassports()) ?? []).filter((p) => !isTestPassport(p));
+  const res = await getPassports();
+  const passports = (res.status === "ok" ? res.data : []).filter((p) => !isTestPassport(p));
   return (
     <div className="page-in">
       <section className="container-page py-16 md:py-24">
@@ -42,6 +43,11 @@ export default async function HomePage() {
         </div>
       </section>
 
+      {res.status === "error" && (
+        <section className="hairline">
+          <p className="container-page py-10 text-sm text-muted">The passport list is unavailable right now: the verification server did not answer. Try again in a moment.</p>
+        </section>
+      )}
       {passports.length > 0 && (
         <section className="hairline">
           <div className="container-page py-14">
@@ -49,7 +55,7 @@ export default async function HomePage() {
             <ul className="mt-5 divide-y divide-line border-y border-line">
               {passports.map((p) => (
                 <li key={p.serial}>
-                  <Link href={`/p/${p.serial}`} className="flex items-center gap-4 py-4 transition hover:bg-surface">
+                  <Link href={passportHref(p.serial)} className="flex items-center gap-4 py-4 transition hover:bg-surface">
                     <GradeMark grade={p.void ? 4 : p.grade} size="sm" />
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-medium">{p.brand} · {p.name}</p>

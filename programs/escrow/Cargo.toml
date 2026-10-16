@@ -29,7 +29,7 @@ flacon = { path = "../flacon", features = ["no-entrypoint"] }
 # tests/time_travel.rs: the window branches under a Clock override (needs target/deploy/escrow.so from `anchor build`)
 litesvm = "0.10"
 solana-account = "3"
-solana-keypair = "3"
+solana-keypair = "4"
 solana-signer = "3"
 solana-transaction = { version = "3", features = ["bincode"] }
 

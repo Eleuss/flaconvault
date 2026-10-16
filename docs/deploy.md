@@ -128,7 +128,8 @@ vercel --cwd "$D" --prod --yes
 railway variable set FV_BUILD_SHA="$SHA" --service verify --skip-deploys
 railway up --service verify --detach --ci       # --detach returns after the upload; it does not wait for the build
 railway logs --service verify --build           # build output; without --build: the runtime logs (startup refusals)
-curl -s https://verify.flaconvault.com/health   # `build` equals $SHA once the new deployment is live
+# waits until /health reports $SHA (the old deployment answers until then), then checks ok, key and simulator off
+python3 .github/scripts/check-health.py https://verify.flaconvault.com --build "$SHA" --simulator false --wait-for-build --timeout 900
 ```
 
 Changing variables:

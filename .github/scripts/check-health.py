@@ -3,6 +3,9 @@
 Wait for a verifier's GET /health and check what a deployment must report. Used by docker-smoke.sh (CI job "docker");
 also works against a running verifier:
   python3 .github/scripts/check-health.py http://127.0.0.1:8787 [--build <commit>] [--simulator true|false] [--timeout 90]
+After a manual deploy (docs/deploy.md), --wait-for-build keeps polling while the previous deployment still answers with
+another `build`, until the new one is live or the timeout ends:
+  python3 .github/scripts/check-health.py https://verify.flaconvault.com --build <commit> --simulator false --wait-for-build --timeout 900
 Exit code 0 = healthy and as expected; 1 = a check failed or /health never answered.
 """
 from __future__ import annotations
@@ -42,18 +45,23 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--build", help="expected commit in `build`")
     ap.add_argument("--simulator", choices=["true", "false"], help="expected `simulator` flag")
     ap.add_argument("--timeout", type=float, default=90, help="seconds to wait for /health (default 90)")
+    ap.add_argument("--wait-for-build", action="store_true",
+                    help="with --build: keep polling while /health reports another build (a deploy still rolling out)")
     a = ap.parse_args(argv)
+    if a.wait_for_build and not a.build:
+        ap.error("--wait-for-build needs --build")
     url = a.base.rstrip("/") + "/health"
     deadline = time.monotonic() + a.timeout
     while True:
         try:
             h = fetch(url)
-            break
+            if not (a.wait_for_build and h.get("build") != a.build and time.monotonic() < deadline):
+                break
         except (urllib.error.URLError, ConnectionError, TimeoutError, json.JSONDecodeError) as exc:
             if time.monotonic() >= deadline:
                 print(f"::error::{url} did not answer within {a.timeout:.0f} s ({exc})")
                 return 1
-            time.sleep(1)
+        time.sleep(1 if not a.wait_for_build else 5)
     print(json.dumps(h, indent=2, sort_keys=True))
     found = problems(h, a.build, None if a.simulator is None else a.simulator == "true")
     for p in found:

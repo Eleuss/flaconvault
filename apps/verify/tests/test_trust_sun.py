@@ -10,7 +10,7 @@ from Crypto.Cipher import AES
 from fv import proof, sdm
 from fv.config import Settings
 from fv.db import upsert_passport, upsert_seal, transaction
-from fv.service import authenticate_tap, check_tap
+from fv.service import authenticate_tap
 from libsdm.sdm import ParamMode, calculate_sdmmac
 from tests.conftest import TEST_SEED_HEX
 

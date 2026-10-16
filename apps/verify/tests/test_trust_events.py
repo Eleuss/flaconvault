@@ -85,7 +85,6 @@ def test_replaying_seal_attach_never_rewrites_the_seal(chain_client):
 
 def test_attach_seal_args_must_match_the_claimed_uid(chain_client):
     c, rpc = chain_client, chain_client.rpc
-    from fv.txverify import b58encode  # noqa: F401  (documents the encoding used by make_tx)
     # the seal PDA is the claimed uid's, but the uid_hash argument is another chip's (cannot happen on chain)
     args = proof.uid_hash(bytes.fromhex("04999999999999")) + b"\x01"
     rpc.add_tx(sig("a2"), signers=[PARTNER], instructions=[

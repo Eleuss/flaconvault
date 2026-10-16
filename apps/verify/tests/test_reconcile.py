@@ -56,8 +56,11 @@ def test_reconcile_transitions(chain_client, monkeypatch):
     rpc.signatures[str(pda1)] = ["5" * 87 + "A"]
 
     s = c.post("/api/reconcile", headers=ADMIN).json()
-    assert s == {"checked": 3, "confirmed": 2, "failed": 0, "pending": 1, "mismatched": 1,
-                 "refreshed": {"passports": 0, "seals": 0}, "enabled": True}
+    assert {k: s[k] for k in ("checked", "confirmed", "recovered", "failed", "pending", "mismatched", "ignoredAccounts", "refreshed",
+                              "registry", "arweave", "enabled")} == {
+        "checked": 3, "confirmed": 2, "recovered": 0, "failed": 0, "pending": 1, "mismatched": 1, "ignoredAccounts": 0,
+        "refreshed": {"passports": 0, "seals": 0}, "registry": None, "arweave": None, "enabled": True}
+    assert s["escrow"]["orders"] == 0                                            # no Order accounts on the fake chain
     e1, e2, e3 = (_event(c, v["eventId"]) for v in (v1, v2, v3))
     assert e1["status"] == "confirmed" and e1["txSig"] == "5" * 87 + "A" and e1["payload"]["reconcile"]["mismatch"] == []
     assert e1["payload"]["reconcile"]["scanPda"] == str(pda1) and e1["payload"]["server"]["sig"] == v1["serverSig"]
@@ -81,10 +84,15 @@ def test_reconcile_transitions(chain_client, monkeypatch):
     assert e3["status"] == "failed" and e3["txSig"] == "7" * 88 and "no ScanProof" in e3["payload"]["reconcile"]["reason"]
     # failed events are not counted as scans
     assert c.get(f"/api/passport/{SERIAL}").json()["stats"]["scanCount"] == 14 + 2
-    assert c.post("/api/reconcile", headers=ADMIN).json()["checked"] == 0
+    # a failed scan is re-checked against its ScanProof PDA (for a day), but stays failed while there is none
+    s = c.post("/api/reconcile", headers=ADMIN).json()
+    assert s["checked"] == 1 and s["failed"] == 0 and s["pending"] == 0 and s["confirmed"] == 0
+    assert _event(c, v3["eventId"])["status"] == "failed"
+    monkeypatch.setattr(rc, "now", lambda: real_now() + rc.FAILED_RECHECK_S + 601)
+    assert c.post("/api/reconcile", headers=ADMIN).json()["checked"] == 0          # ... and is given up after that
 
 
-def test_chain_refresh_of_passport_and_seal(chain_client):
+def test_chain_refresh_of_passport_and_seal(chain_client, monkeypatch):
     c, rpc = chain_client, chain_client.app.state.rpc
     p_pda = pda_passport(PROGRAM_ID, proof.serial_hash(SERIAL))
     s_pda = pda_seal(PROGRAM_ID, proof.uid_hash(bytes.fromhex("04A1B2C3D4E5F6")))
@@ -119,13 +127,21 @@ def test_chain_refresh_of_passport_and_seal(chain_client):
     assert c.post("/api/reconcile", headers=ADMIN).json()["refreshed"]["passports"] == 1
     assert c.get("/api/passport/SN-2026-000002").json()["void"] is True
 
-    # a passport with something pending is not refreshed from chain
-    rpc.accounts[str(p_pda)] = passport_bytes(serial_hash=proof.serial_hash(SERIAL), grade=1)
-    with c.app.state.db.connect() as conn:   # e.g. an old pending event (clients cannot create pending events any more)
-        conn.execute("INSERT INTO events(serial, type, ts, status, payload_json) VALUES(?,?,?,?,?)",
-                     (SERIAL, 3, 1790000000, "pending", '{"priceUsdc": 480}'))
+    # a passport with something pending is not refreshed from chain ...
+    rpc.accounts[str(p_pda)] = passport_bytes(serial_hash=proof.serial_hash(SERIAL), grade=3, scan_count=15)
+    with c.app.state.db.connect() as conn:   # e.g. an old-style pending LIST (clients cannot create pending events any more)
+        stale_id = conn.execute("INSERT INTO events(serial, type, ts, status, payload_json) VALUES(?,?,?,?,?)",
+                                (SERIAL, 3, rc.now(), "pending", '{"priceUsdc": 480}')).lastrowid
     assert c.post("/api/reconcile", headers=ADMIN).json()["refreshed"]["passports"] == 0
     assert c.get(f"/api/passport/{SERIAL}").json()["grade"] == 2
+    # ... but a pending event that no ScanProof can confirm times out like a scan and stops blocking the refresh
+    real_now = rc.now
+    monkeypatch.setattr(rc, "now", lambda: real_now() + 601)
+    s = c.post("/api/reconcile", headers=ADMIN).json()
+    assert s["failed"] == 1 and s["refreshed"]["passports"] == 1
+    ev = next(e for e in c.get(f"/api/passport/{SERIAL}").json()["events"] if e["id"] == stale_id)
+    assert ev["status"] == "failed" and "no on-chain confirmation" in ev["payload"]["reconcile"]["reason"]
+    assert c.get(f"/api/passport/{SERIAL}").json()["grade"] == 3
 
 
 def test_reconcile_disabled_without_program_id(client):

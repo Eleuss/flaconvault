@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "FlaconVault — NFC seal, indicator card and on-chain passport for collectible perfume bottles.",
+  "license": "MIT",
   "workspaces": [
     "packages/*",
     "apps/web"

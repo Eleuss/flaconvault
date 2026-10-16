@@ -10,7 +10,7 @@
 # the root-owned /data volume to `fv` (apps/verify/docker-entrypoint.sh).
 
 # ---- Irys sidecar dependencies ----
-FROM node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e AS irys
+FROM node:26.11.1-bookworm-slim@sha256:86f07bc9c5dce4578cf37e5a418b7bfc7f817cda25cde66e2b66e95ed86c4567 AS irys
 WORKDIR /irys
 COPY apps/verify/irys/package.json apps/verify/irys/package-lock.json ./
 # --ignore-scripts: no install script of the ~245 dependencies runs at build time (the native addons they try to build

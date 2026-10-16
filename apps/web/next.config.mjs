@@ -1,3 +1,9 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** The monorepo root (npm workspaces, package-lock.json): two levels above apps/web. */
+export const workspaceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
 /**
  * Security headers. Enforced: no framing anywhere (X-Frame-Options + CSP frame-ancestors), nosniff, a referrer policy
  * and camera only for this origin. The full Content-Security-Policy runs in report-only mode first: it lists what the
@@ -61,6 +67,9 @@ const nextConfig = {
   // local production builds: NEXT_DIST_DIR=.next-build npx next build (never clobbers a running dev server); Vercel uses .next
   distDir: process.env.NEXT_DIST_DIR ?? ".next",
   transpilePackages: ["@flaconvault/proof", "@flaconvault/vision"],
+  // the npm workspace root (package-lock.json, packages/*). Next 15 otherwise infers it from the lockfiles it finds
+  // above apps/web and picks the outer one when this checkout sits inside another (e.g. a git worktree).
+  outputFileTracingRoot: workspaceRoot,
   experimental: { esmExternals: true },
   poweredByHeader: false,
   async headers() {

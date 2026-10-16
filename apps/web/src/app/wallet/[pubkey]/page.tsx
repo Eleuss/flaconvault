@@ -8,8 +8,8 @@ export const metadata: Metadata = { title: "Attester" };
 
 const safeDecode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
 
-export default async function WalletPage({ params }: { params: { pubkey: string } }) {
-  const pubkey = safeDecode(params.pubkey);
+export default async function WalletPage({ params }: { params: Promise<{ pubkey: string }> }) {
+  const pubkey = safeDecode((await params).pubkey);
   const res = await getAttester(pubkey);
   if (res.status === "error") return <Unavailable what="This wallet's record" retry={`/wallet/${encodeURIComponent(pubkey)}`} />;
   const a = res.status === "ok" ? res.data : null;

@@ -60,7 +60,7 @@ Drei Teile, eine Wahrheit: **Der Server ist die einzige Stelle, die den Chip pr�
 
 ```
 flaconvault/                      öffentlich, Commits ab sofort aussagekräftig
-  apps/web/                       Next.js 14 App Router, TypeScript, Tailwind, PWA, Wallet Adapter, OpenCV.js
+  apps/web/                       Next.js 15 App Router, TypeScript, Tailwind, PWA, Wallet Adapter, OpenCV.js
   apps/verify/                    Python 3.12, FastAPI, SQLite; basiert auf github.com/icedevml/sdm-backend
   programs/flacon/                Anchor ≥ 0.30; Programm `flacon`; Woche 3: `escrow`
   packages/proof/                 TS: Typen, Schema (zod), Signatur-Helper, Enum-Tabellen — Single Source of Truth

@@ -1,7 +1,7 @@
 # @flaconvault/web
 
-Next.js 14 App Router, mobile first (Android Chrome reads the seal with Web NFC; iPhone uses the tag's own URL and a
-wallet app's browser).
+Next.js 15 App Router with React 19, mobile first (Android Chrome reads the seal with Web NFC; iPhone uses the tag's own
+URL and a wallet app's browser).
 
 ```bash
 cp apps/web/.env.example apps/web/.env.local      # local values; never put a secret in a NEXT_PUBLIC_* variable

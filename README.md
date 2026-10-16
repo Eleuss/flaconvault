@@ -61,7 +61,7 @@ A buyer needs no app and no wallet: tapping the sticker with an iPhone opens the
 | `apps/verify` | Python 3.12 / FastAPI / SQLite verifier: SUN/CMAC (from `icedevml/sdm-backend`), sessions, signatures, on-chain transaction verification for history entries, reconcile job, optional Arweave archiving via Irys (`FV_ARWEAVE`). |
 | `programs/flacon` | Anchor program: `Registry`, `Passport`, `Seal`, `ScanProof`; Ed25519 verification in `record_scan`. |
 | `programs/escrow` | Anchor program: USDC escrow that compares seller and buyer ScanProofs. |
-| `apps/web` | Next.js 14: landing, tap result, scan flow, public passport, certification console, market. |
+| `apps/web` | Next.js 15 (React 19): landing, tap result, scan flow, public passport, certification console, market. |
 | `docs/` | Briefing, card layout, `heat_fields.json` (card geometry, change the file, not the code), shared fixtures `vectors.json` and `enums.json`, devnet addresses, hardware runbook, deploy runbook, demo script. |
 | `scripts/` | Devnet seeding, `partner` / `server-key` registry admin, `bind-chip`, `fund-dev-wallet`, `list-order`. |
 | `.github/` | CI (GitHub Actions: every test suite below except `anchor test`, which runs on manual dispatch; the verifier Docker image; the IDL drift check when the programs change) and Dependabot. |

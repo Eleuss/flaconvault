@@ -142,7 +142,11 @@ def test_full_simulated_flow(chain_client, vectors, monkeypatch):
     p = client.get(f"/api/passport/{SERIAL}").json()
     scan_events = [e for e in p["events"] if e["type"] == EventType.SCAN]
     assert len(p["events"]) >= 8 and len(before["events"]) >= 8
-    assert p["stats"]["scanCount"] == len(scan_events) == before["stats"]["scanCount"] + 3  # verify ×2 + one /t sighting
+    confirmed = [e for e in scan_events if e["status"] == "confirmed"]
+    # stats count confirmed scans only: the /t sighting counts, the two verify scans are still pending
+    assert len(scan_events) == len(confirmed) + 2
+    assert p["stats"]["scanCount"] == len(confirmed) == before["stats"]["scanCount"] + 1
+    assert p["stats"]["onChainScanCount"] == before["stats"]["onChainScanCount"]           # a sighting never goes on chain
     assert [e["ts"] for e in p["events"]] == sorted(e["ts"] for e in p["events"])
     assert p["sealStatus"] == "INTACT" and len(p["seals"]) == 2
     # unconfirmed scans change neither the header indicators nor the grade
@@ -165,6 +169,8 @@ def test_full_simulated_flow(chain_client, vectors, monkeypatch):
     assert a["scanCount"] == before_scans(vectors) + 1 and a["recentSerials"][0] == SERIAL and a["agreeRate"] is not None
     p = client.get(f"/api/passport/{SERIAL}").json()
     assert p["latest"]["eventId"] == v["eventId"] and p["latest"]["counter"] == 1 and p["grade"] == 0
+    assert p["stats"]["scanCount"] == before["stats"]["scanCount"] + 2
+    assert p["stats"]["onChainScanCount"] == before["stats"]["onChainScanCount"] + 1      # the anchored record_scan
 
 
 def before_scans(_vectors) -> int:
@@ -176,7 +182,8 @@ def test_seed_passports(client):
     assert [p["serial"] for p in lst] == ["SN-2026-000001", "SN-2026-000002", "SN-2026-000003"]
     assert [p["grade"] for p in lst] == [0, 2, 4] and lst[2]["void"] is True and lst[0]["scanCount"] == 14
     p1 = client.get("/api/passport/SN-2026-000001").json()
-    assert p1["stats"] == {"scanCount": 14, "attesterCount": 3, "certifiedCount": 1, "counter": 14}
+    # seeded demo scans carry fake txSigs: they are never counted as on chain
+    assert p1["stats"] == {"scanCount": 14, "attesterCount": 3, "certifiedCount": 1, "onChainScanCount": 0, "counter": 14}
     assert p1["issuerLabel"] == "Parfümerie X, Düsseldorf" and [e["type"] for e in p1["events"]][:3] == [0, 1, 2]
     assert {e["type"] for e in p1["events"]} >= {0, 1, 2, 3, 5, 6, 7}
     p2 = client.get("/api/passport/SN-2026-000002").json()

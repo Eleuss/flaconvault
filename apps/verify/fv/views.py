@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import json
+import re
+from urllib.parse import quote
 
-from fv.db import (events_for, get_passport, has_event_type, latest_scan_with_indicators, passport_stats,
-                   recent_serials_for, seals_for)
+from fv.db import (events_for, get_passport, has_event_type, latest_scan_with_indicators, passport_stats_confirmed,
+                   recent_confirmed_serials_for, seals_for)
 from fv.enums import UNREGISTERED, EventType, Grade, Tamper
 from fv.proof import serial_hash, uid_hash
+
+_UID_RE = re.compile(r"^[0-9A-Fa-f]{14}$")
 
 
 def h0x(h: str | None) -> str | None:
@@ -21,6 +25,11 @@ def _uid_hash0x(uid_hex: str | None) -> str | None:
         return h0x(uid_hash(bytes.fromhex(uid_hex)).hex())
     except ValueError:
         return None
+
+
+def uid_tail(uid_hex: str) -> str:
+    """The public stand-in for a chip UID: its last byte only (the seed's convention, e.g. "…F6")."""
+    return "…" + uid_hex[-2:].upper()
 
 
 def tap_view(row: dict, seal: dict | None) -> dict:
@@ -40,13 +49,36 @@ def tap_view(row: dict, seal: dict | None) -> dict:
     }
 
 
+def public_payload(r: dict) -> dict:
+    """
+    The event payload as anyone may see it:
+      * events that are not confirmed lose the signed scan message, the server signature and the session nonce — with
+        those, anyone could anchor (front-run) the scan with their own wallet; the scanner gets them from its own
+        /api/verify response or the resume link (GET /api/verify/{eventId}?token=);
+      * raw chip UIDs never leave the server (older SEAL_ATTACH and report rows stored them): only uidTail.
+    """
+    payload = json.loads(r.get("payload_json") or "{}")
+    if not isinstance(payload, dict):
+        return {}
+    if r.get("status") != "confirmed":
+        payload.pop("msgHex", None)
+        if isinstance(payload.get("server"), dict):
+            payload["server"] = {**payload["server"], "sig": None}
+        if isinstance(payload.get("session"), dict):
+            payload["session"] = {**payload["session"], "nonce": None}
+    uid = payload.pop("uid", None)
+    if isinstance(uid, str) and _UID_RE.match(uid):
+        payload.setdefault("uidTail", uid_tail(uid))
+    return payload
+
+
 def event_view(r: dict) -> dict:
     return {
         "id": r["id"], "type": r["type"], "ts": r["ts"],
         "actor": r["actor_pubkey"], "actorLabel": r["actor_label"],
         "txSig": r["tx_sig"], "status": r["status"],
         "sealUidHash": h0x(r["seal_uid_hash"]),
-        "payload": json.loads(r["payload_json"] or "{}"),
+        "payload": public_payload(r),
         "arBundle": r["ar_bundle"], "arMedia": r["ar_media"],
         "gradeAfter": r["grade_after"],
         "location": {"country": r["country"], "city": r["city"]},
@@ -64,7 +96,7 @@ def passport_view(conn, serial: str) -> dict | None:
         return None
     seals = seals_for(conn, serial)
     events = events_for(conn, serial)
-    stats = passport_stats(conn, serial)
+    stats = passport_stats_confirmed(conn, serial)
     latest_row = latest_scan_with_indicators(conn, serial)
     latest = None
     if latest_row:
@@ -103,15 +135,43 @@ def passport_list_view(rows: list[dict]) -> list[dict]:
              "scanCount": int(r["scan_count"] or 0), "lastEventTs": r["last_event_ts"]} for r in rows]
 
 
-def attester_view(conn, a: dict) -> dict:
-    compare = int(a["compare_count"] or 0)
+GRADE_LETTERS = {Grade.A: "A", Grade.B: "B", Grade.C: "C", Grade.D: "D", Grade.VOID: "VOID"}
+
+
+def passport_metadata(conn, serial: str, web_url: str) -> dict | None:
+    """Metaplex-style metadata JSON for the passport's Core asset (`uri`): name, image, link to the public page."""
+    p = get_passport(conn, serial)
+    if not p:
+        return None
+    grade = Grade.VOID if p["void"] else p["grade"]
+    page = f"{web_url.rstrip('/')}/p/{quote(serial, safe='')}"
+    attrs = [{"trait_type": "Serial", "value": serial}, {"trait_type": "Brand", "value": p["brand"]},
+             {"trait_type": "Grade", "value": GRADE_LETTERS.get(grade, str(grade))}]
+    if p["batch"]:
+        attrs.append({"trait_type": "Batch", "value": p["batch"]})
     return {
-        "pubkey": a["pubkey"], "label": a["label"], "isPartner": bool(a["is_partner"]),
+        "name": f"{p['brand']} · {p['name']}"[:64],
+        "symbol": "FLACON",
+        "description": f"FlaconVault passport {serial}: seal and handling record of a {p['brand']} bottle. "
+                       f"Full history: {page}",
+        "image": f"{web_url.rstrip('/')}/icon.svg",
+        "external_url": page,
+        "attributes": attrs,
+        "properties": {"category": "image", "files": [{"uri": f"{web_url.rstrip('/')}/icon.svg", "type": "image/svg+xml"}]},
+    }
+
+
+def attester_view(conn, a: dict, partners: set[str] | None = None) -> dict:
+    """`partners`: the on-chain registry's partner list (the badge then never comes from seed data)."""
+    compare = int(a["compare_count"] or 0)
+    is_partner = (a["pubkey"] in partners) if partners is not None else bool(a["is_partner"])
+    return {
+        "pubkey": a["pubkey"], "label": a["label"], "isPartner": is_partner,
         "firstSeen": a["first_seen"], "scanCount": a["scan_count"], "certifiedCount": a["certified_count"],
         "agreeCount": a["agree_count"], "compareCount": compare,
         "agreeRate": (a["agree_count"] / compare) if compare else None,
         "escrowsOk": a["escrows_ok"], "escrowsDisputed": a["escrows_disputed"],
-        "recentSerials": recent_serials_for(conn, a["pubkey"]),
+        "recentSerials": recent_confirmed_serials_for(conn, a["pubkey"]),
     }
 
 

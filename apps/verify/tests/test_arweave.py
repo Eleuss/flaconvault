@@ -9,6 +9,7 @@ import pytest
 
 import fv.arweave as aw
 from fv import proof
+from tests.conftest import post_media, sig
 
 SERIAL = "SN-2026-000001"
 SELLER = "7GhXQ2fV4d1eo9yq1vQdD9Zk9sHkYd8qz2pM4hN6FaK2"
@@ -51,7 +52,7 @@ def ar_client(settings, monkeypatch):
 
 def _upload(client, frames: list[bytes], content_type="image/jpeg"):
     files = [("files", (f"frame{i}.jpg", io.BytesIO(b), content_type)) for i, b in enumerate(frames)]
-    r = client.post("/api/media", files=files)
+    r = post_media(client, files=files)
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -95,14 +96,14 @@ def test_media_multiple_frames_uploads_first_frame_as_preview(ar_client, setting
 
 
 def test_media_non_image_is_rejected_before_any_upload(ar_client):
-    r = ar_client.post("/api/media", files={"file": ("blob.bin", io.BytesIO(b"binary-blob" * 20), "application/octet-stream")})
+    r = post_media(ar_client, files={"file": ("blob.bin", io.BytesIO(b"binary-blob" * 20), "application/octet-stream")})
     assert r.status_code == 415 and ar_client.fake.calls == []
 
 
 def test_media_preview_extension_comes_from_the_whitelist(ar_client, settings):
     frames = [b"\x89PNGframe-A" * 30, b"\x89PNGframe-B" * 30]
     files = [("files", (f"evil{i}.html", io.BytesIO(b), "image/png; charset=../../x")) for i, b in enumerate(frames)]
-    m = ar_client.post("/api/media", files=files).json()
+    m = post_media(ar_client, files=files).json()
     assert (settings.media_dir / (m["sha256"][2:] + ".preview.png")).read_bytes() == frames[0]
     assert ar_client.fake.calls[0]["tags"]["Content-Type"] == "image/png"
 
@@ -117,9 +118,9 @@ def test_verify_bundle_carries_ar_and_events_archives_bundle(ar_client):
     assert proof.bundle_hash(proof.canonical_json(b)).hex() == v["bundleHash"][2:]      # hash covers the ar link
     n_before = len(ar_client.fake.calls)
 
-    ar_client.rpc.scan_tx("T" * 88, v, SELLER)
-    e = ar_client.post("/api/events", json={"eventId": v["eventId"], "txSig": "T" * 88, "serial": SERIAL, "type": 2}).json()
-    assert e["status"] == "confirmed" and e["txSig"] == "T" * 88
+    ar_client.rpc.scan_tx(sig("T"), v, SELLER)
+    e = ar_client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("T"), "serial": SERIAL, "type": 2}).json()
+    assert e["status"] == "confirmed" and e["txSig"] == sig("T")
     assert len(ar_client.fake.calls) == n_before + 1
     call = ar_client.fake.calls[-1]
     assert call["tags"]["Content-Type"] == "application/json" and call["tags"]["App-Type"] == "scanproof-bundle"
@@ -130,7 +131,7 @@ def test_verify_bundle_carries_ar_and_events_archives_bundle(ar_client):
     ev = next(x for x in ar_client.get(f"/api/passport/{SERIAL}").json()["events"] if x["id"] == v["eventId"])
     assert ev["arBundle"] == e["arBundle"] and ev["arMedia"] == m["arPreview"]
     # reporting the tx again is idempotent — no second upload
-    again = ar_client.post("/api/events", json={"eventId": v["eventId"], "txSig": "T" * 88})
+    again = ar_client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("T")})
     assert again.status_code == 200 and again.json()["id"] == e["id"]
     assert len(ar_client.fake.calls) == n_before + 1
 
@@ -139,8 +140,8 @@ def test_tier1_scan_without_media_gets_bundle_only(ar_client):
     tag = ar_client.post("/api/dev/tag", json={"serial": SERIAL}).json()
     v = _verify(ar_client, tag["uid"], None, tier=1, mediaHash=None)
     assert v["bundle"]["media"] == []
-    ar_client.rpc.scan_tx("U" * 88, v, SELLER)
-    e = ar_client.post("/api/events", json={"eventId": v["eventId"], "txSig": "U" * 88}).json()
+    ar_client.rpc.scan_tx(sig("U"), v, SELLER)
+    e = ar_client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("U")}).json()
     assert e["arBundle"].startswith("ar://") and e["arMedia"] is None
 
 
@@ -154,8 +155,8 @@ def test_disabled_never_calls_sidecar(chain_client, monkeypatch, settings):
     tag = client.post("/api/dev/tag", json={"serial": SERIAL}).json()
     v = _verify(client, tag["uid"], m["sha256"])
     assert v["bundle"]["media"][0]["ar"] is None
-    client.rpc.scan_tx("V" * 88, v, SELLER)
-    e = client.post("/api/events", json={"eventId": v["eventId"], "txSig": "V" * 88}).json()
+    client.rpc.scan_tx(sig("V"), v, SELLER)
+    e = client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("V")}).json()
     assert e["status"] == "confirmed" and e["arBundle"] is None and e["arMedia"] is None
     assert calls == []
     assert aw.upload_file(Path(__file__), "text/plain", settings) is None and aw.upload_json({"a": 1}, settings) is None

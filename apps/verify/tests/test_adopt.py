@@ -91,8 +91,12 @@ def test_only_valid_t_taps_get_a_token(client):
 
 
 def test_tap_view_with_malformed_stored_uid(client):
-    # 14 chars that are not hex: stored as given for an INVALID tap; /api/tap must not 500
+    # 14 chars that are not hex: /t no longer stores such a hit at all …
     r = client.get("/t?uid=ZZZZZZZZZZZZZZ&ctr=000001&cmac=0000000000000000", headers={"Accept": "application/json"})
-    assert r.status_code == 200 and r.json()["verdict"] == "INVALID"
-    row = client.get(f"/api/tap/{r.json()['tapId']}")
+    assert r.status_code == 200 and r.json()["verdict"] == "INVALID" and r.json()["tapId"] is None
+    # … but a row like that from an older database must not make /api/tap 500
+    with client.app.state.db.connect() as conn:
+        tap_id = conn.execute("INSERT INTO taps(ts, source, uid_hex, ctr, cmac, verdict, serial, message) "
+                              "VALUES(1, 't', 'ZZZZZZZZZZZZZZ', 1, NULL, 'INVALID', NULL, 'Seal not confirmed')").lastrowid
+    row = client.get(f"/api/tap/{tap_id}")
     assert row.status_code == 200 and row.json()["uid"] is None and row.json()["uidHash"] is None

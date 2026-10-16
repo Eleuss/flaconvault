@@ -5,6 +5,7 @@ from nacl.signing import VerifyKey
 
 from fv import proof
 from fv.enums import EventType
+from tests.conftest import post_media, sig
 
 SERIAL = "SN-2026-000001"
 SELLER = "7GhXQ2fV4d1eo9yq1vQdD9Zk9sHkYd8qz2pM4hN6FaK2"
@@ -53,8 +54,8 @@ def test_full_simulated_flow(chain_client, vectors, monkeypatch):
     assert v["verdict"] == "VALID" and v["counter"] == 1 and v["serial"] == SERIAL and v["grade"] == 0 and v["heatMask"] == 3
     assert v["reviewRecommended"] is False and v["keyId"] == 1 and v["serverPubkey"] == pub.hex() and v["eventId"]
     msg = bytes.fromhex(v["msgHex"])
-    sig = bytes.fromhex(v["serverSig"][2:])
-    VerifyKey(pub).verify(msg, sig)
+    server_sig = bytes.fromhex(v["serverSig"][2:])
+    VerifyKey(pub).verify(msg, server_sig)
     parsed = proof.parse_message(msg)
     assert parsed["counter"] == 1 and parsed["fill"] == 92 and parsed["heat"] == 0 and parsed["uv"] == 3 and parsed["tamper"] == 3
     assert parsed["serial_hash"].hex() == v["serialHash"][2:] and parsed["uid_hash"].hex() == v["uidHash"][2:]
@@ -145,6 +146,7 @@ def test_full_simulated_flow(chain_client, vectors, monkeypatch):
     confirmed = [e for e in scan_events if e["status"] == "confirmed"]
     # stats count confirmed scans only: the /t sighting counts, the two verify scans are still pending
     assert len(scan_events) == len(confirmed) + 2
+    assert len(scan_events) == len([e for e in before["events"] if e["type"] == EventType.SCAN]) + 3   # verify ×2 + /t
     assert p["stats"]["scanCount"] == len(confirmed) == before["stats"]["scanCount"] + 1
     assert p["stats"]["onChainScanCount"] == before["stats"]["onChainScanCount"]           # a sighting never goes on chain
     assert [e["ts"] for e in p["events"]] == sorted(e["ts"] for e in p["events"])
@@ -152,17 +154,23 @@ def test_full_simulated_flow(chain_client, vectors, monkeypatch):
     # unconfirmed scans change neither the header indicators nor the grade
     assert p["latest"] == before["latest"] and p["grade"] == before["grade"]
     pend = next(e for e in p["events"] if e["id"] == v["eventId"])
-    assert pend["status"] == "pending" and pend["payload"]["server"]["sig"] == v["serverSig"] and pend["gradeAfter"] == 0
-    assert pend["location"] == {"country": "DE", "city": "Wickede"} and pend["actor"] == SELLER
+    # a pending scan never publishes what is needed to anchor it (msgHex, server signature, session nonce) …
+    assert pend["status"] == "pending" and pend["payload"]["server"]["sig"] is None and "msgHex" not in pend["payload"]
+    assert pend["payload"]["session"]["nonce"] is None and pend["gradeAfter"] == 0
+    # … and the claimed attester is no actor until the chain confirms it
+    assert pend["location"] == {"country": "DE", "city": "Wickede"} and pend["actor"] is None and pend["actorLabel"] is None
+    assert pend["payload"]["attester"]["pubkey"] == SELLER
     assert client.get("/api/passport/SN-0000-000000").status_code == 404
 
     # nothing moved for the attester yet (the scans are only pending)
     assert client.get(f"/api/attester/{SELLER}").json()["scanCount"] == before_scans(vectors)
 
     # confirm the pending scan with its record_scan tx (actor defaults to the scan's attester, as the web sends it)
-    client.rpc.scan_tx("5" * 88, v, SELLER)
-    e = client.post("/api/events", json={"eventId": v["eventId"], "txSig": "5" * 88, "serial": SERIAL, "type": 2}).json()
-    assert e["status"] == "confirmed" and e["txSig"] == "5" * 88 and e["actor"] == SELLER
+    client.rpc.scan_tx(sig("5"), v, SELLER)
+    e = client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("5"), "serial": SERIAL, "type": 2}).json()
+    assert e["status"] == "confirmed" and e["txSig"] == sig("5") and e["actor"] == SELLER
+    assert e["payload"]["server"]["sig"] == v["serverSig"] and e["payload"]["msgHex"] == v["msgHex"]   # public once anchored
+    assert e["payload"]["confirmed"] == {"attester": SELLER, "tier": 2, "role": 1, "siteId": 0, "source": "tx", "mismatch": []}
 
     # attester stats moved for the confirmed scan only; the header now shows it
     a = client.get(f"/api/attester/{SELLER}").json()
@@ -218,9 +226,9 @@ PARTNER = "PxPGKQsGTYE2ti3awtEae4Yjk64NF2tcxQN1oDchhyR"
 
 def test_events_mint_and_seal_attach_create_rows(chain_client):
     client, rpc = chain_client, chain_client.rpc
-    rpc.mint_tx("4" * 88, "SN-2026-000010", PARTNER, block_time=1790000100)
+    rpc.mint_tx(sig("4"), "SN-2026-000010", PARTNER, block_time=1790000100)
     e = client.post("/api/events", json={"serial": "SN-2026-000010", "type": "MINT", "actor": PARTNER, "ts": 1,
-                                         "txSig": "4" * 88, "payload": {"brand": "Amouage", "name": "Interlude Man", "batch": "AM01"},
+                                         "txSig": sig("4"), "payload": {"brand": "Amouage", "name": "Interlude Man", "batch": "AM01"},
                                          "location": {"country": "DE", "city": "Düsseldorf"}}).json()
     assert e["type"] == 0 and e["status"] == "confirmed" and e["actorLabel"] == "Parfümerie X, Düsseldorf"
     assert e["ts"] == 1790000100                                    # blockTime, never the client ts
@@ -230,8 +238,8 @@ def test_events_mint_and_seal_attach_create_rows(chain_client):
     early = client.post("/api/dev/tap", json={"uid": "04111111111111"}).json()
     assert client.get(early["url"] + "&format=json").json()["verdict"] == "UNREGISTERED"
 
-    rpc.attach_tx("A" * 88, "SN-2026-000010", "04111111111111", PARTNER, block_time=1790000200)
-    e2 = client.post("/api/events", json={"serial": "SN-2026-000010", "type": "SEAL_ATTACH", "txSig": "A" * 88, "actor": PARTNER,
+    rpc.attach_tx(sig("A"), "SN-2026-000010", "04111111111111", PARTNER, block_time=1790000200)
+    e2 = client.post("/api/events", json={"serial": "SN-2026-000010", "type": "SEAL_ATTACH", "txSig": sig("A"), "actor": PARTNER,
                                           "payload": {"uid": "04111111111111", "kind": 1}}).json()
     assert e2["status"] == "confirmed" and e2["sealUidHash"] == "0x" + proof.uid_hash(bytes.fromhex("04111111111111")).hex()
     p = client.get("/api/passport/SN-2026-000010").json()
@@ -242,41 +250,41 @@ def test_events_mint_and_seal_attach_create_rows(chain_client):
     tap = client.post("/api/dev/tap", json={"uid": "04111111111111"}).json()
     assert client.post("/api/preview", json={"uid": tap["uid"], "ctr": tap["ctr"], "cmac": tap["cmac"]}).json()["serial"] == "SN-2026-000010"
     # SEAL_DEAD backed by a partner's mark_seal_dead tx voids the passport
-    rpc.dead_tx("6" * 88, "SN-2026-000010", "04111111111111", PARTNER)
+    rpc.dead_tx(sig("6"), "SN-2026-000010", "04111111111111", PARTNER)
     d = client.post("/api/events", json={"serial": "SN-2026-000010", "type": "SEAL_DEAD", "sealUidHash": e2["sealUidHash"],
-                                         "txSig": "6" * 88, "actor": PARTNER}).json()
+                                         "txSig": sig("6"), "actor": PARTNER}).json()
     assert d["gradeAfter"] == 4 and d["status"] == "confirmed"
     p = client.get("/api/passport/SN-2026-000010").json()
     assert p["void"] and p["grade"] == 4 and p["sealStatus"] == "NO_RESPONSE"
     assert client.post("/api/preview", json={"uid": tap["uid"], "ctr": tap["ctr"], "cmac": tap["cmac"]}).json()["verdict"] == "NO_RESPONSE"
-    assert client.post("/api/events", json={"serial": "SN-nope", "type": "LIST", "txSig": "L" * 88, "actor": PARTNER}).status_code == 404
+    assert client.post("/api/events", json={"serial": "SN-nope", "type": "LIST", "txSig": sig("L"), "actor": PARTNER}).status_code == 404
     assert client.post("/api/events", json={"serial": "SN-2026-000010", "type": "WHAT"}).status_code == 422
 
 
 def test_media_upload(client, settings):
     data = b"\xff\xd8\xff\xe0frame-bytes-" * 100
-    r = client.post("/api/media", files={"file": ("frames.jpg", io.BytesIO(data), "image/jpeg")})
+    r = post_media(client, files={"file": ("frames.jpg", io.BytesIO(data), "image/jpeg")})
     assert r.status_code == 200
     j = r.json()
     assert j["sha256"] == "0x" + proof.sha256(data).hex() and j["ar"] is None and j["bytes"] == len(data) and j["files"] == 1
     assert (settings.media_dir / (proof.sha256(data).hex() + ".bin")).read_bytes() == data
-    assert client.post("/api/media").status_code == 422
+    assert post_media(client).status_code == 422
 
 
 def test_media_limits(client, monkeypatch):
     import fv.routes_api as ra
     img = lambda i: ("files", (f"f{i}.png", io.BytesIO(b"\x89PNG" + bytes([i]) * 10), "image/png"))  # noqa: E731
-    assert client.post("/api/media", files=[img(i) for i in range(6)]).status_code == 200
-    assert client.post("/api/media", files=[img(i) for i in range(7)]).status_code == 413          # > 6 files
+    assert post_media(client, files=[img(i) for i in range(6)]).status_code == 200
+    assert post_media(client, files=[img(i) for i in range(7)]).status_code == 413          # > 6 files
     for ctype in ("application/octet-stream", "text/html", "image/svg+xml", "image/gif"):
-        r = client.post("/api/media", files={"file": ("x", io.BytesIO(b"<svg/>"), ctype)})
+        r = post_media(client, files={"file": ("x", io.BytesIO(b"<svg/>"), ctype)})
         assert r.status_code == 415, ctype
     # mixed batch: one bad part rejects the whole upload
     mixed = [img(1), ("files", ("x.html", io.BytesIO(b"<html>"), "text/html"))]
-    assert client.post("/api/media", files=mixed).status_code == 415
+    assert post_media(client, files=mixed).status_code == 415
     monkeypatch.setattr(ra, "MEDIA_MAX_BYTES", 1000)                                                 # 8 MB in production
-    assert client.post("/api/media", files={"file": ("big.webp", io.BytesIO(b"R" * 1001), "image/webp")}).status_code == 413
-    assert client.post("/api/media", files={"file": ("ok.webp", io.BytesIO(b"R" * 1000), "image/webp")}).status_code == 200
+    assert post_media(client, files={"file": ("big.webp", io.BytesIO(b"R" * 1001), "image/webp")}).status_code == 413
+    assert post_media(client, files={"file": ("ok.webp", io.BytesIO(b"R" * 1000), "image/webp")}).status_code == 200
 
 
 def test_dev_routes_404_when_simulator_off(settings):
@@ -348,42 +356,53 @@ def test_reset_without_admin_token_env(settings):
 
 
 def test_certify_console_mint_and_seal_attach_idempotent(chain_client):
+    from tests.conftest import DEFAULT_ASSET, registry_pda
+    from tests.test_chain import registry_bytes
+    from solders.pubkey import Pubkey
     client, rpc = chain_client, chain_client.rpc
     partner = PARTNER
-    rpc.mint_tx("M" * 88, "SN-2026-000042", partner, block_time=1790000300)
-    rpc.mint_tx("N" * 88, "SN-2026-000042", partner, block_time=1790000301)
-    mint = {"serial": "SN-2026-000042", "type": "MINT", "actor": partner, "txSig": "M" * 88,
+    rpc.accounts[registry_pda()] = registry_bytes(partners=[Pubkey.from_string(partner)],
+                                                  sites=[(1, "Parfümerie X, Düsseldorf"), (2, "FlaconVault Vault, Wickede")])
+    rpc.mint_tx(sig("M"), "SN-2026-000042", partner, block_time=1790000300)
+    rpc.mint_tx(sig("N"), "SN-2026-000042", partner, block_time=1790000301)
+    mint = {"serial": "SN-2026-000042", "type": "MINT", "actor": partner, "txSig": sig("M"), "actorLabel": "Known scammer",
             "payload": {"serial": "SN-2026-000042", "brand": "Amouage", "name": "Interlude Man", "batch": "AM01",
-                        "asset": "4FQoaiZa5NGcjJK5qzZ2VnXFa8MBM7TZEtyruU2wu6ck", "issuerLabel": "Parfümerie X, Düsseldorf", "siteId": 1},
+                        "asset": "11111111111111111111111111111112", "issuerLabel": "Some other shop", "siteId": 1},
             "location": {"country": "DE", "city": "Düsseldorf"}}
     e1 = client.post("/api/events", json=mint).json()
-    assert e1["type"] == 0 and e1["status"] == "confirmed" and e1["txSig"] == "M" * 88 and e1["payload"]["siteId"] == 1
+    assert e1["type"] == 0 and e1["status"] == "confirmed" and e1["txSig"] == sig("M") and e1["payload"]["siteId"] == 1
+    assert e1["payload"]["asset"] == DEFAULT_ASSET and e1["payload"]["bindingHash"] == "0x" + "0b" * 32   # from the tx args
+    assert e1["actorLabel"] == "Parfümerie X, Düsseldorf"                    # the server's record, never the client's label
     p = client.get("/api/passport/SN-2026-000042").json()
-    assert p["asset"] == "4FQoaiZa5NGcjJK5qzZ2VnXFa8MBM7TZEtyruU2wu6ck" and p["issuer"] == partner and p["batch"] == "AM01"
-    assert p["issuerLabel"] == "Parfümerie X, Düsseldorf" and p["grade"] == 0
-    # second MINT for the same serial by the issuer: same event row, a confirmed event is never changed, no duplicate;
-    # the issuer may rename the passport
-    e1b = client.post("/api/events", json={**mint, "txSig": "N" * 88, "payload": {**mint["payload"], "name": "Interlude Man EDP"}}).json()
-    assert e1b["id"] == e1["id"] and e1b["txSig"] == "M" * 88 and e1b["status"] == "confirmed" and e1b["ts"] == e1["ts"]
+    assert p["asset"] == DEFAULT_ASSET and p["issuer"] == partner and p["batch"] == "AM01"
+    assert p["issuerLabel"] == "Parfümerie X, Düsseldorf" and p["grade"] == 0   # registry site 1, not the client's label
+    # second MINT for the same serial by the issuer: the stored event comes back and the passport is never renamed
+    n_calls = rpc.calls.count("getTransaction")
+    e1b = client.post("/api/events", json={**mint, "txSig": sig("N"), "payload": {**mint["payload"], "name": "Interlude Man EDP"}}).json()
+    assert e1b["id"] == e1["id"] and e1b["txSig"] == sig("M") and e1b["status"] == "confirmed" and e1b["ts"] == e1["ts"]
+    assert rpc.calls.count("getTransaction") == n_calls                       # answered from the DB
     p = client.get("/api/passport/SN-2026-000042").json()
-    assert [e["type"] for e in p["events"]] == [0] and p["name"] == "Interlude Man EDP"
+    assert [e["type"] for e in p["events"]] == [0] and p["name"] == "Interlude Man"
     # the same tx again (recovered path of the certify console) is idempotent too
     assert client.post("/api/events", json=mint).json()["id"] == e1["id"]
 
     # the simulator tag exists before the attach (dev/tag refuses registered seals without one)
     client.post("/api/dev/tag", json={"uid": "04C0FFEE000042"})
-    rpc.attach_tx("S" * 88, "SN-2026-000042", "04C0FFEE000042", partner, block_time=1790000400)
-    rpc.attach_tx("T" * 88, "SN-2026-000042", "04C0FFEE000042", partner, block_time=1790000401)
-    att = {"serial": "SN-2026-000042", "type": "SEAL_ATTACH", "actor": partner, "txSig": "S" * 88,
+    rpc.attach_tx(sig("S"), "SN-2026-000042", "04C0FFEE000042", partner, block_time=1790000400)
+    rpc.attach_tx(sig("T"), "SN-2026-000042", "04C0FFEE000042", partner, block_time=1790000401)
+    att = {"serial": "SN-2026-000042", "type": "SEAL_ATTACH", "actor": partner, "txSig": sig("S"),
            "payload": {"uid": "04c0ffee000042", "kind": 1}}
     e2 = client.post("/api/events", json=att).json()
     uid_hash = "0x" + proof.uid_hash(bytes.fromhex("04C0FFEE000042")).hex()
     assert e2["type"] == 1 and e2["status"] == "confirmed" and e2["sealUidHash"] == uid_hash and e2["payload"]["kindName"] == "NECK"
+    # the raw chip UID is never published: hash + last byte only
+    assert e2["payload"] == {"uidHash": uid_hash, "uidTail": "…42", "kind": 1, "kindName": "NECK"}
+    assert "04C0FFEE000042" not in client.get("/api/passport/SN-2026-000042").text
     p = client.get("/api/passport/SN-2026-000042").json()
     assert p["seals"] == [{"uidHash": uid_hash, "kind": 1, "lastCounter": 0, "dead": False, "attachedAt": e2["ts"]}]
     assert e2["ts"] == 1790000400
-    e2b = client.post("/api/events", json={**att, "txSig": "T" * 88}).json()
-    assert e2b["id"] == e2["id"] and e2b["txSig"] == "S" * 88
+    e2b = client.post("/api/events", json={**att, "txSig": sig("T")}).json()
+    assert e2b["id"] == e2["id"] and e2b["txSig"] == sig("S")
     p = client.get("/api/passport/SN-2026-000042").json()
     assert len(p["seals"]) == 1 and [e["type"] for e in p["events"]] == [0, 1]
     # the attached uid now verifies against this passport

@@ -17,6 +17,7 @@ export default function GlobalError({ error }: { error: Error & { digest?: strin
             {/* full page loads: the root layout or the router may be what failed, and reset() alone would re-render the
                 cached payload that holds the error */}
             <button onClick={() => window.location.reload()} className="btn">Try again</button>
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- a full page load on purpose, see above */}
             <a href="/" className="btn-outline">Back to home</a>
           </div>
         </div>

@@ -14,14 +14,16 @@ type Search = Record<string, string | undefined>;
 /** One verifier call per request, shared by generateMetadata and the page. */
 const loadTap = cache((id: string) => getTap(id));
 
-export async function generateMetadata({ searchParams }: { searchParams: Search }): Promise<Metadata> {
-  const t = searchParams.tap ? await loadTap(searchParams.tap) : null;
+export async function generateMetadata({ searchParams }: { searchParams: Promise<Search> }): Promise<Metadata> {
+  const { tap } = await searchParams;
+  const t = tap ? await loadTap(tap) : null;
   return { title: t?.status === "ok" ? "Seal checked" : "Seal check" };
 }
 
-export default async function TagLanding({ searchParams }: { searchParams: Search }) {
-  let { uid, ctr, cmac } = searchParams;
-  const { tap, picc_data, enc, k } = searchParams;
+export default async function TagLanding({ searchParams }: { searchParams: Promise<Search> }) {
+  const q = await searchParams;
+  let { uid, ctr, cmac } = q;
+  const { tap, picc_data, enc, k } = q;
   // NXP TagWriter writes its SDM mirrors as uid=<UID>x<CTR>x<MAC>
   const tw = /^([0-9a-f]{14})x([0-9a-f]{6})x([0-9a-f]{16})$/i.exec(uid ?? "");
   if (tw) { uid = tw[1]; ctr = tw[2]; cmac = tw[3]; }

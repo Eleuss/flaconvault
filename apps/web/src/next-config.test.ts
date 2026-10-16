@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import nextConfig, { contentSecurityPolicy, securityHeaders } from "../next.config.mjs";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import nextConfig, { contentSecurityPolicy, securityHeaders, workspaceRoot } from "../next.config.mjs";
 
 const env = { NODE_ENV: "production", NEXT_PUBLIC_VERIFY_URL: "https://verify.flaconvault.com", NEXT_PUBLIC_SOLANA_RPC: "https://rpc.example.org/key-path" } as NodeJS.ProcessEnv;
 const header = (k: string) => securityHeaders(env).find((h) => h.key === k)?.value;
@@ -31,4 +33,13 @@ test("report-only CSP lists what the app loads", () => {
   assert.doesNotMatch(csp, /fonts\.googleapis\.com/, "no Google Fonts");
   assert.match(dir("connect-src"), /ws:\/\/localhost:\*/, "Mobile Wallet Adapter's local websocket");
   assert.doesNotMatch(csp, /http:\/\/localhost/, "production policy allows no local http origin");
+});
+
+test("output file tracing starts at the npm workspace root, never at an outer checkout (Next 15 root inference)", () => {
+  const root = nextConfig.outputFileTracingRoot ?? "";
+  assert.equal(root, workspaceRoot);
+  assert.equal(root, path.resolve(__dirname, "../../.."), "two levels above apps/web");
+  const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")) as { workspaces?: string[] };
+  assert.ok(pkg.workspaces?.includes("apps/web"), "the root package.json lists apps/web as a workspace");
+  assert.ok(existsSync(path.join(root, "package-lock.json")), "the lockfile npm ci installs from");
 });

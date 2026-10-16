@@ -4,6 +4,9 @@ import { NextResponse } from "next/server";
  * the older passport pages (/market/<serial>) still map by serial (works while the passport has one listing).
  * Rules are matched in order; `*` matches one path segment.
  */
+// a fixed document: prerendered at build time, as Next 14 did for GET handlers (Next 15 renders them per request)
+export const dynamic = "force-static";
+
 export function GET() {
   return NextResponse.json(
     {

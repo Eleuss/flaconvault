@@ -14,12 +14,12 @@ export const dynamic = "force-dynamic";
 /** A malformed escape (a lone "%") must not crash the page. */
 const safeDecode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
 
-export async function generateMetadata({ params }: { params: { serial: string } }): Promise<Metadata> {
-  return { title: `Passport ${safeDecode(params.serial)}` };
+export async function generateMetadata({ params }: { params: Promise<{ serial: string }> }): Promise<Metadata> {
+  return { title: `Passport ${safeDecode((await params).serial)}` };
 }
 
-export default async function PassportPage({ params }: { params: { serial: string } }) {
-  const serial = safeDecode(params.serial);
+export default async function PassportPage({ params }: { params: Promise<{ serial: string }> }) {
+  const serial = safeDecode((await params).serial);
   const res = await getPassport(serial);
   // only a 404 means "does not exist"; an unreachable verifier must never make a genuine passport look fake
   if (res.status === "missing") notFound();

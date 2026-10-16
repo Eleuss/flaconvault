@@ -57,7 +57,7 @@ def main(argv: list[str]) -> int:
             h = fetch(url)
             if not (a.wait_for_build and h.get("build") != a.build and time.monotonic() < deadline):
                 break
-        except (urllib.error.URLError, ConnectionError, TimeoutError, json.JSONDecodeError) as exc:
+        except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:   # OSError covers socket.timeout on Python < 3.10
             if time.monotonic() >= deadline:
                 print(f"::error::{url} did not answer within {a.timeout:.0f} s ({exc})")
                 return 1

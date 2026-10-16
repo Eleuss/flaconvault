@@ -98,6 +98,52 @@ test("physically impossible strip (40 °C black, 37 °C white) → heat UNREADAB
   assert.equal(r.humidity, Indicator.INTACT, "humidity is read independently");
 });
 
+/** The synthetic card with a group's grey and white reference patches painted one colour (glare or a bad print). */
+function sceneWithFlatReference(group: "heat" | "hum", state: { heatLevels: number[]; humidityTriggered: boolean }, rgb: [number, number, number] = [255, 255, 255]) {
+  const card = renderCard(cv, cfg, state);
+  const S = cfg.px_per_mm, { size, gap, y, groups } = cfg.patches_mm;
+  for (const i of [2, 3]) { // order: intact · triggered · grey18 · white
+    const x = groups[group] + i * (size + gap);
+    cv.rectangle(card, new cv.Point(Math.round((x - 0.2) * S), Math.round((y - 0.2) * S)), new cv.Point(Math.round((x + size + 0.2) * S), Math.round((y + size + 0.2) * S)), new cv.Scalar(rgb[0], rgb[1], rgb[2], 255), -1);
+  }
+  const frame = renderScene(cv, card, { width: 1280, height: 720, quad: tiltedQuad(1280, 720, 820) });
+  card.delete();
+  return frame;
+}
+
+test("marker mode: glare on the heat group's grey and white patches → heat UNREADABLE, humidity still read", () => {
+  for (const heatLevels of [[1, 1, 1, 1, 1, 0], [1, 1, 0, 0, 0, 0]]) {
+    const r = readCard(cv, sceneWithFlatReference("heat", { heatLevels, humidityTriggered: true }), cfg);
+    assert.equal(r.found, true, r.reason);
+    assert.equal(r.quality.mode, "marker");
+    assert.equal(r.quality.groups.heat.ok, false);
+    assert.equal(r.heat, Indicator.UNREADABLE, JSON.stringify({ heatLevels, f: r.heatFields[4] }));
+    assert.deepEqual(r.heatLevels, [0, 0, 0, 0, 0, 0]);
+    assert.equal(r.confidence.heat, 0);
+    assert.match(r.reason ?? "", /White balance failed/);
+    // per-group balance: the humidity group's own patches are fine
+    assert.equal(r.quality.groups.hum.ok, true);
+    assert.equal(r.humidity, Indicator.TRIGGERED);
+    assert.ok(r.confidence.humidity > 0.95);
+  }
+});
+
+test("marker mode: grey and white patches of the humidity group equal → humidity UNREADABLE, heat still read", () => {
+  for (const humidityTriggered of [true, false]) {
+    for (const rgb of [[255, 255, 255], [118, 118, 118]] as Array<[number, number, number]>) {
+      const r = readCard(cv, sceneWithFlatReference("hum", { heatLevels: [1, 1, 1, 1, 1, 0], humidityTriggered }, rgb), cfg);
+      assert.equal(r.found, true, r.reason);
+      assert.equal(r.quality.groups.hum.ok, false);
+      assert.equal(r.humidity, Indicator.UNREADABLE, JSON.stringify({ humidityTriggered, rgb, f: r.humidityField }));
+      assert.equal(r.confidence.humidity, 0);
+      assert.match(r.reason ?? "", /White balance failed/);
+      assert.equal(r.quality.groups.heat.ok, true);
+      assert.equal(r.heat, Indicator.TRIGGERED);
+      assert.deepEqual(r.heatLevels, [1, 1, 1, 1, 1, 0]);
+    }
+  }
+});
+
 test("heatFieldsConsistent: a black field above a white one is inconsistent when either is confident", () => {
   const f = (level: 0 | 1, confidence: number) => ({ level, confidence, dIntact: 0, dTriggered: 0, rgb: [0, 0, 0] as [number, number, number] });
   const layout = cfg.fields;
@@ -108,4 +154,7 @@ test("heatFieldsConsistent: a black field above a white one is inconsistent when
   assert.equal(heatFieldsConsistent([f(1, 1), f(1, 1), f(1, 1), f(0, 1), f(1, 0.3), f(0, 1)], layout), false);
   // two unsure fields prove nothing
   assert.equal(heatFieldsConsistent([f(1, 1), f(1, 1), f(1, 1), f(0, 0.5), f(1, 0.5), f(0, 0.4)], layout), true);
+  // a field with glare is unknown, not evidence: a highlight on the black 37 °C field of a triggered strip
+  assert.equal(heatFieldsConsistent([f(1, 1), f(1, 1), f(1, 1), { ...f(0, 0), glare: true }, f(1, 1), f(0, 1)], layout), true);
+  assert.equal(heatFieldsConsistent([f(1, 1), f(1, 1), f(1, 1), f(0, 1), f(1, 1), f(0, 1)], layout), false);
 });

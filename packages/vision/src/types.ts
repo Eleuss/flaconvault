@@ -42,7 +42,13 @@ export type Lab = [number, number, number];
 
 export interface PatchSet { intact: Rgb; triggered: Rgb; grey: Rgb; white: Rgb }
 
-export interface FieldReading { level: 0 | 1; confidence: number; dIntact: number; dTriggered: number; rgb: Rgb }
+export interface FieldReading {
+  level: 0 | 1; confidence: number; dIntact: number; dTriggered: number; rgb: Rgb;
+  /** frame mode: share of the region's pixels that are sensor-clipped (darkest channel ≥ GLARE_CLIP_LEVEL) */
+  clipped?: number;
+  /** frame mode: clipped > GLARE_MAX_FRACTION, i.e. a highlight hides the region's colour; its confidence is then 0 */
+  glare?: boolean;
+}
 
 export interface CardReading {
   /** a card was located (marker or holder window); its indicators may still be UNREADABLE */
@@ -69,6 +75,9 @@ export interface CardReading {
   warped: FrameLike | null;
   ms: number;
   debug?: string[];
-  /** set by combineReadings: frames combined, frames with a card, and how many of those agree with each verdict */
+  /**
+   * set by combineReadings: frames captured, frames that voted (card found and, in frame mode, anchored on its heat
+   * label), and how many of the voters agree with each combined verdict
+   */
   votes?: { frames: number; found: number; heat: number; humidity: number; uv: number };
 }

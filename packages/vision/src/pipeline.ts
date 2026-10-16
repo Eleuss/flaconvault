@@ -9,6 +9,13 @@ export const ARUCO_ID = 7;
 export const CONFIDENCE_THRESHOLD = 0.85;
 /** Frame mode: the ring black may be at most this fraction of the card white (per channel); measured ≈ 0.32. */
 export const RING_MAX_RATIO = 0.6;
+/** Frame mode: a pixel whose darkest channel is at least this level is sensor-clipped (a specular highlight). */
+export const GLARE_CLIP_LEVEL = 250;
+/**
+ * Frame mode: a sampled region with more than this fraction of clipped pixels has glare; its colour is unknown. The
+ * brightest real field on the calibration photos (card-4's intact 42 °C field) has about 11 % of its pixels at 250+.
+ */
+export const GLARE_MAX_FRACTION = 0.15;
 
 type Pt = [number, number];
 
@@ -178,10 +185,10 @@ export const isDecided = (indicator: number): boolean => indicator === Indicator
  * The heat fields must be physically consistent: the strip is irreversible and its fields trigger in temperature
  * order, so a triggered (black) field above an intact one, e.g. 40 °C black while 37 °C is white, cannot come from a
  * real card. It means misregistration, a mirrored image or glare. A pair counts when at least one of its two fields
- * is confident (two unsure fields prove nothing).
+ * is confident (two unsure fields prove nothing). Fields with glare are left out: their colour is unknown.
  */
 export function heatFieldsConsistent(fields: FieldReading[], layout: Array<{ temp_c: number }>): boolean {
-  const f = layout.map((l, i) => ({ t: l.temp_c, level: fields[i]?.level, sure: (fields[i]?.confidence ?? 0) >= CONFIDENCE_THRESHOLD })).filter((x) => x.level !== undefined);
+  const f = layout.map((l, i) => ({ t: l.temp_c, level: fields[i]?.glare ? undefined : fields[i]?.level, sure: (fields[i]?.confidence ?? 0) >= CONFIDENCE_THRESHOLD })).filter((x) => x.level !== undefined);
   return !f.some((cool) => f.some((hot) => cool.t < hot.t && cool.level === 0 && hot.level === 1 && (cool.sure || hot.sure)));
 }
 
@@ -189,15 +196,32 @@ export function heatFieldsConsistent(fields: FieldReading[], layout: Array<{ tem
  * Heat verdict from the six fields: the decisive (40 °C) field decides when it is confident, the white balance is
  * usable and the fields are consistent; otherwise UNREADABLE. Heat levels are reported only for a decided verdict
  * (zeros otherwise), so a guessed 40 °C field never reaches the chain or the passport. Confidence is 0 when the
- * measurement itself is void (white balance or consistency failed).
+ * measurement itself is void (white balance or consistency failed, or glare hides a field).
+ *
+ * Glare (frame mode) can only make a black field look white, so a field with glare has an unknown level. On the
+ * decisive field that makes heat UNREADABLE. On another field the strip's physics fills it in where the decided
+ * 40 °C field fixes it (a hotter field of an intact strip is intact, a cooler field of a triggered strip is
+ * triggered); where it does not, heat is UNREADABLE too, so a highlight never understates the levels on chain.
  */
-function heatVerdict(fields: FieldReading[], layout: Array<{ temp_c: number; decisive: boolean }>, wbOk: boolean): { heat: number; heatLevels: number[]; confidence: number; consistent: boolean } {
+function heatVerdict(fields: FieldReading[], layout: Array<{ temp_c: number; decisive: boolean }>, wbOk: boolean): { heat: number; heatLevels: number[]; confidence: number; consistent: boolean; glare: boolean } {
   const idx = layout.findIndex((f) => f.decisive);
-  const decisive = fields[idx >= 0 ? idx : HEAT_DECISIVE_INDEX];
+  const d = idx >= 0 ? idx : HEAT_DECISIVE_INDEX;
+  const decisive = fields[d];
   const consistent = heatFieldsConsistent(fields, layout);
   const usable = wbOk && consistent;
-  const heat = !usable || decisive.confidence < CONFIDENCE_THRESHOLD ? Indicator.UNREADABLE : decisive.level;
-  return { heat, heatLevels: isDecided(heat) ? fields.map((f) => f.level) : [0, 0, 0, 0, 0, 0], confidence: usable ? decisive.confidence : 0, consistent };
+  const measured = !usable || decisive.glare || decisive.confidence < CONFIDENCE_THRESHOLD ? Indicator.UNREADABLE : decisive.level;
+  const level = (f: FieldReading, i: number): number | null => {
+    if (!f.glare) return f.level;
+    if (i === d) return null;
+    const hotter = layout[i].temp_c > layout[d].temp_c;
+    if (hotter && measured === Indicator.INTACT) return 0;
+    if (!hotter && measured === Indicator.TRIGGERED) return 1;
+    return null; // glare hides a field whose level the decided verdict does not fix
+  };
+  const levels = fields.map(level);
+  const glare = usable && (!!decisive.glare || (isDecided(measured) && levels.some((l) => l === null)));
+  const heat = glare ? Indicator.UNREADABLE : measured;
+  return { heat, heatLevels: isDecided(heat) ? (levels as number[]) : [0, 0, 0, 0, 0, 0], confidence: usable && !glare ? decisive.confidence : 0, consistent, glare };
 }
 
 /** A one-field indicator (humidity, UV): its level when the white balance is usable and the classification confident. */
@@ -374,12 +398,28 @@ function meanAnnulus(cv: CV, mat: CV, cx: number, cy: number, r0: number, r1: nu
 const rectCornersMm = (r: RoiMm): Pt[] => [[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h]];
 
 /**
+ * Frame-mode white balance: a per-channel linear map that sends the ring black to #111111 and the card white to 255.
+ * It is void (ok false) when the two are less than 12 levels apart in a channel, or when the ring is not clearly darker
+ * than the white (more than RING_MAX_RATIO of it in a channel): then the black reference sampled something else, e.g.
+ * a mirrored or misregistered image or glare on the ring, and the colours mean nothing.
+ */
+export function frameWhiteBalance(black: Rgb, white: Rgb): { apply: (c: Rgb) => Rgb; ok: boolean; ringDark: boolean } {
+  const ringDark = [0, 1, 2].every((i) => black[i] <= RING_MAX_RATIO * white[i]);
+  const wb = makeWhiteBalance(black, white, { grey: 17, white: 255 });
+  return { apply: wb.apply, ok: wb.ok && ringDark, ringDark };
+}
+
+const joinList = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
+
+/**
  * Physical Rev C card in its holder: the holder window (62.5 × 30.5 mm) is the fiducial for a coarse homography; the
  * blue heat label (printed on the card itself) fixes the orientation and refines it; white balance from the card's
  * white and the ring's black; ROIs and reference colours from cfg.frame / cfg.reference_colors.
  *
- * Fail-closed: without the heat label the card's orientation and registration are unknown, and with a failed white
- * balance the colours mean nothing, so both give UNREADABLE for every indicator, never a decision.
+ * Fail-closed: without the heat label the card's orientation and registration are unknown, with a failed white
+ * balance the colours mean nothing, and inconsistent heat fields signal misregistration, so each of these gives
+ * UNREADABLE for every indicator, never a decision. A sampled region with glare (sensor-clipped pixels) has an unknown
+ * colour: its indicator is UNREADABLE (see heatVerdict for the heat strip).
  */
 function readCardFrame(cv: CV, src: CV, gray: CV, cfg: HeatFieldsConfig, opts: { preview?: boolean; debug?: boolean }, t0: number, log: string[], dbg: (...a: unknown[]) => void): CardReading {
   const fr = cfg.frame!;
@@ -442,30 +482,45 @@ function readCardFrame(cv: CV, src: CV, gray: CV, cfg: HeatFieldsConfig, opts: {
     const black = meanAnnulus(cv, warped, fr.black_ref.cx * S, fr.black_ref.cy * S, fr.black_ref.r0 * S, fr.black_ref.r1 * S);
     // The printed black ring photographs at about a third of the card white. If it is not clearly darker, the
     // reference sampled something else (misregistration, a mirrored image, glare on the ring) and the balance is void.
-    const ringDark = [0, 1, 2].every((i) => black[i] <= RING_MAX_RATIO * white[i]);
-    const wb0 = makeWhiteBalance(black, white, { grey: 17, white: 255 });
-    const wb = { apply: wb0.apply, ok: wb0.ok && ringDark };
+    const wb = frameWhiteBalance(black, white);
     const ref = (k: string): Rgb => hexToRgb(fr.reference_colors?.[k] ?? cfg.reference_colors[k]);
-    dbg("white", white.map(Math.round), "black", black.map(Math.round), "wb ok", wb.ok ? 1 : 0, "ring dark", ringDark ? 1 : 0);
+    dbg("white", white.map(Math.round), "black", black.map(Math.round), "wb ok", wb.ok ? 1 : 0, "ring dark", wb.ringDark ? 1 : 0);
 
-    const heatFields: FieldReading[] = fr.fields.map((f) => {
-      const rgb = meanRect(cv, warped, f.roi_mm, S);
-      return { rgb, ...classify(wb.apply(rgb), ref("heat_intact"), ref("heat_triggered")) };
-    });
+    // sensor-clipped pixels (darkest channel at GLARE_CLIP_LEVEL or above): 255 where clipped
+    const clip = keep(new cv.Mat());
+    const clipLo = keep(new cv.Mat(warped.rows, warped.cols, warped.type(), [GLARE_CLIP_LEVEL, GLARE_CLIP_LEVEL, GLARE_CLIP_LEVEL, 0]));
+    const clipHi = keep(new cv.Mat(warped.rows, warped.cols, warped.type(), [255, 255, 255, 255]));
+    cv.inRange(warped, clipLo, clipHi, clip);
+    /** One sampled region: its colour classified after white balance; with glare its confidence is 0. */
+    const sample = (rgb: Rgb, clipped: number, intact: string, triggered: string): FieldReading => {
+      const c = classify(wb.apply(rgb), ref(intact), ref(triggered));
+      const glare = clipped > GLARE_MAX_FRACTION;
+      return { rgb, ...c, confidence: glare ? 0 : c.confidence, clipped, glare };
+    };
+
+    const heatFields: FieldReading[] = fr.fields.map((f) => sample(meanRect(cv, warped, f.roi_mm, S), meanRect(cv, clip, f.roi_mm, S)[0] / 255, "heat_intact", "heat_triggered"));
     const hv = heatVerdict(heatFields, fr.fields, wb.ok);
+    // inconsistent heat fields signal misregistration (e.g. a mirrored photo): humidity and UV are void as well
+    const usable = wb.ok && hv.consistent;
 
     const hm = fr.humidity_mm;
     const humRgb = meanCircle(cv, warped, hm.cx * S, hm.cy * S, hm.roi_r * S);
-    const humidityField: FieldReading = { rgb: humRgb, ...classify(wb.apply(humRgb), ref("humidity_intact"), ref("humidity_triggered")) };
-    const hum = fieldVerdict(humidityField, wb.ok);
+    const humidityField = sample(humRgb, meanCircle(cv, clip, hm.cx * S, hm.cy * S, hm.roi_r * S)[0] / 255, "humidity_intact", "humidity_triggered");
+    const hum = fieldVerdict(humidityField, usable);
 
-    const uvRgb = meanRect(cv, warped, fr.uv_mm, S);
-    const uvField: FieldReading = { rgb: uvRgb, ...classify(wb.apply(uvRgb), ref("uv_intact"), ref("uv_triggered")) };
-    const uv = fieldVerdict(uvField, wb.ok);
-    dbg("heat", heatFields.map((f) => [f.level, +f.confidence.toFixed(2), f.rgb.map(Math.round)]), "hum", [humidityField.level, +humidityField.confidence.toFixed(2), humRgb.map(Math.round)], "uv", [uvField.level, +uvField.confidence.toFixed(2), uvRgb.map(Math.round)]);
+    const uvField = sample(meanRect(cv, warped, fr.uv_mm, S), meanRect(cv, clip, fr.uv_mm, S)[0] / 255, "uv_intact", "uv_triggered");
+    const uv = fieldVerdict(uvField, usable);
+    const show = (f: FieldReading) => [f.level, +f.confidence.toFixed(2), f.rgb.map(Math.round), +(f.clipped ?? 0).toFixed(2)];
+    dbg("heat", heatFields.map(show), "hum", show(humidityField), "uv", show(uvField));
 
+    const glareOn = [
+      hv.glare && "the heat strip",
+      hum.value === Indicator.UNREADABLE && humidityField.glare && "the humidity dot",
+      uv.value === Indicator.UNREADABLE && uvField.glare && "the UV window",
+    ].filter((x): x is string => !!x);
     const reason = !wb.ok ? "White balance failed (glare or exposure): card white and ring black are too close"
-      : !hv.consistent ? "Heat fields are inconsistent (a hotter field is black while a cooler one is white): retake the photo"
+      : !hv.consistent ? "Heat fields are inconsistent (a hotter field is black while a cooler one is white), so the card may be misregistered: retake the photo"
+      : glareOn.length ? `Glare on ${joinList(glareOn)}: tilt the card away from the light and retake the photo`
       : undefined;
     const group = { greyL: rgbToLab(black)[0], whiteL: rgbToLab(white)[0], ok: wb.ok };
     return finish({

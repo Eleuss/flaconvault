@@ -53,7 +53,7 @@ uv run uvicorn fv.main:app --port 8787 --reload
 | `FV_PORT` | `8787` | port setting (the container honours `PORT`) |
 | `FV_WEB_URL` | `http://localhost:3000` | `/t` redirects to `${FV_WEB_URL}/t?tap=<id>` |
 | `FV_VERIFIER_HOST` | `http://localhost:8787` | host baked into simulator tag URLs |
-| `FV_CORS_ORIGINS` | `http://localhost:3000` | comma-separated allow-list |
+| `FV_CORS_ORIGINS` | `http://localhost:3000` | comma-separated allow-list; responses to these origins carry `Access-Control-Expose-Headers: Retry-After`, so the web can read the `Retry-After` of a 429/503 |
 | `FV_SOLANA_RPC` | `https://api.devnet.solana.com` | JSON-RPC used by the reconcile job and `/api/registry` (local validator: `http://127.0.0.1:8899`) |
 | `FV_PROGRAM_ID` | — | `flacon` program id; empty = reconcile disabled, `/api/sites` falls back to the seed sites, tx-backed `POST /api/events` → 503 `chain_not_configured` |
 | `FV_ESCROW_PROGRAM_ID` | `9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL` | escrow program whose transactions back LIST…DISPUTE events |

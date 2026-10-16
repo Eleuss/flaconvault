@@ -129,9 +129,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.rpc = Rpc(settings.solana_rpc)
     # The body limit runs before routing and any body parsing (every route except POST /api/media); CORS is added last,
     # so it is the outermost layer and its headers reach the 413 too (otherwise a browser cannot read the error code).
+    # Retry-After is not a CORS-safelisted response header: without expose_headers the web (another origin) could not
+    # read it on 429 rate_limited/report_limited/media_limited or 503 busy/media_busy, and would never wait it out.
     app.add_middleware(BodySizeLimit, max_bytes=settings.max_json_body)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
-                       allow_methods=["*"], allow_headers=["*"])
+                       allow_methods=["*"], allow_headers=["*"], expose_headers=["Retry-After"])
     app.include_router(routes_api.router)
     app.include_router(routes_tag.router)
     app.include_router(routes_chain.router)

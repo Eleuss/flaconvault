@@ -10,7 +10,7 @@ const instrument = Instrument_Serif({ subsets: ["latin"], weight: "400", style: 
 
 export const metadata: Metadata = {
   title: { default: "FlaconVault", template: "%s · FlaconVault" },
-  description: "Sealed at first hand. Readable on the secondary market. NFC seal, indicator card and passport for fine perfume bottles.",
+  description: "An NFC seal, an indicator card and a Solana passport for collectible perfume: tap to check the seal, read how the bottle was handled, pay through a USDC escrow.",
   manifest: "/manifest.webmanifest",
   applicationName: "FlaconVault",
   appleWebApp: { capable: true, title: "FlaconVault", statusBarStyle: "default" },

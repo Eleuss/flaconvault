@@ -99,4 +99,6 @@ pub enum FlaconError {
     AssetMismatch,
     #[msg("Asset account is not a Metaplex Core asset")]
     InvalidAsset,
+    #[msg("The Core asset must be owned by the issuer when the passport is minted")]
+    AssetNotOwnedByIssuer,
 }

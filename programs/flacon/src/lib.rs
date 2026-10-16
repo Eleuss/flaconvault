@@ -69,7 +69,7 @@ pub mod flacon {
     }
 
     /// Partner (or authority) only. Birth certificate of a bottle. `asset` must be a Metaplex Core
-    /// asset, passed again as the `core_asset` account.
+    /// asset owned by the issuer, passed again as the `core_asset` account.
     pub fn mint_passport(
         ctx: Context<MintPassport>,
         serial_hash: [u8; 32],

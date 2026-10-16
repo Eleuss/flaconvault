@@ -471,7 +471,7 @@ export type Flacon = {
       "name": "mintPassport",
       "docs": [
         "Partner (or authority) only. Birth certificate of a bottle. `asset` must be a Metaplex Core",
-        "asset, passed again as the `core_asset` account."
+        "asset owned by the issuer, passed again as the `core_asset` account."
       ],
       "discriminator": [
         191,
@@ -544,8 +544,8 @@ export type Flacon = {
         {
           "name": "coreAsset",
           "docs": [
-            "that Metaplex Core owns the account and that it is an `AssetV1`. Appended last so the",
-            "indices of the accounts above stay unchanged."
+            "that Metaplex Core owns the account, that it is an `AssetV1` and that the issuer owns it.",
+            "Appended last so the indices of the accounts above stay unchanged."
           ]
         }
       ],
@@ -1285,6 +1285,11 @@ export type Flacon = {
       "code": 6042,
       "name": "invalidAsset",
       "msg": "Asset account is not a Metaplex Core asset"
+    },
+    {
+      "code": 6043,
+      "name": "assetNotOwnedByIssuer",
+      "msg": "The Core asset must be owned by the issuer when the passport is minted"
     }
   ],
   "types": [

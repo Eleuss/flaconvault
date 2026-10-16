@@ -11,8 +11,8 @@
 //!    `seal.last_counter < args.counter <= MAX_COUNTER` (24-bit NTAG counter).
 //! 3. Role/tier/field validation; tier ≥ 3 or role VAULT/PARTNER needs a partner attester.
 //! 4. Create the `ScanProof` PDA, bump `seal.last_counter`, `passport.scan_count`
-//!    (every accepted scan counts, whatever its tier), and set
-//!    `passport.grade = worst(passport.grade, scan grade)`; an opened tamper code
+//!    (every accepted scan counts, whatever its tier), and the passport grade: VOID and C
+//!    are sticky, A/B/D follow this scan's fill level; an opened tamper code
 //!    (OPENED_NOW / OPENED_BEFORE) also sets `passport.void` (see `grade::passport_after_scan`).
 //!
 //! `scan_proof` uses `init_if_needed` (Anchor creates accounts before the handler
@@ -253,7 +253,7 @@ pub fn handle_record_scan(ctx: Context<RecordScan>, args: RecordScanArgs) -> Res
         heat_levels: args.heat_levels,
         fill: args.fill,
         site_id: args.site_id,
-        // the passport's grade after this scan (sticky, see grade::passport_after_scan)
+        // the passport's grade after this scan (VOID and C sticky, see grade::passport_after_scan)
         grade: new_grade,
         scan_count: passport.scan_count,
         server_key_id: args.server_key_id,

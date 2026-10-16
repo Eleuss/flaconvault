@@ -12,7 +12,7 @@
     "prebuild": "npm run build:packages --prefix ../.. && node scripts/copy-vendor.mjs"
   },
   "dependencies": {
-    "@anchor-lang/core": "^1.2.0",
+    "@anchor-lang/core": "^1.2.1",
     "@flaconvault/proof": "*",
     "@flaconvault/vision": "*",
     "@metaplex-foundation/mpl-core": "^1.10.0",
@@ -24,15 +24,15 @@
     "@solana/wallet-adapter-base": "^0.9.28",
     "@solana/wallet-adapter-react": "^0.15.40",
     "@solana/wallet-adapter-react-ui": "^0.9.40",
-    "@solana/wallet-adapter-unsafe-burner": "^0.1.12",
+    "@solana/wallet-adapter-unsafe-burner": "^0.1.13",
     "@solana/wallet-adapter-walletconnect": "^0.1.22",
     "@solana/web3.js": "^1.99.0",
     "@techstark/opencv-js": "5.0.0-release.1",
     "lucide-react": "^0.460.0",
     "next": "15.5.28",
     "qrcode": "^1.5.4",
-    "react": "^19.2.9",
-    "react-dom": "^19.2.9"
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
     "@types/node": "^20",
@@ -41,7 +41,7 @@
     "@types/react-dom": "^19",
     "eslint": "^8",
     "eslint-config-next": "15.5.28",
-    "postcss": "^8",
+    "postcss": "^8.5.30",
     "tailwindcss": "^3.4.1",
     "typescript": "^5"
   }

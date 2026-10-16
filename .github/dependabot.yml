@@ -1,0 +1,59 @@
+# Dependency update PRs (weekly). Minor and patch updates are grouped per ecosystem; majors come one PR each.
+# Security updates are additionally enabled in the repository settings (Dependabot alerts + security updates).
+version: 2
+updates:
+  # npm workspaces: root, packages/proof, packages/vision, apps/web (one lockfile at the root)
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  # Irys sidecar of the verifier (own lockfile)
+  - package-ecosystem: npm
+    directory: /apps/verify/irys
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    groups:
+      irys-minor-and-patch:
+        update-types: [minor, patch]
+
+  # Verifier (uv.lock)
+  - package-ecosystem: uv
+    directory: /apps/verify
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      python-minor-and-patch:
+        update-types: [minor, patch]
+
+  # Anchor programs (Cargo workspace)
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      cargo-minor-and-patch:
+        update-types: [minor, patch]
+
+  # Base images of Dockerfile.verify
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+
+  # Actions used in .github/workflows
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

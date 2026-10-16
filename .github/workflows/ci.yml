@@ -1,0 +1,143 @@
+name: CI
+
+# Every push to main and every pull request: repo hygiene, proof + vision tests (incl. parity with the committed
+# vectors), web typecheck + lint + production build, verifier pytest, and the flacon unit tests.
+# The Anchor integration tests need a local validator and take long: run them by hand
+# (Actions -> CI -> Run workflow, "anchor" ticked).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      anchor:
+        description: "Also run `anchor test --validator legacy` (local validator, slow)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "24"
+  NEXT_TELEMETRY_DISABLED: "1"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  hygiene:
+    name: Repo hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .github/scripts/hygiene.sh
+
+  packages:
+    name: proof + vision
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      # --ignore-scripts: npm runs the workspaces' `prepare` scripts in parallel, and vision's build needs proof's
+      # type declarations, so a plain `npm ci` fails at random on a clean checkout. Build the packages in order.
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build:packages
+      - name: proof tests (incl. parity with docs/vectors.json and docs/enums.json)
+        run: npm run proof:test
+      - name: committed vectors match gen-vectors output
+        run: npm run vectors:check
+      - name: vision tests
+        run: npm run vision:test
+
+  web:
+    name: web (typecheck, lint, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build:packages
+      - run: npm run web:typecheck
+      - run: npm run web:lint
+      - run: npm run web:build
+      # Informational until the Next.js upgrade lands (next 14.x has advisories without a 14.x fix).
+      - name: npm audit (production dependencies)
+        continue-on-error: true
+        run: npm audit --omit=dev --omit=peer --audit-level=critical
+
+  verify:
+    name: verifier (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/verify
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: apps/verify/uv.lock
+      - run: uv sync --locked
+      - run: uv run pytest -q
+
+  rust:
+    name: flacon unit tests (cargo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # Installs the toolchain pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p flacon --locked
+
+  anchor:
+    name: anchor test (local validator)
+    if: github.event_name == 'workflow_dispatch' && inputs.anchor
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SOLANA_VERSION: "4.1.2"
+      ANCHOR_VERSION: "1.2.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build:packages
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Solana CLI (Agave)
+        run: |
+          sh -c "$(curl -sSfL "https://release.anza.xyz/v${SOLANA_VERSION}/install")"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Install Anchor CLI
+        run: |
+          cargo install --git https://github.com/solana-foundation/anchor --tag "v${ANCHOR_VERSION}" avm --locked
+          avm install "${ANCHOR_VERSION}"
+          avm use "${ANCHOR_VERSION}"
+      # A throwaway wallet for the local validator, and fresh program keypairs: the real program keypairs are not in
+      # the repo, so `anchor keys sync` points declare_id! and Anchor.toml at the generated ones (CI checkout only).
+      - name: Throwaway wallet and program keys
+        run: |
+          solana-keygen new --no-bip39-passphrase --silent --force --outfile "$HOME/.config/solana/id.json"
+          anchor build
+          anchor keys sync
+      # Anchor.toml clones Metaplex Core from devnet into the local validator (read-only, needs network).
+      - run: anchor test --validator legacy

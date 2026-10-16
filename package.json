@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "FlaconVault — NFC seal, indicator card and on-chain passport for collectible perfume bottles.",
+  "license": "MIT",
   "workspaces": [
     "packages/*",
     "apps/web"
@@ -11,15 +12,21 @@
     "proof:build": "npm run build -w @flaconvault/proof",
     "proof:test": "npm run test -w @flaconvault/proof",
     "vectors": "npm run vectors -w @flaconvault/proof",
+    "vectors:check": "npm run vectors && git diff --exit-code -- docs/vectors.json docs/enums.json",
+    "vision:build": "npm run build -w @flaconvault/vision",
+    "build:packages": "npm run proof:build && npm run vision:build",
+    "vision:test": "npm run test -w @flaconvault/vision",
+    "test": "npm run proof:test && npm run vision:test",
     "web:dev": "npm run dev -w @flaconvault/web",
-    "web:build": "npm run build -w @flaconvault/web"
+    "web:build": "npm run build -w @flaconvault/web",
+    "web:lint": "npm run lint -w @flaconvault/web",
+    "web:typecheck": "tsc --noEmit -p apps/web/tsconfig.json"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.18"
   },
   "devDependencies": {
     "@anchor-lang/core": "^1.2.0",
-    "@coral-xyz/anchor": "latest",
     "@solana/web3.js": "^1.98.0",
     "@types/chai": "^4.3.0",
     "@types/mocha": "^10.0.0",

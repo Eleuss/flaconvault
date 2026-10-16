@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Gemeinsame Geometrie Karte + Gehaeuse, Rev. C. Karte: Ursprung oben links, y nach unten."""
+"""Shared geometry of the card and the holder, Rev C (mm). Card: origin top left, y pointing down."""
 CARD_W, CARD_H, CARD_R, CARD_T = 66.0, 34.0, 2.0, 0.76
 
-# ---- Gehaeuse: gestufte Tasche ----
+# ---- holder: stepped pocket ----
 OUT_X, OUT_Y, R_OUT = 70.0, 38.0, 3.0
 FLOOR      = 0.8
-SEAT_X, SEAT_Y, R_SEAT, SEAT_Z = 66.3, 34.3, 2.2, 1.2     # Stufe 1: Kartensitz (0,15 Spiel je Seite)
-LSEAT_X, LSEAT_Y, R_LSEAT, LSEAT_Z = 67.2, 35.2, 1.6, 0.8 # Stufe 2: Lippensitz
+SEAT_X, SEAT_Y, R_SEAT, SEAT_Z = 66.3, 34.3, 2.2, 1.2     # step 1: card seat (0.15 play per side)
+LSEAT_X, LSEAT_Y, R_LSEAT, LSEAT_Z = 67.2, 35.2, 1.6, 0.8 # step 2: lip seat
 TRAY_Z     = FLOOR + SEAT_Z + LSEAT_Z                      # 2.8
 WALL_SEAT  = (OUT_X - SEAT_X)/2                            # 1.85
 WALL_TOP   = (OUT_X - LSEAT_X)/2                           # 1.40
@@ -14,19 +14,19 @@ SHOULDER   = (LSEAT_X - SEAT_X)/2                          # 0.45
 
 FRAME_Z, LIP_Z = 1.0, 0.8
 LIP_X, LIP_Y, R_LIP = 66.9, 34.9, 1.5
-LEADIN_Z, LEADIN_D = 0.3, 0.6                              # Einfuehrstufe unten an der Lippe
+LEADIN_Z, LEADIN_D = 0.3, 0.6                              # lead-in step at the bottom of the lip
 OPEN_X, OPEN_Y, R_OPEN = 62.5, 30.5, 2.0
-SLOT_W, SLOT_H = 18.0, 0.9                                 # Durchfuehrung, ab Bodenoberkante
+SLOT_W, SLOT_H = 18.0, 0.9                                 # feed-through slot, from the top of the floor
 ASSY_Z = TRAY_Z + FRAME_Z                                  # 3.8
 
-# Sichtfenster in KARTEN-Koordinaten + Kartenspiel
+# viewing window in CARD coordinates + card play
 VIS_X0, VIS_X1 = (CARD_W-OPEN_X)/2, (CARD_W+OPEN_X)/2      # 1.75 .. 64.25
 VIS_Y0, VIS_Y1 = (CARD_H-OPEN_Y)/2, (CARD_H+OPEN_Y)/2      # 1.75 .. 32.25
-PLAY = (SEAT_X - CARD_W)/2                                 # 0.15 je Seite
+PLAY = (SEAT_X - CARD_W)/2                                 # 0.15 per side
 SAFE = 2.5
 SX0, SX1, SY0, SY1 = SAFE, CARD_W-SAFE, SAFE, CARD_H-SAFE
 
-# ---- Kartenlayout ----
+# ---- card layout ----
 HEAT = (2.5, 5.6, 33.0, 13.0)
 UV   = (36.2, 5.6, 13.0, 13.0)
 HIC  = (56.5, 12.1, 4.75)
@@ -39,7 +39,7 @@ QR    = (10.8, CODE_Y, CODE)
 TXT_X = 18.5
 TXT = [(26.4, 1.7, True), (28.6, 1.4, False), (30.8, 1.4, False)]
 
-STACK = [("Trägerlabel Rückseite",          0.20),
-         ("Doppelseitiges Klebeband",       0.10),
-         ("Karte PVC",                      CARD_T),
-         ("Dickster Aufbau (Indikator)",    0.40)]
+STACK = [("carrier label (back)",           0.20),
+         ("double-sided tape",              0.10),
+         ("PVC card",                       CARD_T),
+         ("thickest build-up (indicator)",  0.40)]

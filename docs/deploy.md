@@ -1,80 +1,95 @@
 # Deployment
 
-**Live:** web https://app.flaconvault.com · verifier https://verify.flaconvault.com (old hosts still work: https://flaconvault.vercel.app redirects permanently via `apps/web/src/middleware.ts` and `NEXT_PUBLIC_CANONICAL_ORIGIN`; https://verify-production-00e9.up.railway.app stays reachable) (Railway project `flaconvault`, service `verify`, volume `verify-volume` at `/data`). Vercel project `flaconvault` (team `eleuss-projects`, root directory `apps/web`).
+Two services:
 
-Two services. The **web app** runs on Vercel (stable domain for the stickers and the README links), the **verifier** on Railway with a persistent volume for SQLite and media. Tags point at the web domain `/t`; the web app forwards each tap once to the verifier.
+- the **web app** (`apps/web`, Next.js) on Vercel, with a stable domain for the stickers and the README links;
+- the **verifier** (`apps/verify`, FastAPI + SQLite) on Railway, with a persistent volume for the database and media.
 
-## Verifier — Railway
+Stickers point at the web domain's `/t`; the web app forwards each tap once to the verifier.
 
-- Build: `Dockerfile.verify` at the repo root (`railway.json` sets the builder and the `/health` healthcheck). Context = repo root, so `docs/seed` is inside the image.
-- Volume: mount at `/data` (SQLite `FV_DB_PATH=/data/flaconvault.db`, media `/data/media`, Irys key `/data/irys-key.json`).
+The hackathon deployment runs at https://app.flaconvault.com (web) and https://verify.flaconvault.com (verifier), against Solana devnet. Stickers written earlier with `https://flaconvault.vercel.app/t` keep working: that host redirects permanently to `NEXT_PUBLIC_CANONICAL_ORIGIN` (`apps/web/src/middleware.ts`).
+
+## Production rules
+
+Read these before setting any variable.
+
+1. **Simulator off.** `FV_DEV_SIMULATOR=false` (the default). `/api/dev/*` then answers 404.
+2. **Never factory keys in production.** `FV_KEY_MODE=factory` uses the NXP null keys, which anyone can compute, so anyone could forge a valid tap. Production uses the key mode the stickers were programmed with: `sdmbackend` with `FV_SDM_DERIVE=legacy` for stickers written with the NFC Developer App (see `docs/hardware-day.md`). Factory mode is for local development with the simulator only.
+3. **Secrets come from the platform's secret store** (Railway service variables), never from the repo and never copied from a local `.env`: `FV_MASTER_KEY`, `FV_SERVER_ED25519_SEED`, `FV_ADMIN_TOKEN`, `FV_IRYS_KEY_JSON`.
+4. **A production-only signing key.** Generate a seed that exists only in the secret store, register its public key on-chain under its own key id (`add_server_key`, see `docs/devnet.md`) and set `FV_SERVER_KEY_ID` to that id. A local verifier, especially one with the simulator on or exposed through a tunnel, must never hold the production seed or the production master key: it could sign scans and mint taps that production accepts.
+5. **No demo seed.** `docs/seed/passports.json` is sample data with fake transaction signatures. The verifier loads it into an empty database whenever `FV_SEED_PATH` points at an existing file, so point it at a path that does not exist.
+6. **CORS lists only the web origin.** Never `localhost` in production.
+
+## Verifier (Railway)
+
+- Build: `Dockerfile.verify` at the repo root (`railway.json` sets the builder and the `/health` healthcheck). The build context is the repo root.
+- Volume: mount a persistent volume at `/data` (SQLite at `/data/flaconvault.db`, media at `/data/media`; both are set in the Dockerfile).
 - Service variables:
 
-| Variable | Value | Where from |
+| Variable | Production value | Notes |
 |---|---|---|
-| `FV_MASTER_KEY` | `00000000000000000000000000000000` | factory key (hackathon) |
-| `FV_KEY_MODE` | `factory` | |
-| `FV_SERVER_ED25519_SEED` | same 32-byte hex as in the local `apps/verify/.env` | **secret** — it is the key registered on-chain as server key id 1; a new seed would need `add_server_key` |
-| `FV_SERVER_KEY_ID` | `1` | |
-| `FV_DEV_SIMULATOR` | `true` until hardware day, then `false` | |
-| `FV_NONCE_TTL_S` | `90` | |
-| `FV_SOLANA_RPC` | `https://api.devnet.solana.com` | |
-| `FV_PROGRAM_ID` | `7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL` | `docs/devnet.md` |
-| `FV_DB_PATH` | `/data/flaconvault.db` | set in the Dockerfile |
-| `FV_MEDIA_DIR` | `/data/media` | set in the Dockerfile |
+| `FV_DEV_SIMULATOR` | `false` | default `false` |
+| `FV_KEY_MODE` | `sdmbackend` | never `factory` in production |
+| `FV_SDM_DERIVE` | `legacy` | NFC Developer App / sdm-backend key derivation (`standard` = `libsdm/derive.py`) |
+| `FV_MASTER_KEY` | **secret**, 16 bytes hex | the SDM master key the stickers were programmed with; never all zeros, never a key used for local development |
+| `FV_SERVER_ED25519_SEED` | **secret**, 32 bytes hex | production-only seed, e.g. `python3 -c "import secrets; print(secrets.token_hex(32))"`; `GET /health` shows its public key |
+| `FV_SERVER_KEY_ID` | the key id registered for that public key | must match the on-chain registry entry |
+| `FV_ADMIN_TOKEN` | **secret**, e.g. `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` | `x-admin-token` for `POST /api/reconcile` and `POST /api/dev/reset`; empty disables both |
+| `FV_NONCE_TTL_S` | `90` | scan session lifetime |
+| `FV_RATE_LIMIT_PER_MIN` | `60` (default) | per-IP request budget for the POST routes and `GET /t` |
+| `FV_SOLANA_RPC` | `https://api.devnet.solana.com` | a dedicated RPC endpoint is better: the public one rate-limits |
+| `FV_PROGRAM_ID` | `7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL` | flacon program, `docs/devnet.md` |
+| `FV_ESCROW_PROGRAM_ID` | `9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL` | escrow program (this is also the default) |
+| `FV_SEED_PATH` | `/data/no-demo-seed` | any path that does not exist (rule 5) |
 | `FV_WEB_URL` | `https://app.flaconvault.com` | redirect target of `/t` |
-| `FV_VERIFIER_HOST` | `https://verify.flaconvault.com` | host in simulator tag URLs |
-| `FV_ADMIN_TOKEN` | random, `secrets.token_urlsafe(32)` | required for `POST /api/reconcile` and `/api/dev/reset`; kept only in Railway + ignored `apps/verify/.env` |
-| `FV_DEV_SIMULATOR` | `false` in production | default is now false; with it off the server refuses to start on an all-zero master key |
-| `FV_CORS_ORIGINS` | `https://flaconvault.vercel.app,https://app.flaconvault.com,http://localhost:3000` | comma-separated |
-| `FV_ARWEAVE` | `true` | |
-| `FV_IRYS_KEY_JSON` | contents of `~/.config/solana/irys.json` | **secret** — a separate keypair (`7oSB1jK7btf5hhG9tbjUdtEJ18npuyA7dcD77CJyL3iB`, 0.05 devnet SOL), not the deploy wallet |
-| `FV_IRYS_NETWORK` | `devnet` | |
-| `FV_RECONCILE_INTERVAL_S` | `60` | |
+| `FV_VERIFIER_HOST` | `https://verify.flaconvault.com` | the verifier's own public URL |
+| `FV_CORS_ORIGINS` | `https://app.flaconvault.com` | comma-separated web origins; no `localhost` |
+| `FV_RECONCILE_INTERVAL_S` | `60` | `0` disables the background reconcile loop |
+| `FV_RECONCILE_TIMEOUT_S` | `600` | a pending scan without its ScanProof account after this many seconds becomes `failed` |
+| `FV_ARWEAVE` | `false` | `true` only with a funded Irys key; upload failures are only logged (`arweave upload failed`), so check the logs after enabling it |
+| `FV_IRYS_KEY_JSON` | **secret**, only with `FV_ARWEAVE=true` | a separate Solana keypair (64-number JSON array) used only to pay Irys, never the deploy wallet |
+| `FV_IRYS_NETWORK` | `devnet` | Irys devnet uploads are pruned after about 60 days |
 | `PORT` | set by Railway | the Dockerfile honours it |
 
-## Web app — Vercel
+## Web app (Vercel)
 
-- Project root directory `apps/web`, framework Next.js, "Include source files outside of the Root Directory" on (npm workspaces: `packages/proof`, `packages/vision` build via their `prepare` scripts). Node 20+.
+- Project root directory `apps/web`, framework Next.js, "Include source files outside of the Root Directory" on (npm workspaces: `packages/proof` and `packages/vision` build through their `prepare` scripts). Node 22.18 or newer.
+- npm runs the workspaces' `prepare` scripts in parallel, and the vision build needs the proof build's type declarations. If an install fails with `Cannot find module '@flaconvault/proof'` in `packages/vision`, set the Install Command to `cd ../.. && npm ci --ignore-scripts && npm run build:packages` (the same sequence CI and the README use).
 - Environment variables (Production):
 
-| Variable | Value |
-|---|---|
-| `NEXT_PUBLIC_VERIFY_URL` | `https://verify.flaconvault.com` |
-| `NEXT_PUBLIC_CANONICAL_ORIGIN` | `https://app.flaconvault.com` (old vercel.app host redirects here) |
-| `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | Reown project id (WalletConnect entry) |
-| `NEXT_PUBLIC_SOLANA_RPC` | `https://api.devnet.solana.com` |
-| `NEXT_PUBLIC_PROGRAM_ID` | `7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL` |
-| `NEXT_PUBLIC_ESCROW_PROGRAM_ID` | `9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL` |
-| `NEXT_PUBLIC_DEV_SIMULATOR` | `true` until hardware day (dev wallets + simulator UI), then `false` |
-
-`VERIFY_URL` (server-side fetches) defaults to `NEXT_PUBLIC_VERIFY_URL`.
+| Variable | Value | Notes |
+|---|---|---|
+| `NEXT_PUBLIC_VERIFY_URL` | `https://verify.flaconvault.com` | |
+| `VERIFY_URL` | optional | server-side fetches; defaults to `NEXT_PUBLIC_VERIFY_URL` |
+| `NEXT_PUBLIC_CANONICAL_ORIGIN` | `https://app.flaconvault.com` | other hosts redirect here |
+| `NEXT_PUBLIC_SOLANA_RPC` | `https://api.devnet.solana.com` | |
+| `NEXT_PUBLIC_PROGRAM_ID` | `7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL` | |
+| `NEXT_PUBLIC_ESCROW_PROGRAM_ID` | `9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL` | |
+| `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | Reown Cloud project id | optional; enables the WalletConnect entry (sign from Safari on iPhone) |
+| `NEXT_PUBLIC_DEV_SIMULATOR` | `false` | `true` only for a demo deployment: it enables the demo tools (dev wallets, burner, airdrop, test images, simulator UI), which then still need demo mode in the browser (`apps/web/src/lib/demo.ts`). The dev wallets keep their secret keys in the browser's `localStorage`: never register them as partners or fund them with anything of value. |
 
 ## After both are up
 
-1. `curl https://<railway-domain>/health` → `ok`, `programId` set.
-2. Simulator tap: `POST https://<railway-domain>/api/dev/tap {"uid":"04A1B2C3D4E5F6"}` → open the returned URL with the host swapped to the web domain → „Siegel echt · Tap N“; open it again → „Wiederholter Tap“.
-3. New stickers: write `https://app.flaconvault.com/t` with the NFC Developer App (encrypted SUN, see `docs/hardware-day.md`); stickers written earlier with `https://flaconvault.vercel.app/t…` keep working through the redirect. (Old TagWriter instructions: (TagWriter SDM mirrors, see `docs/hardware-day.md`).
-4. Local dev keeps working against localhost; only the hosted `.env`s differ.
+1. `curl -s https://verify.flaconvault.com/health` shows `"ok": true`, `"simulator": false`, the program id, and a `pubkeyHex` equal to the on-chain server key with the same `keyId` (`curl -s https://verify.flaconvault.com/api/registry`).
+2. `curl -s -o /dev/null -w '%{http_code}\n' https://verify.flaconvault.com/api/dev/tags` prints `404` (simulator off).
+3. `curl -s -D - -o /dev/null -H 'Origin: http://localhost:3000' https://verify.flaconvault.com/health | grep -i access-control-allow-origin` prints nothing (localhost is not an allowed origin).
+4. Tap a real sticker (iPhone: background NFC opens Safari): `/t` shows "Seal genuine · Tap N". Opening the same URL again shows "Repeated tap".
+5. On that sticker's passport page, "Check live on-chain" reads the Passport account from devnet.
 
-## CLI cheat sheet (both CLIs are logged in on this Mac)
+## Deploying
+
+Deploy from a clean checkout of a commit that passed CI (`.github/workflows/ci.yml`), so the running code equals a commit on GitHub. The Vercel and Railway Git integrations (deploy on push to `main`) do this automatically; the CLIs upload the local working tree, including uncommitted changes.
 
 ```bash
-vercel --prod --yes                                   # redeploy web (repo root; project linked in .vercel/)
-vercel env add NAME production --force                # change a web variable (value from stdin), then redeploy
-railway up --service verify --detach --ci             # redeploy verifier from the repo root
-railway variables --service verify --set K=V          # change a server variable (redeploys)
-railway logs --service verify                         # server logs
+vercel --prod                                   # web, from the repo root (project linked in .vercel/)
+vercel env add NAME production                  # change a web variable (value from stdin), then redeploy
+railway up --service <service>                  # verifier, from the repo root
+railway variables --service <service> --set K=V # change a verifier variable (triggers a redeploy)
+railway logs --service <service>                # verifier logs
 ```
 
+## Custom domains
 
-## DNS (Namecheap, flaconvault.com)
-
-| Host | Type | Value | Purpose |
-|---|---|---|---|
-| `@` | A | `76.76.21.21` | marketplace (separate Vercel project) |
-| `www` | CNAME | `cname.vercel-dns.com` | marketplace |
-| `app` | A | `76.76.21.21` | this web app (Vercel project `flaconvault`) |
-| `verify` | CNAME | `q9g4o5rk.up.railway.app` | verifier (Railway) |
-| `_railway-verify.verify` | TXT | `railway-verify=…` | Railway ownership check for the certificate |
-| `@` | MX / TXT | privateemail / SPF | e-mail — do not touch |
+- Web: add the domain to the Vercel project and create the DNS record Vercel shows (an `A` record for an apex or subdomain, or a `CNAME`).
+- Verifier: add the custom domain to the Railway service and create the `CNAME` and the `TXT` ownership record Railway shows; Railway issues the certificate once both resolve.
+- Then update `FV_WEB_URL`, `FV_VERIFIER_HOST`, `FV_CORS_ORIGINS`, `NEXT_PUBLIC_VERIFY_URL` and `NEXT_PUBLIC_CANONICAL_ORIGIN`, and program new stickers with the new web domain.

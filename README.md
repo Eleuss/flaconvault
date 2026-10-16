@@ -57,7 +57,7 @@ A buyer needs no app and no wallet: tapping the sticker with an iPhone opens the
 | Path | What |
 |---|---|
 | `packages/proof` | TypeScript source of truth: enums, the 152-byte signed message, ScanProof bundle schema, grade rule. `npm run vectors` writes `docs/vectors.json`, which the Python and Rust tests consume. |
-| `packages/vision` | OpenCV.js card reader (marker mode and frame mode for the physical holder), runs in a Web Worker. `scripts/calibrate.ts` reads photos and draws the regions. |
+| `packages/vision` | OpenCV.js card reader (marker mode and frame mode for the physical holder), runs in a Web Worker. `packages/vision/scripts/calibrate.ts` reads photos and draws the regions. |
 | `apps/verify` | Python 3.12 / FastAPI / SQLite verifier: SUN/CMAC (from `icedevml/sdm-backend`), sessions, signatures, on-chain transaction verification for history entries, reconcile job, optional Arweave archiving via Irys (`FV_ARWEAVE`). |
 | `programs/flacon` | Anchor program: `Registry`, `Passport`, `Seal`, `ScanProof`; Ed25519 verification in `record_scan`. |
 | `programs/escrow` | Anchor program: USDC escrow that compares seller and buyer ScanProofs. |

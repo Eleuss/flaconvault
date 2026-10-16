@@ -122,6 +122,28 @@ describe("runbooks match the code", () => {
     for (const { where, text } of lines()) expect(text, where).not.to.match(/[Gg]rades? only (ever )?gets? worse|the worse of DB and chain/);
   });
 
+  it("every backticked repo path in the docs exists (repo-relative, or relative to the doc's own folder)", () => {
+    // `apps/web/src/vision/vote.ts` stayed in hardware-day.md after the file was deleted; catch such dead references.
+    // A path stops at a placeholder or glob (`<…>`, `*`, `{…}`, `$VAR`, `…`), which is then not checked.
+    const repoPath = /(?:^|[\s"'(=:])((?:apps|packages|programs|scripts|docs|tests|\.github)\/[A-Za-z0-9_.@/-]*)(.?)/g;
+    const dead: string[] = [];
+    let checked = 0;
+    for (const f of DOCS) {
+      read(f).split("\n").forEach((text, i) => {
+        for (const span of text.matchAll(/`([^`\n]+)`/g)) {
+          for (const m of span[1].matchAll(repoPath)) {
+            if (m[2] && "<*{$…".includes(m[2])) continue;
+            const rel = m[1].replace(/[.,:;)]+$/, "");
+            checked++;
+            if (![ROOT, path.join(ROOT, path.dirname(f))].some((base) => fs.existsSync(path.join(base, rel)))) dead.push(`${f}:${i + 1}: ${rel}`);
+          }
+        }
+      });
+    }
+    expect(checked).to.be.greaterThan(50);
+    expect(dead, dead.join("\n")).to.deep.equal([]);
+  });
+
   it("demo-script: demo tools need demo mode, and the triggered scene never uses the featured bottle", () => {
     const demo = read("docs/demo-script.md");
     expect(demo).to.match(/NEXT_PUBLIC_DEV_SIMULATOR=true/).and.to.match(/\/dev\?demo=1/).and.to.match(/\/dev\?demo=0/);

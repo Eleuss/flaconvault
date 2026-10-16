@@ -43,22 +43,25 @@ log = logging.getLogger("fv.reconcile")
 
 FAILED_RECHECK_S = 24 * 3600     # a failed SCAN is re-checked against its ScanProof PDA for this long
 SIGNATURE_LOOKUP_LIMIT = 50      # newest N successful signatures on an account searched (oldest first) for its creating tx
+SIGNATURE_MAX_CHECKS = 20        # getTransaction calls per search at most (the creator is normally the oldest one)
 
 
 def creating_signature(rpc, address, *, program: str, instruction: str, accounts: dict[str, str], signer: str | None = None,
-                       limit: int = SIGNATURE_LOOKUP_LIMIT) -> str | None:
+                       limit: int = SIGNATURE_LOOKUP_LIMIT, max_checks: int = SIGNATURE_MAX_CHECKS) -> str | None:
     """
     The signature of the successful transaction that ran `instruction` of `program` with `accounts` ({IDL role: pubkey},
     e.g. the ScanProof and seal PDA of record_scan) at their IDL positions, signed by the instruction's signer account
     (and that signer is `signer`, if given). Searched oldest first among the newest `limit` successful signatures that
-    touched `address`, each checked with getTransaction. Anything else that touched the account never qualifies — a SOL
-    transfer that pre-funded the predictable PDA before it was created (Anchor init accepts a funded account), dust sent
-    afterwards, an escrow tx that only read it. None when nothing qualifies (window exhausted, txs unreadable): the
-    caller then stores no tx_sig rather than a wrong one. Raises RpcError when the signature list cannot be read.
+    touched `address`, each checked with getTransaction (at most `max_checks` of them). Anything else that touched the
+    account never qualifies — a SOL transfer that pre-funded the predictable PDA before it was created (Anchor init
+    accepts a funded account), dust sent afterwards, an escrow tx that only read it. None when nothing qualifies (window
+    or check budget exhausted, txs unreadable): the caller then stores no tx_sig rather than a wrong one. Raises
+    RpcError when the signature list cannot be read.
     """
     disc = anchor_discriminator(instruction)
     pos = IX_ACCOUNTS[instruction]
-    for s in reversed(rpc.get_signatures_for_address(address, limit=limit)):      # newest first → oldest first
+    candidates = list(reversed(rpc.get_signatures_for_address(address, limit=limit)))   # newest first → oldest first
+    for s in candidates[:max_checks]:
         try:
             res = rpc.get_transaction(s)
         except RpcError as exc:

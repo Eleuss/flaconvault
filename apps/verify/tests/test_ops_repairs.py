@@ -517,3 +517,22 @@ def test_a_signature_the_client_filled_in_is_final(chain_client):
     assert c.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("fill"), "actor": attester}).status_code == 200
     rpc.scan_tx(sig("fill-2"), v, attester)
     assert c.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("fill-2"), "actor": attester}).status_code == 409
+
+
+def test_the_creating_signature_search_is_bounded(chain_client):
+    from fv.reconcile import SIGNATURE_MAX_CHECKS, creating_signature
+    rpc = chain_client.rpc
+    v = _anchored(chain_client)
+    attester = v["bundle"]["attester"]["pubkey"]
+    spam = [sig(f"spam{i}") for i in range(SIGNATURE_MAX_CHECKS + 5)]
+    for s in spam:
+        _transfer(rpc, s, _scan_pda(v))
+    rpc.scan_tx(sig("late-creator"), v, attester)
+    rpc.signatures[_scan_pda(v)] = [sig("late-creator"), *reversed(spam)]     # newest first: 25 pre-funding transfers
+    n = rpc.calls.count("getTransaction")
+    pda = _scan_pda(v)
+    found = creating_signature(rpc, pda, program=PROGRAM_ID, instruction="record_scan", accounts={"scan": pda}, signer=attester)
+    assert found is None and rpc.calls.count("getTransaction") - n == SIGNATURE_MAX_CHECKS   # gives up, never guesses
+    rpc.signatures[pda] = [sig("late-creator"), *reversed(spam[:3])]
+    assert creating_signature(rpc, pda, program=PROGRAM_ID, instruction="record_scan", accounts={"scan": pda},
+                              signer=attester) == sig("late-creator")

@@ -321,11 +321,13 @@ cycle, which re-checks each event's status (a parallel `POST /api/events` confir
    * a valid ScanProof (Anchor discriminator, this seal and counter) → `confirmed`. Actor, label, tier, role and site
      come from the proof (`payload.chain`), never from the client's claim; `counter, tamper, uv, hum, heat, fill,
      media_hash, bundle_hash, tier, role, site_id` (+ `heatLevels`, `attester`) are compared and differences recorded in
-     `payload.reconcile.mismatch`. `tx_sig` = the creating `record_scan`: the newest 50 successful signatures on the
-     PDA are checked oldest first with `getTransaction`, and only a successful flacon `record_scan` with this ScanProof
+     `payload.reconcile.mismatch`. `tx_sig` = the creating `record_scan`: of the newest 50 successful signatures on the
+     PDA at most 20 are checked, oldest first, with `getTransaction`, and only a successful flacon `record_scan` with this ScanProof
      and seal PDA at their account positions, signed by the proof's attester, qualifies — a SOL transfer that
      pre-funded the PDA, dust or an escrow tx never does. Nothing qualifies → `tx_sig` stays empty (the client can
-     still post the real one). A recovered failed scan never keeps the client's failed tx;
+     still post the real one). A recovered failed scan never keeps the client's failed tx. Such confirmations carry
+     `payload.reconcile.signatureChecked`; a scan an older build confirmed with an unchecked guess takes the client's
+     tx once, if it verifies as this scan's `record_scan` by its attester;
    * anything else at the address — no data (a plain SOL transfer to the PDA), another account type, a proof for
      another counter — counts as "not created" (`payload.reconcile.ignoredAccount`) and never aborts the cycle;
    * no ScanProof and a pending event older than `FV_RECONCILE_TIMEOUT_S` → `failed` (`payload.reconcile.reason`).
@@ -376,8 +378,8 @@ A kept passport that exists on chain is never left without a MINT event: without
 issuer's public `mint_passport` tx through `POST /api/events` and give the passport a new brand and name. When no MINT
 of it survives the purge (the seed's fake MINT tx is deleted) — or an older purge build already left it without one —
 a MINT is rebuilt from chain (`mintFromChain` in the report): actor = the on-chain issuer, `txSig` = the passport PDA's
-creating `mint_passport` signed by that issuer (the newest 1000 signatures checked oldest first with `getTransaction`;
-none found → empty), brand/name/batch from the passport row, `payload.fromChain`, no seed flag. Independently, a MINT
+creating `mint_passport` signed by that issuer (of the newest 1000 signatures at most 20 checked, oldest first, with
+`getTransaction`; none found → empty), brand/name/batch from the passport row, `payload.fromChain`, no seed flag. Independently, a MINT
 for an existing passport never replaces its brand, name or batch (`upsert_passport`). Kept rows (their tx exists on
 chain) are marked `payload.seedKept`, so the startup warning about leftover seed rows counts only what a purge still has
 to handle and is silent after a complete purge.

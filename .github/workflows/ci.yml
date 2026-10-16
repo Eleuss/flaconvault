@@ -82,9 +82,12 @@ jobs:
       - name: escrow rules and ops-script helpers (mocha, no validator)
         run: npm run mocha:unit
       - run: npm run web:build
-      # Informational until the Next.js upgrade lands (next 14.x has advisories without a 14.x fix).
+      # Fails the job on any critical advisory in a production dependency. --audit-level stays at critical because the
+      # remaining highs (ws and lodash under @walletconnect, bigint-buffer under spl-token, toml under anchor, the postcss
+      # that next pins, braces/micromatch) have no fix inside the version ranges we depend on.
+      # --omit=peer skips the react-native chain that @solana-mobile/wallet-adapter-mobile auto-installs as a peer
+      # (react-native -> react-devtools-core -> shell-quote, the one remaining critical): it never reaches the bundle.
       - name: npm audit (production dependencies)
-        continue-on-error: true
         run: npm audit --omit=dev --omit=peer --audit-level=critical
 
   verify:

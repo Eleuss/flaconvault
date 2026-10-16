@@ -191,4 +191,16 @@ describe("runbooks match the code", () => {
     expect(demo).to.match(/Mint Metaplex Core/);
     expect(read("apps/web/src/components/certify-console.tsx")).to.match(/Mint Metaplex Core/);
   });
+
+  it("the CI npm audit step fails on a critical advisory in a production dependency", () => {
+    const ci = read(".github/workflows/ci.yml");
+    const webJob = ci.slice(ci.indexOf("\n  web:"), ci.indexOf("\n  verify:"));
+    const start = webJob.indexOf("- name: npm audit (production dependencies)");
+    expect(start, "the web job has the audit step").to.be.greaterThan(-1);
+    const next = webJob.indexOf("\n      - ", start + 1);
+    const step = webJob.slice(start, next === -1 ? undefined : next);
+    expect(step).to.match(/run: npm audit --omit=dev --omit=peer --audit-level=critical/);
+    expect(step, "a non-blocking audit leaves CI green on a new critical").not.to.match(/continue-on-error/);
+    expect(webJob).not.to.match(/Informational until the Next\.js upgrade/);
+  });
 });

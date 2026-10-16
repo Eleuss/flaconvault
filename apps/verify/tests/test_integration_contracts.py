@@ -46,7 +46,6 @@ def test_release_after_timeout_backs_a_release(chain_client):
 def test_resolve_to_seller_is_a_release_and_to_buyer_a_dispute(chain_client):
     c, rpc = chain_client, chain_client.rpc
     _order(c, SERIAL2, SELLER, buyer=BUYER, state=6, price=300_000_000)
-    before = c.get(f"/api/attester/{SELLER}").json()
     res = encode_event("OrderResolved", order=order_pda(SERIAL2, SELLER), admin=ADMIN_WALLET, toSeller=True, amount=300_000_000,
                        assetTransferred=True)
     rpc.escrow_tx(sig("rs1"), "resolve", SERIAL2, ADMIN_WALLET, seller=SELLER, buyer=BUYER, to_seller=True,
@@ -57,7 +56,8 @@ def test_resolve_to_seller_is_a_release_and_to_buyer_a_dispute(chain_client):
     assert e["status"] == "confirmed"
     assert e["payload"] == {"order": order_pda(SERIAL2, SELLER), "currency": "USDC", "price": 300_000_000, "priceUsdc": 300,
                             "to": SELLER, "reason": "scans disagree · resolved by the escrow admin", "passportTo": BUYER}
-    assert c.get(f"/api/attester/{SELLER}").json()["escrowsOk"] == before["escrowsOk"] + 1
+    # escrow counters come from the order's final state (escrow_orders), for seller and buyer alike
+    assert c.get(f"/api/attester/{SELLER}").json()["escrowsOk"] == 1 and c.get(f"/api/attester/{BUYER}").json()["escrowsOk"] == 1
 
     seller2 = fake_key("seller-2")
     _order(c, SERIAL2, seller2, buyer=BUYER, state=7, price=200_000_000)
@@ -70,6 +70,7 @@ def test_resolve_to_seller_is_a_release_and_to_buyer_a_dispute(chain_client):
                             "reason": "scans disagree · refunded by the escrow admin", "reasonCode": 3,
                             "refunded": 200_000_000, "refundedUsdc": 200}
     assert c.get(f"/api/attester/{seller2}").json()["escrowsDisputed"] == 1
+    assert (c.get(f"/api/attester/{BUYER}").json()["escrowsOk"], c.get(f"/api/attester/{BUYER}").json()["escrowsDisputed"]) == (1, 1)
 
 
 def test_buyer_timeout_dispute_reads_not_shipped(chain_client):
@@ -198,6 +199,6 @@ def test_registry_falls_back_to_the_reconciled_chain_state(chain_client):
         set_chain_state(conn, "registry", {"programId": PROGRAM_ID, "authority": SELLER, "partners": [partner], "serverKeys": [],
                                            "sites": []}, now())
         reg = registry_info(conn, c.app.state.settings, rpc)
-        assert reg["source"] == "chain" and reg["partners"] == [partner] and reg["sites"]
+        assert reg["source"] == "chain" and reg["partners"] == [partner] and reg["sites"] == []   # never the demo sites
         set_chain_state(conn, "registry", {"programId": PROGRAM_ID, "partners": [partner]}, now() - 3600)   # too old
         assert registry_info(conn, c.app.state.settings, rpc)["source"] == "fallback"

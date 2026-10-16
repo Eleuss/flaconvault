@@ -151,6 +151,7 @@ def test_reconcile_disabled_without_program_id(client):
 
 
 def test_registry_and_sites(chain_client):
+    import fv.routes_chain as rch
     c, rpc = chain_client, chain_client.app.state.rpc
     # fallback: PDA missing
     r = c.get("/api/registry").json()
@@ -161,6 +162,7 @@ def test_registry_and_sites(chain_client):
     key = {"keyId": 1, "pubkeyHex": "8ddafff75fe35b174d24fca867f796bc253e32363a456f3486214f01c457ee01", "validFrom": 0, "validTo": 4102444800}
     rpc.accounts[str(pda_registry(PROGRAM_ID))] = registry_bytes(authority=ISSUER, keys=[key], partners=[ISSUER],
                                                                  sites=[(1, "Parfümerie X, Düsseldorf"), (7, "Lager Nord")])
+    c.app.state.registry_cache.failed_at -= rch.REGISTRY_RETRY_S     # the failed read above is not retried for a moment
     r = c.get("/api/registry").json()
     assert r == {"programId": PROGRAM_ID, "authority": str(ISSUER), "serverKeys": [key], "partners": [str(ISSUER)],
                  "sites": [{"siteId": 1, "label": "Parfümerie X, Düsseldorf"}, {"siteId": 7, "label": "Lager Nord"}], "source": "chain"}
@@ -176,7 +178,6 @@ def test_registry_and_sites(chain_client):
         from fv.chain import RpcError
         raise RpcError("connection refused")
     rpc.get_account_info = boom
-    import fv.routes_chain as rch
     cache = c.app.state.registry_cache
     cache.at -= rch.REGISTRY_TTL_S + 1                          # TTL over: the next request tries the chain again
     assert c.get("/api/registry").json()["source"] == "chain"   # stale but recent: still served

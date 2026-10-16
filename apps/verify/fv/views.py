@@ -27,6 +27,25 @@ def _uid_hash0x(uid_hex: str | None) -> str | None:
         return None
 
 
+def clean_text(v, max_len: int) -> str | None:
+    """A short, printable string (whitespace collapsed) or None — no control, format (bidi override) or private-use
+    characters ever reach a page."""
+    if not isinstance(v, str):
+        return None
+    v = " ".join(v.split())
+    return v[:max_len] if v and v.isprintable() else None
+
+
+def _location(r: dict) -> dict:
+    """Only a SCAN carries a location (the scanner's own, from /api/verify). Other events never show one: older rows
+    stored whatever the first poster of a public transaction sent."""
+    if r.get("type") != EventType.SCAN:
+        return {"country": None, "city": None}
+    country = r.get("country")
+    return {"country": country.upper() if isinstance(country, str) and re.fullmatch(r"[A-Za-z]{2}", country) else None,
+            "city": clean_text(r.get("city"), 80)}
+
+
 def uid_tail(uid_hex: str) -> str:
     """The public stand-in for a chip UID: its last byte only (the seed's convention, e.g. "…F6")."""
     return "…" + uid_hex[-2:].upper()
@@ -81,7 +100,7 @@ def event_view(r: dict) -> dict:
         "payload": public_payload(r),
         "arBundle": r["ar_bundle"], "arMedia": r["ar_media"],
         "gradeAfter": r["grade_after"],
-        "location": {"country": r["country"], "city": r["city"]},
+        "location": _location(r),
     }
 
 

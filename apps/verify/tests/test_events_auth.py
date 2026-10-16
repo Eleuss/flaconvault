@@ -55,16 +55,30 @@ def test_chain_not_configured(client):
 
 # ---------- visibility / failure / mismatch contract ----------
 
-def test_missing_tx_is_503_after_three_retries(chain_client):
+def test_unknown_tx_is_503_at_once_and_a_known_one_is_retried(chain_client):
     c = chain_client
+    # a signature the cluster does not know: one getSignatureStatuses call, no getTransaction, no waiting
     r = _ev(c, serial=SERIAL, type="LIST", txSig=sig("Z"), actor=SELLER)
     assert r.status_code == 503 and r.json()["detail"] == "tx_not_visible"
-    assert c.rpc.calls.count("getTransaction") == 4              # first lookup + 3 quick retries
+    assert c.rpc.calls.count("getTransaction") == 0 and c.rpc.calls.count("getSignatureStatuses") == 1
+    # known to the cluster but not visible at `confirmed` yet: first lookup + 3 quick retries
+    c.rpc.escrow_tx(sig("X"), "list", SERIAL, SELLER)
+    c.rpc.tx_misses[sig("X")] = 10
+    r = _ev(c, serial=SERIAL, type="LIST", txSig=sig("X"), actor=SELLER)
+    assert r.status_code == 503 and r.json()["detail"] == "tx_not_visible" and c.rpc.calls.count("getTransaction") == 4
     # a tx that shows up on the third lookup is accepted
     c.rpc.escrow_tx(sig("Y"), "list", SERIAL, SELLER)
     c.rpc.tx_misses[sig("Y")] = 2
     r = _ev(c, serial=SERIAL, type="LIST", txSig=sig("Y"), actor=SELLER, payload={"priceUsdc": 480})
     assert r.status_code == 200 and r.json()["status"] == "confirmed"
+    # the status lookup failing (RPC error) does not decide: the getTransaction retries run as before
+    from fv.chain import RpcError
+
+    def down(_sigs):
+        raise RpcError("getSignatureStatuses: 429")
+    c.rpc.get_signature_statuses = down
+    c.rpc.escrow_tx(sig("W"), "list", SERIAL, SELLER)
+    assert _ev(c, serial=SERIAL, type="LIST", txSig=sig("W"), actor=SELLER).json()["status"] == "confirmed"
 
 
 def test_retry_delays_add_up_to_about_four_seconds():

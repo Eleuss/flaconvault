@@ -240,26 +240,33 @@ def test_ship_release_and_dispute_payloads(chain_client):
     _order(c, SERIAL2, SELLER, buyer=BUYER, state=3, seller_scan=seller_scan, price=480_000_000)
     rpc.escrow_tx(sig("h1"), "ship", SERIAL2, SELLER)
     e = _ev(c, serial=SERIAL2, type="SHIP", txSig=sig("h1"), actor=SELLER,
-            payload={"carrier": "DHL", "preShipScanCounter": 99, "insured": True}).json()
+            payload={"carrier": "dhl ", "preShipScanCounter": 99, "insured": True}).json()
     assert e["payload"] == {"order": order_pda(SERIAL2, SELLER), "carrier": "DHL", "preShipScanCounter": 13}
 
-    seller_before = c.get(f"/api/attester/{SELLER}").json()
+    def counts(pk):
+        a = c.get(f"/api/attester/{pk}").json()
+        return a["escrowsOk"], a["escrowsDisputed"]
+
     rel = encode_event("OrderReleased", order=order_pda(SERIAL2, SELLER), seller=SELLER, buyer=BUYER, amount=480_000_000,
                        assetTransferred=False)
     rpc.escrow_tx(sig("h2"), "release", SERIAL2, BUYER, seller=SELLER, buyer=BUYER, logs=program_logs(ESCROW_ID, rel))
     e = _ev(c, serial=SERIAL2, type="RELEASE", txSig=sig("h2"), actor=BUYER,
             payload={"priceUsdc": 1, "to": MALLORY, "passportTo": BUYER}).json()
     assert e["payload"] == {"order": order_pda(SERIAL2, SELLER), "currency": "USDC", "price": 480_000_000, "priceUsdc": 480, "to": SELLER}
-    assert c.get(f"/api/attester/{SELLER}").json()["escrowsOk"] == seller_before["escrowsOk"] + 1
+    # the counters follow the order's final state (seeded fake counters do not survive): seller and buyer
+    assert counts(SELLER) == (1, 0) and counts(BUYER) == (1, 0)
     # repeating the same tx is idempotent: no second count
     _ev(c, serial=SERIAL2, type="RELEASE", txSig=sig("h2"), actor=BUYER)
-    assert c.get(f"/api/attester/{SELLER}").json()["escrowsOk"] == seller_before["escrowsOk"] + 1
+    assert counts(SELLER) == (1, 0)
 
+    # the seller closes the order and lists the bottle again (new listing on the same PDA); that one ends in a dispute
+    _order(c, SERIAL2, SELLER, buyer=BUYER, state=7, listed_at=1790000100)
     dis = encode_event("OrderDisputed", order=order_pda(SERIAL2, SELLER), by=BUYER, reason=2, refunded=480_000_000)
-    rpc.escrow_tx(sig("h3"), "dispute", SERIAL2, BUYER, seller=SELLER, buyer=BUYER, logs=program_logs(ESCROW_ID, dis))
+    rpc.escrow_tx(sig("h3"), "dispute", SERIAL2, BUYER, seller=SELLER, buyer=BUYER, logs=program_logs(ESCROW_ID, dis),
+                  block_time=1790000200)
     e = _ev(c, serial=SERIAL2, type="DISPUTE", txSig=sig("h3"), actor=BUYER, payload={"reason": "seller is a scammer"}).json()
     assert e["payload"]["reason"] == "Seal not responding" and e["payload"]["reasonCode"] == 2 and e["payload"]["refundedUsdc"] == 480
-    assert c.get(f"/api/attester/{SELLER}").json()["escrowsDisputed"] == seller_before["escrowsDisputed"] + 1
+    assert counts(SELLER) == (1, 1) and counts(BUYER) == (1, 1)
 
 
 def test_first_poster_cannot_choose_the_payload_or_label(chain_client):
@@ -289,13 +296,15 @@ def test_lookups_are_cached_and_bounded(chain_client, monkeypatch):
     n = rpc.calls.count("getTransaction")
     assert _ev(c, serial=SERIAL2, type="LIST", txSig=sig("missing"), actor=MALLORY).json()["detail"] == "tx_not_visible"
     assert rpc.calls.count("getTransaction") == n
-    # no free lookup slot (all in flight) → 429 rate_limited without any RPC call
+    # no free RPC slot (all in flight): a global condition → 503 busy with Retry-After, without any RPC call
+    n_rpc = len(rpc.calls)
     held = 0
     while tv._SLOTS.acquire(blocking=False):
         held += 1
     try:
         r = _ev(c, serial=SERIAL2, type="LIST", txSig=sig("busy"), actor=MALLORY)
-        assert r.status_code == 429 and r.json()["detail"] == "rate_limited" and rpc.calls.count("getTransaction") == n
+        assert r.status_code == 503 and r.json()["detail"] == "busy" and int(r.headers["retry-after"]) >= 1
+        assert len(rpc.calls) == n_rpc
     finally:
         for _ in range(held):
             tv._SLOTS.release()

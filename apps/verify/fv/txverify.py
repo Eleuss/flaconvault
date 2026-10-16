@@ -18,12 +18,16 @@ the Order account), so the caller derives tx-backed facts (asset, seal kind, pri
 chain data instead of trusting the client's payload.
 
 Failures map to the HTTP contract the web client relies on:
-  503 tx_not_visible (not found after the quick retries — client retries) · 422 tx_failed · 403 tx_mismatch ·
-  429 rate_limited (too many lookups in flight).
+  503 tx_not_visible (unknown to the cluster, or not found after the quick retries — the client retries) ·
+  422 tx_failed · 403 tx_mismatch · 429 rate_limited (this client already has MAX_LOOKUPS_PER_CLIENT lookups in
+  flight) · 503 busy with Retry-After (all MAX_CONCURRENT_LOOKUPS RPC slots in use — a global condition).
 
-getTransaction results are cached per RPC client (a confirmed transaction does not change), recent misses briefly,
-and at most MAX_CONCURRENT_LOOKUPS lookups run at a time, so junk signatures cannot multiply RPC traffic or occupy
-the worker threads.
+Lookups: one getSignatureStatuses call first — a signature the cluster does not know (junk, or not sent yet) is
+answered 503 tx_not_visible at once, without getTransaction and without sleeping. Only a known signature gets the
+getTransaction retries (it may still be below `confirmed`). A global slot is held only while an RPC call runs, never
+while sleeping between retries, and each client (rate-limit key: IPv4 address / IPv6 /64) has at most
+MAX_LOOKUPS_PER_CLIENT lookups in flight, so a few clients cannot starve everybody else's confirmations.
+getTransaction results are cached per RPC client (a confirmed transaction does not change), recent misses briefly.
 """
 from __future__ import annotations
 
@@ -47,7 +51,9 @@ log = logging.getLogger("fv.txverify")
 
 # getTransaction is retried after each delay: 4 lookups spread over ≈ 4 s, then 503 tx_not_visible.
 TX_RETRY_DELAYS: tuple[float, ...] = (1.0, 1.5, 1.5)
-MAX_CONCURRENT_LOOKUPS = 8
+MAX_CONCURRENT_LOOKUPS = 8          # RPC calls in flight for the whole process
+MAX_LOOKUPS_PER_CLIENT = 2          # lookups in flight per client (rate-limit key)
+BUSY_RETRY_AFTER_S = 2
 TX_CACHE_SIZE = 512
 TX_CACHE_TTL_S = 600.0
 MISS_CACHE_TTL_S = 2.0
@@ -109,11 +115,18 @@ ORDER_LEN = 244
 
 
 class TxRejected(Exception):
-    """A reported transaction does not back the event. `detail` is the client-facing code, `reason` is for logs."""
+    """
+    A reported transaction does not back the event. `detail` is the client-facing code, `reason` is for logs,
+    `retry_after` (seconds) becomes a Retry-After header.
+    """
 
-    def __init__(self, status: int, detail: str, reason: str = ""):
+    def __init__(self, status: int, detail: str, reason: str = "", retry_after: int | None = None):
         super().__init__(f"{detail}: {reason}" if reason else detail)
-        self.status, self.detail, self.reason = status, detail, reason
+        self.status, self.detail, self.reason, self.retry_after = status, detail, reason, retry_after
+
+    @property
+    def headers(self) -> dict[str, str] | None:
+        return {"Retry-After": str(self.retry_after)} if self.retry_after else None
 
 
 def _mismatch(reason: str) -> TxRejected:
@@ -403,6 +416,33 @@ _SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_LOOKUPS)
 _CACHE_LOCK = threading.Lock()
 
 
+class _InFlight:
+    """Lookups in flight per client key."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.counts: dict[str, int] = {}
+
+    def acquire(self, key: str, limit: int) -> bool:
+        with self.lock:
+            n = self.counts.get(key, 0)
+            if n >= limit:
+                return False
+            self.counts[key] = n + 1
+            return True
+
+    def release(self, key: str) -> None:
+        with self.lock:
+            n = self.counts.get(key, 0) - 1
+            if n > 0:
+                self.counts[key] = n
+            else:
+                self.counts.pop(key, None)
+
+
+_CLIENTS = _InFlight()
+
+
 def _cache_for(rpc) -> _TxCache:
     c = getattr(rpc, "_fv_tx_cache", None)
     if c is None:
@@ -417,7 +457,42 @@ def _cache_for(rpc) -> _TxCache:
     return c
 
 
-def fetch_transaction(rpc, signature: str) -> dict:
+def _rpc_call(fn, *args, first: bool):
+    """One RPC call under a global slot. No free slot: the first call answers 503 busy, a retry just skips its turn."""
+    if not _SLOTS.acquire(blocking=False):
+        if first:
+            raise TxRejected(503, "busy", "all transaction lookup slots are in use", retry_after=BUSY_RETRY_AFTER_S)
+        return None
+    try:
+        return fn(*args)
+    finally:
+        _SLOTS.release()
+
+
+def _signature_known(rpc, signature: str) -> bool | None:
+    """True / False = the cluster knows / does not know the signature; None = cannot tell (RPC error, no such method)."""
+    statuses = getattr(rpc, "get_signature_statuses", None)
+    if statuses is None:
+        return None
+    try:
+        res = _rpc_call(statuses, [signature], first=True)
+    except RpcError as exc:
+        log.warning("getSignatureStatuses %s… failed: %s", signature[:12], exc)
+        return None
+    return bool(res and res[0])
+
+
+def _miss(cache: _TxCache, signature: str) -> None:
+    with cache.lock:
+        cache.misses[signature] = time.monotonic()
+        if len(cache.misses) > 4 * TX_CACHE_SIZE:
+            cutoff = time.monotonic() - MISS_CACHE_TTL_S
+            for k in [k for k, t in cache.misses.items() if t < cutoff]:
+                del cache.misses[k]
+
+
+def fetch_transaction(rpc, signature: str, client: str | None = None) -> dict:
+    """The getTransaction result for `signature` (meta present), or TxRejected. `client` = the caller's rate-limit key."""
     cache = _cache_for(rpc)
     now = time.monotonic()
     with cache.lock:
@@ -428,33 +503,36 @@ def fetch_transaction(rpc, signature: str) -> dict:
         missed = cache.misses.get(signature)
         if missed is not None and now - missed < MISS_CACHE_TTL_S:
             raise TxRejected(503, "tx_not_visible", f"{signature[:12]}… not found a moment ago")
-    if not _SLOTS.acquire(blocking=False):
-        raise TxRejected(429, "rate_limited", "too many transaction lookups in flight")
+    if client is not None and not _CLIENTS.acquire(client, MAX_LOOKUPS_PER_CLIENT):
+        raise TxRejected(429, "rate_limited", f"{MAX_LOOKUPS_PER_CLIENT} lookups of this client in flight", retry_after=1)
     try:
-        delays = TX_RETRY_DELAYS
-        for attempt in range(len(delays) + 1):
-            try:
-                res = rpc.get_transaction(signature)
-            except RpcError as exc:
-                log.warning("getTransaction %s… failed: %s", signature[:12], exc)
-                res = None
-            if isinstance(res, dict) and isinstance(res.get("meta"), dict):   # meta null = status not available yet
-                with cache.lock:
-                    cache.hits[signature] = (time.monotonic(), res)
-                    cache.misses.pop(signature, None)
-                    while len(cache.hits) > TX_CACHE_SIZE:
-                        cache.hits.popitem(last=False)
-                return res
-            if attempt < len(delays):
-                time.sleep(delays[attempt])
+        return _lookup(rpc, signature, cache)
     finally:
-        _SLOTS.release()
-    with cache.lock:
-        cache.misses[signature] = time.monotonic()
-        if len(cache.misses) > 4 * TX_CACHE_SIZE:
-            cutoff = time.monotonic() - MISS_CACHE_TTL_S
-            for k in [k for k, t in cache.misses.items() if t < cutoff]:
-                del cache.misses[k]
+        if client is not None:
+            _CLIENTS.release(client)
+
+
+def _lookup(rpc, signature: str, cache: _TxCache) -> dict:
+    if _signature_known(rpc, signature) is False:
+        _miss(cache, signature)
+        raise TxRejected(503, "tx_not_visible", f"{signature[:12]}… unknown to the cluster")
+    delays = TX_RETRY_DELAYS
+    for attempt in range(len(delays) + 1):
+        if attempt:
+            time.sleep(delays[attempt - 1])         # no slot is held while waiting
+        try:
+            res = _rpc_call(rpc.get_transaction, signature, first=attempt == 0)
+        except RpcError as exc:
+            log.warning("getTransaction %s… failed: %s", signature[:12], exc)
+            res = None
+        if isinstance(res, dict) and isinstance(res.get("meta"), dict):   # meta null = status not available yet
+            with cache.lock:
+                cache.hits[signature] = (time.monotonic(), res)
+                cache.misses.pop(signature, None)
+                while len(cache.hits) > TX_CACHE_SIZE:
+                    cache.hits.popitem(last=False)
+            return res
+    _miss(cache, signature)
     raise TxRejected(503, "tx_not_visible", f"{signature[:12]}… not found after {len(delays) + 1} lookups")
 
 
@@ -483,8 +561,8 @@ def _fetch_accounts(rpc, accounts: list[str]) -> dict[str, bytes | None]:
     return dict(zip(uniq, datas))
 
 
-def verify_transaction(rpc, signature: str, actor: str, exp: Expectation) -> VerifiedTx:
-    res = fetch_transaction(rpc, signature)
+def verify_transaction(rpc, signature: str, actor: str, exp: Expectation, client: str | None = None) -> VerifiedTx:
+    res = fetch_transaction(rpc, signature, client)
     tx = parse_transaction(res)
     if tx.signatures and signature not in tx.signatures:
         raise _mismatch("signature is not part of the returned transaction")

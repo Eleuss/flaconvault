@@ -50,16 +50,16 @@ def ar_client(settings, monkeypatch):
         yield c
 
 
-def _upload(client, frames: list[bytes], content_type="image/jpeg"):
+def _upload(client, frames: list[bytes], content_type="image/jpeg", nonce: str | None = None):
     files = [("files", (f"frame{i}.jpg", io.BytesIO(b), content_type)) for i, b in enumerate(frames)]
-    r = post_media(client, files=files)
+    r = post_media(client, files=files, nonce=nonce)
     assert r.status_code == 200, r.text
     return r.json()
 
 
-def _verify(client, uid, media_hash, **over):
+def _verify(client, uid, media_hash, nonce: str | None = None, **over):
     tap = client.post("/api/dev/tap", json={"uid": uid}).json()
-    nonce = client.post("/api/session", json={}).json()["nonce"]
+    nonce = nonce or client.post("/api/session", json={}).json()["nonce"]
     body = {"uid": tap["uid"], "ctr": tap["ctrHex"], "cmac": tap["cmac"], "nonce": nonce, "role": 1, "tier": 2,
             "indicators": {"heat": 0, "humidity": 0, "uv": 3}, "heatLevels": [1, 1, 0, 0, 0, 0], "fill": 92, "mediaHash": media_hash,
             "attester": SELLER, "platform": "SIMULATOR", "location": {"country": "DE", "city": "Wickede"}}
@@ -69,29 +69,50 @@ def _verify(client, uid, media_hash, **over):
     return v
 
 
-def test_media_single_image_and_cache(ar_client, settings):
+def _scan_with_media(client, frames, content_type="image/jpeg", sig_tag="T"):
+    """Upload under the session nonce, sign the scan with that nonce, confirm it on chain."""
+    nonce = client.post("/api/session", json={}).json()["nonce"]
+    m = _upload(client, frames, content_type, nonce=nonce)
+    tag = client.post("/api/dev/tag", json={"serial": SERIAL, "kind": 1}).json()
+    v = _verify(client, tag["uid"], m["sha256"], nonce=nonce)
+    client.rpc.scan_tx(sig(sig_tag), v, SELLER)
+    e = client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig(sig_tag)}).json()
+    assert e["status"] == "confirmed", e
+    return m, v, e
+
+
+def test_media_is_archived_only_after_its_scan_is_confirmed(ar_client, settings):
     data = b"\xff\xd8\xff\xe0" + b"jpeg-bytes" * 50
-    m = _upload(ar_client, [data])
+    nonce = ar_client.post("/api/session", json={}).json()["nonce"]
+    m = _upload(ar_client, [data], nonce=nonce)
     assert m["sha256"] == "0x" + hashlib.sha256(data).hexdigest() and m["bytes"] == len(data) and m["files"] == 1
-    assert m["ar"] == "ar://" + ar_client.fake.calls[0]["id"] and m["url"] == "https://gateway.irys.xyz/" + ar_client.fake.calls[0]["id"]
-    assert m["arPreview"] == m["url"]                     # a single image is its own thumbnail
-    call = ar_client.fake.calls[0]
-    assert call["tags"]["Content-Type"] == "image/jpeg" and call["tags"]["FV-Sha256"] == m["sha256"][2:] and call["sha256"] == m["sha256"][2:]
-    assert call["args"][:6] == ["--key", str(Path.home() / ".config/solana/id.json"), "--network", "devnet", "--rpc", settings.solana_rpc_public]
-    # same bytes again → served from the media table, no second upload
+    assert m["ar"] is None and m["url"] is None and ar_client.fake.calls == []      # an upload alone spends nothing
+    tag = ar_client.post("/api/dev/tag", json={"serial": SERIAL, "kind": 1}).json()
+    v = _verify(ar_client, tag["uid"], m["sha256"], nonce=nonce)
+    assert ar_client.fake.calls == []                                                 # signed, not yet anchored
+    ar_client.rpc.scan_tx(sig("A1"), v, SELLER)
+    e = ar_client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("A1")}).json()
+    media_call, bundle_call = ar_client.fake.calls
+    assert media_call["tags"]["Content-Type"] == "image/jpeg" and media_call["tags"]["FV-Sha256"] == m["sha256"][2:]
+    assert media_call["sha256"] == m["sha256"][2:] and media_call["tags"]["App-Type"] == "seal-frames"
+    assert media_call["args"][:6] == ["--key", str(Path.home() / ".config/solana/id.json"), "--network", "devnet", "--rpc",
+                                      settings.solana_rpc_public]
+    assert bundle_call["tags"]["App-Type"] == "scanproof-bundle"
+    assert e["arMedia"] == "https://gateway.irys.xyz/" + media_call["id"]            # a single image is its own thumbnail
+    # the same bytes again (another session): the archived links come back, nothing is uploaded twice
     m2 = _upload(ar_client, [data])
-    assert m2 == m and len(ar_client.fake.calls) == 1
+    assert m2["ar"] == "ar://" + media_call["id"] and m2["url"] == e["arMedia"] and len(ar_client.fake.calls) == 2
 
 
-def test_media_multiple_frames_uploads_first_frame_as_preview(ar_client, settings):
+def test_media_multiple_frames_archive_the_first_frame_as_preview(ar_client, settings):
     frames = [b"\xff\xd8frame-A" * 30, b"\xff\xd8frame-B" * 30, b"\xff\xd8frame-C" * 30]
-    m = _upload(ar_client, frames)
+    m, v, e = _scan_with_media(ar_client, frames)
     assert m["files"] == 3 and m["bytes"] == sum(map(len, frames))
-    assert len(ar_client.fake.calls) == 2
-    whole, preview = ar_client.fake.calls
+    whole, preview, bundle = ar_client.fake.calls
     assert whole["sha256"] == m["sha256"][2:] and whole["tags"]["App-Type"] == "seal-frames"
     assert preview["sha256"] == hashlib.sha256(frames[0]).hexdigest() and preview["tags"]["Content-Type"] == "image/jpeg"
-    assert m["arPreview"] == "https://gateway.irys.xyz/" + preview["id"] and m["arPreview"] != m["url"]
+    assert bundle["tags"]["App-Type"] == "scanproof-bundle"
+    assert e["arMedia"] == "https://gateway.irys.xyz/" + preview["id"]
     assert (settings.media_dir / (m["sha256"][2:] + ".preview.jpg")).read_bytes() == frames[0]
 
 
@@ -102,38 +123,44 @@ def test_media_non_image_is_rejected_before_any_upload(ar_client):
 
 def test_media_preview_extension_comes_from_the_whitelist(ar_client, settings):
     frames = [b"\x89PNGframe-A" * 30, b"\x89PNGframe-B" * 30]
+    nonce = ar_client.post("/api/session", json={}).json()["nonce"]
     files = [("files", (f"evil{i}.html", io.BytesIO(b), "image/png; charset=../../x")) for i, b in enumerate(frames)]
-    m = post_media(ar_client, files=files).json()
-    assert (settings.media_dir / (m["sha256"][2:] + ".preview.png")).read_bytes() == frames[0]
-    assert ar_client.fake.calls[0]["tags"]["Content-Type"] == "image/png"
-
-
-def test_verify_bundle_carries_ar_and_events_archives_bundle(ar_client):
-    frames = [b"\xff\xd8frame-1" * 40, b"\xff\xd8frame-2" * 40]
-    m = _upload(ar_client, frames)
+    m = post_media(ar_client, files=files, nonce=nonce).json()
     tag = ar_client.post("/api/dev/tag", json={"serial": SERIAL, "kind": 1}).json()
-    v = _verify(ar_client, tag["uid"], m["sha256"])
+    _verify(ar_client, tag["uid"], m["sha256"], nonce=nonce)
+    assert (settings.media_dir / (m["sha256"][2:] + ".preview.png")).read_bytes() == frames[0]
+    assert sorted(p.name for p in settings.media_dir.iterdir() if p.is_file()) == sorted(
+        [m["sha256"][2:] + ".bin", m["sha256"][2:] + ".preview.png"])
+
+
+def test_verify_bundle_and_events_archive_media_and_bundle(ar_client):
+    frames = [b"\xff\xd8frame-1" * 40, b"\xff\xd8frame-2" * 40]
+    nonce = ar_client.post("/api/session", json={}).json()["nonce"]
+    m = _upload(ar_client, frames, nonce=nonce)
+    tag = ar_client.post("/api/dev/tag", json={"serial": SERIAL, "kind": 1}).json()
+    v = _verify(ar_client, tag["uid"], m["sha256"], nonce=nonce)
     b = v["bundle"]
-    assert b["media"] == [{"type": "SEAL_FRAMES", "sha256": m["sha256"], "ar": m["ar"]}]
-    assert proof.bundle_hash(proof.canonical_json(b)).hex() == v["bundleHash"][2:]      # hash covers the ar link
-    n_before = len(ar_client.fake.calls)
+    assert b["media"] == [{"type": "SEAL_FRAMES", "sha256": m["sha256"], "ar": None}]   # not archived before the anchor
+    assert proof.bundle_hash(proof.canonical_json(b)).hex() == v["bundleHash"][2:]
+    assert ar_client.fake.calls == []
 
     ar_client.rpc.scan_tx(sig("T"), v, SELLER)
     e = ar_client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("T"), "serial": SERIAL, "type": 2}).json()
     assert e["status"] == "confirmed" and e["txSig"] == sig("T")
-    assert len(ar_client.fake.calls) == n_before + 1
+    assert len(ar_client.fake.calls) == 3                          # frames, first-frame preview, bundle
     call = ar_client.fake.calls[-1]
     assert call["tags"]["Content-Type"] == "application/json" and call["tags"]["App-Type"] == "scanproof-bundle"
     assert call["tags"]["FV-Serial"] == SERIAL and call["tags"]["FV-Bundle-Hash"] == v["bundleHash"][2:]
     assert call["sha256"] == v["bundleHash"][2:]                  # exactly the canonical bytes
     assert json.loads(call["text"]) == b and call["text"] == proof.canonical_json(b)
-    assert e["arBundle"] == "ar://" + call["id"] and e["arMedia"] == m["arPreview"]
+    preview_url = "https://gateway.irys.xyz/" + ar_client.fake.calls[1]["id"]
+    assert e["arBundle"] == "ar://" + call["id"] and e["arMedia"] == preview_url
     ev = next(x for x in ar_client.get(f"/api/passport/{SERIAL}").json()["events"] if x["id"] == v["eventId"])
-    assert ev["arBundle"] == e["arBundle"] and ev["arMedia"] == m["arPreview"]
+    assert ev["arBundle"] == e["arBundle"] and ev["arMedia"] == preview_url
     # reporting the tx again is idempotent — no second upload
     again = ar_client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("T")})
     assert again.status_code == 200 and again.json()["id"] == e["id"]
-    assert len(ar_client.fake.calls) == n_before + 1
+    assert len(ar_client.fake.calls) == 3
 
 
 def test_tier1_scan_without_media_gets_bundle_only(ar_client):
@@ -150,10 +177,11 @@ def test_disabled_never_calls_sidecar(chain_client, monkeypatch, settings):
     calls = []
     monkeypatch.setattr(aw, "_run_sidecar", lambda args, s: calls.append(args) or {"id": "SHOULD-NOT-HAPPEN"})
     assert settings.arweave is False and aw.enabled(settings) is False
-    m = _upload(client, [b"\xff\xd8x" * 10, b"\xff\xd8y" * 10])
+    nonce = client.post("/api/session", json={}).json()["nonce"]
+    m = _upload(client, [b"\xff\xd8x" * 10, b"\xff\xd8y" * 10], nonce=nonce)
     assert m["ar"] is None and m["url"] is None and m["arPreview"] is None and m["sha256"].startswith("0x")
     tag = client.post("/api/dev/tag", json={"serial": SERIAL}).json()
-    v = _verify(client, tag["uid"], m["sha256"])
+    v = _verify(client, tag["uid"], m["sha256"], nonce=nonce)
     assert v["bundle"]["media"][0]["ar"] is None
     client.rpc.scan_tx(sig("V"), v, SELLER)
     e = client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("V")}).json()

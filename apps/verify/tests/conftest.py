@@ -187,12 +187,13 @@ def program_logs(program: str, *events: bytes, depth: int = 1) -> list[str]:
 
 
 def order_bytes(*, serial: str, seller: str, buyer: str = SYSTEM_PROGRAM, asset: str = DEFAULT_ASSET, price: int = 480_000_000,
-                state: int = 0, seller_scan: str = SYSTEM_PROGRAM, buyer_scan: str = SYSTEM_PROGRAM) -> bytes:
+                state: int = 0, seller_scan: str = SYSTEM_PROGRAM, buyer_scan: str = SYSTEM_PROGRAM,
+                listed_at: int = 1789990000) -> bytes:
     from fv.txverify import ORDER_DISC
     from solders.pubkey import Pubkey
     pk = lambda s: bytes(Pubkey.from_string(s))  # noqa: E731
     return (ORDER_DISC + pk(passport_pda(serial)) + pk(seller) + pk(buyer) + pk(asset) + struct.pack("<Q", price) + bytes([state])
-            + struct.pack("<qqq", 1790000000, 0, 0) + pk(seller_scan) + pk(buyer_scan) + struct.pack("<q", 604800)
+            + struct.pack("<qqq", listed_at, 0, 0) + pk(seller_scan) + pk(buyer_scan) + struct.pack("<q", 604800)
             + bytes([0, 255, 254]))
 
 
@@ -248,25 +249,36 @@ class FakeRpc:
         return self.add_tx(sig, signers=[signer], instructions=[
             (PROGRAM_ID, "mark_seal_dead", [registry_pda(), passport_pda(serial), seal_pda(uid_hex), signer], b"")], **kw)
 
-    def scan_tx(self, sig: str, v: dict, attester: str, *, counter: int | None = None, tier: int | None = None,
-                role: int | None = None, site_id: int = 0, **kw) -> str:
-        """record_scan for a /api/verify response `v` (Ed25519 verify ix + record_scan, as the web builds it)."""
+    @staticmethod
+    def record_scan_args(v: dict, *, counter: int | None = None, tier: int | None = None, role: int | None = None,
+                         site_id: int = 0) -> bytes:
+        """Borsh RecordScanArgs for a /api/verify response `v` (the counter argument may be overridden)."""
         from fv import proof
-        from fv.chain import pda_passport, pda_scan, pda_seal
-        seal = pda_seal(PROGRAM_ID, bytes.fromhex(v["uidHash"][2:]))
-        ctr = v["counter"] if counter is None else counter
-        scan = pda_scan(PROGRAM_ID, seal, ctr)
-        passport = pda_passport(PROGRAM_ID, bytes.fromhex(v["serialHash"][2:]))
         m = proof.parse_message(bytes.fromhex(v["msgHex"]))
         att = (v.get("bundle") or {}).get("attester") or {}
-        args = (struct.pack("<I", ctr)
+        ctr = v["counter"] if counter is None else counter
+        return (struct.pack("<I", ctr)
                 + bytes([att.get("tier", 1) if tier is None else tier, att.get("role", 0) if role is None else role,
                          m["tamper"], m["uv"], m["hum"], m["heat"], v["heatMask"], m["fill"]])
                 + struct.pack("<H", site_id) + m["media_hash"] + bytes.fromhex(v["bundleHash"][2:]) + m["nonce"]
                 + struct.pack("<q", m["ts"]) + bytes([v["keyId"]]))
+
+    @staticmethod
+    def record_scan_accounts(v: dict, attester: str, *, counter: int | None = None) -> list[str]:
+        """record_scan's accounts in IDL order for `v` (ScanProof PDA of `counter`, default the scan's own)."""
+        from fv.chain import pda_passport, pda_scan, pda_seal
+        seal = pda_seal(PROGRAM_ID, bytes.fromhex(v["uidHash"][2:]))
+        scan = pda_scan(PROGRAM_ID, seal, v["counter"] if counter is None else counter)
+        passport = pda_passport(PROGRAM_ID, bytes.fromhex(v["serialHash"][2:]))
+        return [registry_pda(), str(passport), str(seal), str(scan), attester, SYSVAR_IX, SYSTEM_PROGRAM]
+
+    def scan_tx(self, sig: str, v: dict, attester: str, *, counter: int | None = None, tier: int | None = None,
+                role: int | None = None, site_id: int = 0, **kw) -> str:
+        """record_scan for a /api/verify response `v` (Ed25519 verify ix + record_scan, as the web builds it)."""
+        args = self.record_scan_args(v, counter=counter, tier=tier, role=role, site_id=site_id)
         return self.add_tx(sig, signers=[attester], instructions=[
             (ED25519_PROGRAM, "", [], b""),
-            (PROGRAM_ID, "record_scan", [registry_pda(), str(passport), str(seal), str(scan), attester, SYSVAR_IX, SYSTEM_PROGRAM], args)],
+            (PROGRAM_ID, "record_scan", self.record_scan_accounts(v, attester, counter=counter), args)],
             **kw)
 
     def escrow_tx(self, sig: str, ix: str, serial: str, actor: str, *, seller: str | None = None, buyer: str | None = None,

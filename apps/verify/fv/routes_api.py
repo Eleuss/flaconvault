@@ -1,7 +1,6 @@
 """/health, /api/session, /api/preview, /api/verify, /api/media, /api/events, /api/passport(s), /api/attester."""
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -14,22 +13,22 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from fv import arweave, proof, txverify
+from fv import arweave, media_store, proof, txverify
 from fv.chain import RpcError, pda_passport, pda_scan, pda_seal
 from fv.config import Settings
-from fv.db import (bump_escrow_counts, consume_nonce, event_actors, find_event, get_attester, get_event, get_media, get_nonce,
-                   get_passport, get_seal_by_hash, get_seal_by_uid, insert_event, insert_nonce, insert_tap_random_id,
-                   list_passports_confirmed, mark_seal_dead, now, open_seal_dead_report, purge_nonces,
+from fv.db import (ORDER_DISPUTE, ORDER_RELEASED, consume_nonce, event_actors, find_event, get_attester, get_event, get_media,
+                   get_nonce, get_passport, get_seal_by_hash, get_seal_by_uid, insert_event, insert_nonce, insert_tap_random_id,
+                   list_passports_confirmed, mark_seal_dead, now, open_seal_dead_report, purge_nonces, record_escrow_outcome,
                    reserve_nonce_media, seals_for, set_event_resume_hash, update_event_payload, upsert_attester,
-                   upsert_media, upsert_passport, upsert_seal, void_passport, transaction)
+                   upsert_passport, upsert_seal, void_passport, transaction)
 from fv.deps import get_conn, get_rpc, get_settings
 from fv.enums import (EventType, Grade, Indicator, NONCE_INVALID, NO_RESPONSE, Role, SEAL_KIND_NAMES, SealKind, Tamper, Tier,
                       VALID)
-from fv.ratelimit import rate_limit, report_allowed
-from fv.routes_chain import is_registry_partner, registry_info, registry_partners
+from fv.ratelimit import client_key, rate_limit, report_allowed
+from fv.routes_chain import is_registry_partner, registry_partners
 from fv.service import (adopt_tap, apply_confirmed_scan, authenticate_tap, check_tap, new_resume_token, token_matches)
 from fv.strings import tap_message
-from fv.views import attester_view, event_view, passport_list_view, passport_metadata, passport_view, uid_tail
+from fv.views import attester_view, clean_text, event_view, passport_list_view, passport_metadata, passport_view, uid_tail
 
 log = logging.getLogger("fv.api")
 router = APIRouter()
@@ -53,8 +52,19 @@ class Indicators(BaseModel):
 
 
 class Location(BaseModel):
+    """Where a scan was made, as the scanner states it (only SCANs from /api/verify keep a location)."""
     country: str | None = Field(default=None, max_length=2)
     city: str | None = Field(default=None, max_length=80)
+
+    @field_validator("country")
+    @classmethod
+    def _country(cls, v):
+        return v.upper() if isinstance(v, str) and re.fullmatch(r"[A-Za-z]{2}", v) else None
+
+    @field_validator("city")
+    @classmethod
+    def _city(cls, v):
+        return clean_text(v, 80)            # printable, whitespace collapsed (no bidi overrides or control characters)
 
 
 def _short_ctr(v):
@@ -142,6 +152,7 @@ def session(conn=Depends(get_conn), settings: Settings = Depends(get_settings)):
     with transaction(conn):
         insert_nonce(conn, nonce, ts, ts + settings.nonce_ttl_s)
         purge_nonces(conn, ts)
+    media_store.maybe_purge(conn, settings, ts)     # staged uploads of expired / consumed nonces
     return {"nonce": "0x" + nonce, "issuedAt": ts, "expiresAt": ts + settings.nonce_ttl_s, "ttl": settings.nonce_ttl_s}
 
 
@@ -195,6 +206,18 @@ def _needs_partner(tier: int, role: int) -> bool:
 @router.post("/api/verify", dependencies=[Depends(rate_limit)])
 def verify(body: VerifyBody, request: Request, conn=Depends(get_conn), settings: Settings = Depends(get_settings),
            rpc=Depends(get_rpc)):
+    """
+    Sign a genuine, fresh tap (or adopt one /t consumed) as a pending SCAN. Contract notes (C1 / M4):
+      * a certified scan (tier ≥ 3, or role VAULT / PARTNER) is only signed for an `attester` that is a registry
+        partner — the claim must be sent here, also when the scan will be anchored later from another browser via the
+        resume link (e.g. iPhone Safari without a wallet: the partner's wallet address has to be entered); otherwise
+        403 not_partner, and the tap is not consumed;
+      * the claimed attester is the only wallet whose record_scan confirms the scan (and the only one whose failed tx
+        marks it failed); a scan without a claimed attester is confirmed by whichever wallet anchors the signature;
+      * VALID answers carry `resumeToken` (GET /api/verify/{eventId}?token=… while pending); a dead seal answers
+        NO_RESPONSE without a signature;
+      * the media upload staged under `nonce` with this mediaHash is kept, everything else staged under it is deleted.
+    """
     ts = now()
     pub_hex = proof.public_key(settings.server_seed).hex()
     heat_mask = proof.heat_levels_to_mask(body.heatLevels)
@@ -277,6 +300,11 @@ def verify(body: VerifyBody, request: Request, conn=Depends(get_conn), settings:
             verdict=VALID, server_ts=ts, sig_b=sig, bundle_ts=ts, note=body.note)
         b_hash = proof.bundle_hash(proof.canonical_json(bundle))
         consume_nonce(conn, nonce_b.hex(), ts)
+        # the upload this scan commits to leaves staging; anything else staged under the nonce is deleted
+        if body.tier >= 2:
+            media_store.promote(conn, settings, nonce_b.hex(), media_hash.hex(), ts)
+        else:
+            media_store.discard(settings, nonce_b.hex())
         payload = {**bundle, "grade": grade, "reviewRecommended": review, "msgHex": msg.hex(), "bundleHash": proof.hex0x(b_hash)}
         # SCAN(pending): the claimed attester lives only in the signed bundle — actor and label stay empty, and passport
         # grade, stats and attester rows change only once the scan is confirmed on chain (POST /api/events with the
@@ -308,7 +336,7 @@ def resume_verify(event_id: int = Path(ge=1, le=MAX_ID), token: str | None = Que
 MEDIA_MAX_FILES = 6                                   # per upload and per session nonce
 MEDIA_MAX_BYTES = 8 * 1024 * 1024                     # per file
 MEDIA_MAX_BODY = MEDIA_MAX_FILES * MEDIA_MAX_BYTES + 256 * 1024   # whole multipart body, checked before parsing
-MEDIA_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}   # content type → stored preview extension
+MEDIA_TYPES = media_store.MEDIA_TYPES                 # content type → stored preview extension
 
 
 def _media_nonce(raw) -> str:
@@ -325,13 +353,17 @@ async def media(request: Request, conn=Depends(get_conn), settings: Settings = D
     """
     Seal frames of a scan: multipart `file`/`files` (≤ 6, ≤ 8 MB each, image/jpeg|png|webp) plus `nonce`, the current
     session nonce (unexpired, not yet used by /api/verify; at most 6 files per nonce). The body size is checked from
-    Content-Length before anything is read.
+    Content-Length before anything is read, together with the free space and the byte budgets (fv.media_store: 507
+    storage_full · 429 media_limited · 503 media_busy). The upload is only *staged* under its nonce: it is kept when a
+    VALID /api/verify consumes that nonce with this mediaHash, and deleted otherwise once the nonce has expired. Nothing
+    is archived to Arweave here (that happens when the scan is confirmed).
     """
     cl = request.headers.get("content-length")
     if cl is None or not cl.isdigit():
         raise HTTPException(411, "Content-Length required")
     if int(cl) > MEDIA_MAX_BODY:
         raise HTTPException(413, f"upload too large (at most {MEDIA_MAX_FILES} × {MEDIA_MAX_BYTES // (1024 * 1024)} MB)")
+    media_store.check_budget(request, settings, int(cl))
     try:
         form = await request.form(max_files=MEDIA_MAX_FILES + 1, max_fields=8, max_part_size=4096)
     except StarletteHTTPException as exc:
@@ -343,6 +375,7 @@ async def media(request: Request, conn=Depends(get_conn), settings: Settings = D
     n = await run_in_threadpool(get_nonce, conn, nonce_hex)
     if not n or n["used_at"] is not None or n["expires_at"] < ts:
         raise HTTPException(403, "media_nonce_invalid")
+    await run_in_threadpool(media_store.maybe_purge, conn, settings, ts)
     uploads = [u for u in (*form.getlist("file"), *form.getlist("files")) if isinstance(u, UploadFile)]
     if not uploads:
         raise HTTPException(422, "no file(s) uploaded (multipart field 'file' or 'files')")
@@ -351,85 +384,51 @@ async def media(request: Request, conn=Depends(get_conn), settings: Settings = D
     types = [(up.content_type or "").split(";")[0].strip().lower() for up in uploads]
     if any(t not in MEDIA_TYPES for t in types):
         raise HTTPException(415, "only image/jpeg, image/png and image/webp are accepted")
-    h = hashlib.sha256()
-    chunks: list[bytes] = []
-    total = 0
-    for up in uploads:
-        data = await up.read(MEDIA_MAX_BYTES + 1)
-        if len(data) > MEDIA_MAX_BYTES:
-            raise HTTPException(413, f"each file must be at most {MEDIA_MAX_BYTES // (1024 * 1024)} MB")
-        h.update(data)
-        chunks.append(data)
-        total += len(data)
-    digest = h.hexdigest()
     content_type = types[0]                 # whitelisted above — never the raw client string
+    try:
+        staged = await run_in_threadpool(media_store.stage, settings, nonce_hex, uploads, MEDIA_MAX_BYTES)
+    except media_store.FileTooLarge as exc:
+        raise HTTPException(413, f"each file must be at most {MEDIA_MAX_BYTES // (1024 * 1024)} MB") from exc
 
     def _reserve() -> str:
         with transaction(conn):
             return reserve_nonce_media(conn, nonce_hex, len(uploads), MEDIA_MAX_FILES, ts)
 
     budget = await run_in_threadpool(_reserve)
-    if budget == "full":
-        raise HTTPException(413, f"at most {MEDIA_MAX_FILES} files per session")
     if budget != "ok":
+        media_store.drop_part(staged)
+        if budget == "full":
+            raise HTTPException(413, f"at most {MEDIA_MAX_FILES} files per session")
         raise HTTPException(403, "media_nonce_invalid")
-
-    def _write() -> None:
-        settings.media_dir.mkdir(parents=True, exist_ok=True)
-        path = settings.media_dir / f"{digest}.bin"
-        if not path.exists():
-            with open(path, "wb") as f:
-                for c in chunks:
-                    f.write(c)
-
-    await run_in_threadpool(_write)
-    path = settings.media_dir / f"{digest}.bin"
-
-    def _view(row):
-        return {"sha256": "0x" + digest, "ar": row["ar"], "url": row["url"], "arPreview": row["ar_preview"], "bytes": total, "files": len(uploads)}
-
-    existing = await run_in_threadpool(get_media, conn, digest)
-    if existing and existing["ar"]:
-        return _view(existing)              # already archived — never upload the same bytes twice
-
-    ar = url = preview_url = None
-    if arweave.enabled(settings):
-        res = await run_in_threadpool(arweave.upload_file, path, content_type, settings, {"App-Type": "seal-frames", "FV-Sha256": digest})
-        if res:
-            ar, url = res["ar"], res["url"]
-            if len(uploads) > 1:            # several frames → the first one alone as a viewable thumbnail
-                ppath = settings.media_dir / f"{digest}.preview.{MEDIA_TYPES[content_type]}"
-                await run_in_threadpool(ppath.write_bytes, chunks[0])
-                pres = await run_in_threadpool(arweave.upload_file, ppath, content_type, settings, {"App-Type": "seal-frame-preview", "FV-Sha256": digest})
-                preview_url = pres["url"] if pres else None
-            else:
-                preview_url = url
-
-    def _upsert():
-        with transaction(conn):
-            return upsert_media(conn, sha256_hex=digest, bytes_=total, files=len(uploads), content_type=content_type, ar=ar,
-                                url=url, ar_preview=preview_url, created_at=now())
-
-    return _view(await run_in_threadpool(_upsert))
+    await run_in_threadpool(media_store.finalize, settings, nonce_hex, staged, content_type)
+    media_store.charge(request, staged["bytes"])
+    digest = staged["sha256"]
+    row = await run_in_threadpool(get_media, conn, digest)      # the same bytes kept (and maybe archived) by an earlier scan
+    return {"sha256": "0x" + digest, "ar": row["ar"] if row else None, "url": row["url"] if row else None,
+            "arPreview": row["ar_preview"] if row else None, "bytes": staged["bytes"], "files": len(uploads)}
 
 
 # ---------- events ----------
 #
 # Contract (the web client depends on it):
-#   new event   {serial, type, txSig, actor, payload?, sealUidHash?, location?}   types MINT, SEAL_ATTACH, LIST…DISPUTE,
+#   new event   {serial, type, txSig, actor, payload?, sealUidHash?}   types MINT, SEAL_ATTACH, LIST…DISPUTE,
 #               SEAL_DEAD with txSig — the tx is verified on chain, the event is stored `confirmed`, ts = blockTime.
 #               Tx-backed facts (asset, binding hash, seal kind, price, counters, match, reason) come from the decoded
 #               instruction, its accounts and the program's Anchor events; the client payload only supplies what the
-#               chain cannot know (MINT brand/name/batch/siteId, SHIP carrier). Client labels are ignored.
-#               A MINT or SEAL_ATTACH that already exists is returned as stored (a passport is never renamed).
+#               chain cannot know (MINT brand/name/batch, SHIP carrier from a fixed list). The issuer label is the
+#               server's record of the verified issuer, never a client choice. A MINT or SEAL_ATTACH that already
+#               exists is returned as stored (a passport is never renamed); a tx that already backs an event of this
+#               serial and type is answered from the DB before any RPC call.
 #   confirm     {eventId, txSig, actor?}  (actor defaults to the scan's claimed attester) — a pending SCAN from
-#               /api/verify; attester, tier, role and site are taken from the verified record_scan.
+#               /api/verify; attester, tier, role and site are taken from the verified record_scan. A failed tx marks
+#               the scan failed only when it is the claimed attester's own; anyone else's failed tx changes nothing.
 #   report      {serial, type: SEAL_DEAD, nonce, sealUidHash?, payload?}  — no tx: stored `reported`, no effect; one open
 #               report per seal and day, a small per-IP budget, fixed payload (source, note, uidTail, reportedBy).
 #   errors      503 tx_not_visible (retry) · 422 tx_failed · 403 tx_mismatch · 403 not_issuer · 403 nonce_invalid ·
 #               409 event_confirmed · 503 chain_not_configured · 429 rate_limited · 429 report_limited ·
-#               404 passport/event/seal not found · 422 malformed.
-# Client `ts`, `status` and `actorLabel` are ignored.
+#               503 busy (all tx lookup slots in use; Retry-After) · 404 passport/event/seal not found · 422 malformed.
+# Client `ts`, `status`, `actorLabel` and `location` are ignored: a location belongs only to the scanner's own SCAN
+# (/api/verify), so whoever posts a public transaction first cannot write text into the timeline.
 
 MAX_PAYLOAD_BYTES = 16 * 1024
 REPORT_WINDOW_S = 24 * 3600
@@ -437,6 +436,11 @@ REPORT_SOURCES = ("nfc", "manual", "simulator", "t")
 # escrow DISPUTE_REASON_* (programs/escrow/src/constants.rs): TIMEOUT = the seller did not ship within the window
 DISPUTE_REASONS = {0: "admin", 1: "not shipped within the deadline", 2: "Seal not responding", 3: "scans disagree"}
 DISPUTE_REASON_MISMATCH = 3
+# SHIP carrier: one of these (case-insensitive) or nothing — the first poster of a public ship tx picks no free text
+CARRIERS = ("DHL", "DPD", "UPS", "GLS", "Hermes", "FedEx", "TNT", "Deutsche Post", "Österreichische Post", "Swiss Post",
+            "PostNL", "bpost", "La Poste", "Colissimo", "Chronopost", "Poste Italiane", "Correos", "Royal Mail", "USPS",
+            "Canada Post", "Japan Post", "Courier", "Hand delivery")
+_CARRIER_BY_KEY = {c.casefold(): c for c in CARRIERS}
 RESOLVED_TO_SELLER = "scans disagree · resolved by the escrow admin"
 RESOLVED_TO_BUYER = "scans disagree · refunded by the escrow admin"
 RELEASED_AFTER_TIMEOUT = "no receipt scan within the deadline"
@@ -484,12 +488,12 @@ def _expectation(conn, settings: Settings, etype: int, serial: str, *, seal_uid_
                                 passport=passport_pda, escrow=True, known_sellers=sellers, resolve_to_seller=to_seller)
 
 
-def _verify_tx(rpc, tx_sig: str, actor: str, exp: txverify.Expectation) -> txverify.VerifiedTx:
+def _verify_tx(rpc, tx_sig: str, actor: str, exp: txverify.Expectation, client: str | None = None) -> txverify.VerifiedTx:
     try:
-        return txverify.verify_transaction(rpc, tx_sig, actor, exp)
+        return txverify.verify_transaction(rpc, tx_sig, actor, exp, client=client)
     except txverify.TxRejected as exc:
         log.info("events: tx %s… rejected (%s) %s", tx_sig[:12], exc.detail, exc.reason)
-        raise HTTPException(exc.status, exc.detail) from exc
+        raise HTTPException(exc.status, exc.detail, headers=exc.headers) from exc
 
 
 def _check_issuer(conn, serial: str, passport: dict | None, actor: str) -> None:
@@ -525,12 +529,11 @@ def _seal_of_serial(conn, seal_uid_hash: str, serial: str) -> dict:
     return seal
 
 
-def _text(v, max_len: int) -> str | None:
-    """A short, printable client string (or None)."""
-    if not isinstance(v, str):
-        return None
-    v = " ".join(v.split())
-    return v[:max_len] if v and v.isprintable() else None
+_text = clean_text                         # a short, printable client string (or None)
+
+
+def _carrier(v) -> str | None:
+    return _CARRIER_BY_KEY.get(" ".join(v.split()).casefold()) if isinstance(v, str) else None
 
 
 def _usdc(base_units: int | None) -> int | float | None:
@@ -540,8 +543,11 @@ def _usdc(base_units: int | None) -> int | float | None:
     return whole if frac == 0 else base_units / 10 ** USDC_DECIMALS
 
 
+SYSTEM_PROGRAM_ID = "11111111111111111111111111111111"      # also Pubkey::default()
+
+
 def _scan_counter_at(rpc, address: str | None) -> int | None:
-    if not address or address == "11111111111111111111111111111111":
+    if not address or address == SYSTEM_PROGRAM_ID:
         return None
     try:
         sp = txverify.decode_scan_proof_checked(rpc.get_account_info(address))
@@ -551,7 +557,7 @@ def _scan_counter_at(rpc, address: str | None) -> int | None:
     return sp["counter"] if sp else None
 
 
-def _tx_payload(etype: int, vt: txverify.VerifiedTx, client: dict, *, serial: str, registry: dict | None, rpc) -> dict:
+def _tx_payload(etype: int, vt: txverify.VerifiedTx, client: dict, *, serial: str, rpc) -> dict:
     """
     The stored payload of a tx-backed event: chain facts from the verified instruction (args, accounts, Anchor events,
     Order account) plus the few client fields the chain cannot know. Raises 403 tx_mismatch if the args contradict the
@@ -565,14 +571,11 @@ def _tx_payload(etype: int, vt: txverify.VerifiedTx, client: dict, *, serial: st
         core_asset = vt.account("core_asset")     # programs since the Core-asset check: account 4 = the asset arg
         if core_asset is not None and core_asset != args.get("asset"):
             raise HTTPException(403, "tx_mismatch")
+        # no siteId / issuerLabel: registry sites are not bound to partners, so a client-picked site would let any
+        # poster label the passport with a shop's name; the issuer label is the server's record of the verified issuer
         out: dict[str, Any] = {"brand": _text(client.get("brand"), 200), "name": _text(client.get("name"), 200),
                                "batch": _text(client.get("batch"), 200), "asset": args.get("asset"),
                                "bindingHash": "0x" + args["bindingHash"] if args.get("bindingHash") else None}
-        site_id = client.get("siteId")
-        if isinstance(site_id, int) and not isinstance(site_id, bool) and registry and registry.get("source") == "chain":
-            site = next((s for s in registry.get("sites") or [] if s.get("siteId") == site_id), None)
-            if site:
-                out["siteId"], out["issuerLabel"] = site_id, site["label"]   # registry data, not the client's label
         return {k: v for k, v in out.items() if v is not None}
     if etype == EventType.SEAL_ATTACH:
         return {"kind": args.get("kind")}
@@ -588,7 +591,7 @@ def _tx_payload(etype: int, vt: txverify.VerifiedTx, client: dict, *, serial: st
         price = ev.get("price") or args.get("expectedPrice") or order.get("price")
         return {**base, "price": price, "priceUsdc": _usdc(price), "buyer": ev.get("buyer", vt.actor)}
     if etype == EventType.SHIP:
-        return {"order": vt.order_address, "carrier": _text(client.get("carrier"), 40),
+        return {"order": vt.order_address, "carrier": _carrier(client.get("carrier")),
                 "preShipScanCounter": _scan_counter_at(rpc, order.get("sellerScan"))}
     if etype == EventType.RECEIVE:
         ev = vt.event("ReceiptScanRecorded")
@@ -638,6 +641,20 @@ def _escrow_seller(vt: txverify.VerifiedTx) -> str | None:
     return ev.get("seller") or (vt.order or {}).get("seller") or vt.account("seller")
 
 
+def _record_escrow_outcome(conn, etype: int, vt: txverify.VerifiedTx, passport_pda: str, payload: dict, ts: int) -> None:
+    """A confirmed RELEASE / DISPUTE → the final state of its listing (escrow_orders: one source for the counters)."""
+    if not vt.order_address:
+        return
+    ev = vt.event("OrderReleased") or {}
+    order = dict(vt.order) if vt.order else None
+    if order and order.get("buyer") == SYSTEM_PROGRAM_ID:      # Pubkey::default() until reserved
+        order["buyer"] = None
+    record_escrow_outcome(conn, vt.order_address, state=ORDER_RELEASED if etype == EventType.RELEASE else ORDER_DISPUTE,
+                          at=vt.block_time, ts=ts, order=order, passport=passport_pda, seller=_escrow_seller(vt),
+                          buyer=ev.get("buyer") or vt.account("buyer"),
+                          price=payload.get("price") or payload.get("refunded"))
+
+
 @router.post("/api/events", dependencies=[Depends(rate_limit)])
 def events(body: EventBody, request: Request, conn=Depends(get_conn), settings: Settings = Depends(get_settings),
            rpc=Depends(get_rpc)):
@@ -648,7 +665,7 @@ def events(body: EventBody, request: Request, conn=Depends(get_conn), settings: 
     if tx_sig and not txverify.is_signature(tx_sig):
         raise HTTPException(422, "txSig must be a base58 transaction signature (64 bytes)")
     if body.eventId is not None:
-        return _confirm_event(body.eventId, tx_sig, actor, conn, settings, rpc)
+        return _confirm_event(body.eventId, tx_sig, actor, conn, settings, rpc, client=client_key(request))
 
     if not body.serial or body.type is None:
         raise HTTPException(422, "serial and type are required for a new event")
@@ -659,17 +676,20 @@ def events(body: EventBody, request: Request, conn=Depends(get_conn), settings: 
     client = dict(body.payload)
     if len(json.dumps(client, ensure_ascii=False)) > MAX_PAYLOAD_BYTES:
         raise HTTPException(413, "payload too large")
-    loc = body.location or Location()
     seal_uid_hash = _hash_arg(body.sealUidHash, "sealUidHash") if body.sealUidHash else None
 
     if etype == EventType.SCAN:
         raise HTTPException(422, "SCAN events come from /api/verify; confirm them with {eventId, txSig, actor}")
     if etype == EventType.SEAL_DEAD and not tx_sig:
-        return _report_seal_dead(request, body, conn, serial, client, seal_uid_hash, loc)
+        return _report_seal_dead(request, body, conn, serial, client, seal_uid_hash)
     if not tx_sig or not actor:
         raise HTTPException(422, f"txSig and actor are required for {EventType.name(etype)}")
 
     # ---- cheap checks before any RPC (repeated under the write lock below) ----
+    if etype not in (EventType.MINT, EventType.SEAL_ATTACH):
+        dup = _event_for_tx(conn, tx_sig, serial, etype)
+        if dup:
+            return event_view(dup)              # a repeat (or a replay) of a known tx costs no RPC call
     passport = get_passport(conn, serial)
     uid_b = None
     if etype == EventType.MINT:
@@ -702,17 +722,16 @@ def events(body: EventBody, request: Request, conn=Depends(get_conn), settings: 
         _seal_of_serial(conn, seal_uid_hash, serial)
 
     # ---- on-chain evidence (outside any DB transaction) ----
-    vt = _verify_tx(rpc, tx_sig, actor, _expectation(conn, settings, etype, serial, seal_uid_hash=seal_uid_hash))
+    exp = _expectation(conn, settings, etype, serial, seal_uid_hash=seal_uid_hash)
+    vt = _verify_tx(rpc, tx_sig, actor, exp, client=client_key(request))
     ts = vt.block_time or now()
-    registry = registry_info(conn, settings, rpc, cache_holder=request.app.state) if etype == EventType.MINT else None
-    payload = _tx_payload(etype, vt, client, serial=serial, registry=registry, rpc=rpc)
+    payload = _tx_payload(etype, vt, client, serial=serial, rpc=rpc)
 
     with transaction(conn):
         if etype not in (EventType.MINT, EventType.SEAL_ATTACH):   # those two are idempotent per serial / seal below
-            dup = conn.execute("SELECT * FROM events WHERE tx_sig=? AND serial=? AND type=? ORDER BY id LIMIT 1",
-                               (tx_sig, serial, etype)).fetchone()
+            dup = _event_for_tx(conn, tx_sig, serial, etype)
             if dup:
-                return event_view(dict(dup))    # one transaction backs one event — a repeat is idempotent
+                return event_view(dup)          # one transaction backs one event — a repeat is idempotent
         actor_label = _actor_label(conn, actor, ts)
         passport = get_passport(conn, serial)
 
@@ -756,17 +775,21 @@ def events(body: EventBody, request: Request, conn=Depends(get_conn), settings: 
         if etype == EventType.SEAL_DEAD:
             seal_uid_hash = seal_uid_hash or _seal_in_tx(conn, settings, serial, vt)
             _apply_seal_dead(conn, serial, seal_uid_hash)
-        if etype == EventType.RELEASE and (seller := _escrow_seller(vt)):
-            bump_escrow_counts(conn, seller, ts, ok=1)
-        if etype == EventType.DISPUTE and (seller := _escrow_seller(vt)):
-            bump_escrow_counts(conn, seller, ts, disputed=1)
+        if etype in (EventType.RELEASE, EventType.DISPUTE):
+            _record_escrow_outcome(conn, etype, vt, exp.passport, payload, ts)
 
         p = get_passport(conn, serial)
         grade_after = Grade.VOID if p["void"] else p["grade"]
         row = insert_event(conn, serial=serial, type=etype, ts=ts, actor_pubkey=actor, actor_label=actor_label,
                            tx_sig=tx_sig, status="confirmed", seal_uid_hash=seal_uid_hash, payload=payload,
-                           grade_after=grade_after, country=loc.country, city=loc.city)
+                           grade_after=grade_after, country=None, city=None)
         return event_view(row)
+
+
+def _event_for_tx(conn, tx_sig: str, serial: str, etype: int) -> dict | None:
+    r = conn.execute("SELECT * FROM events WHERE tx_sig=? AND serial=? AND type=? ORDER BY id LIMIT 1",
+                     (tx_sig, serial, etype)).fetchone()
+    return dict(r) if r else None
 
 
 def _seal_in_tx(conn, settings: Settings, serial: str, vt: txverify.VerifiedTx) -> str | None:
@@ -805,13 +828,13 @@ def _report_payload(conn, serial: str, client: dict, claimed: str | None) -> tup
     return out, seal_hash
 
 
-def _report_seal_dead(request: Request, body: EventBody, conn, serial: str, client: dict, seal_uid_hash: str | None,
-                      loc: Location):
+def _report_seal_dead(request: Request, body: EventBody, conn, serial: str, client: dict, seal_uid_hash: str | None):
     """
     SEAL_DEAD without a transaction (a buyer reporting a non-responding seal): needs an unused session nonce
     (consumed), is stored as `reported` and changes nothing else — no void, no dead seal, no attester row. At most one
     open report per seal (or per passport, for a report naming no seal) within 24 h, and a small per-IP budget
     (429 report_limited). The payload has a fixed schema; the claimed reporter is kept in payload.reportedBy, unverified.
+    A report never stores a location.
     """
     if not body.nonce:
         raise HTTPException(422, "a SEAL_DEAD report without txSig needs a session nonce (POST /api/session)")
@@ -837,7 +860,7 @@ def _report_seal_dead(request: Request, body: EventBody, conn, serial: str, clie
         consume_nonce(conn, nonce_hex, ts)
         row = insert_event(conn, serial=serial, type=EventType.SEAL_DEAD, ts=ts, actor_pubkey=None, actor_label=None,
                            tx_sig=None, status="reported", seal_uid_hash=seal_uid_hash, payload=payload,
-                           grade_after=Grade.VOID if p["void"] else p["grade"], country=loc.country, city=loc.city)
+                           grade_after=Grade.VOID if p["void"] else p["grade"], country=None, city=None)
         return event_view(row)
 
 
@@ -857,10 +880,15 @@ def _scan_chain_values(vt: txverify.VerifiedTx, payload: dict) -> dict:
     return chain
 
 
-def _confirm_event(event_id: int, tx_sig: str | None, actor: str | None, conn, settings: Settings, rpc):
+def _confirm_event(event_id: int, tx_sig: str | None, actor: str | None, conn, settings: Settings, rpc,
+                   client: str | None = None):
     """
     {eventId, txSig, actor?}: confirm a pending event (normally a SCAN from /api/verify) with its transaction.
     A confirmed event never changes again: the same txSig again is an idempotent 200, a different one 409.
+    A failed record_scan marks the scan failed only when it was signed by the scan's claimed attester: a scan without
+    a claimed attester (e.g. started in a browser without a wallet, to be anchored via the resume link) stays pending
+    whatever failing tx a stranger posts for its public PDAs — otherwise anyone could kill its resume link — and the
+    reconcile job's timeout decides.
     """
     ev = get_event(conn, event_id)
     if not ev:
@@ -888,13 +916,13 @@ def _confirm_event(event_id: int, tx_sig: str | None, actor: str | None, conn, s
     counter = payload.get("counter") if etype == EventType.SCAN else None
     exp = _expectation(conn, settings, etype, ev["serial"], seal_uid_hash=ev["seal_uid_hash"], scan_counter=counter)
     try:
-        vt = txverify.verify_transaction(rpc, tx_sig, actor, exp)
+        vt = txverify.verify_transaction(rpc, tx_sig, actor, exp, client=client)
     except txverify.TxRejected as exc:
         log.info("events: confirm %s with tx %s… rejected (%s) %s", event_id, tx_sig[:12], exc.detail, exc.reason)
-        if exc.detail == "tx_failed" and etype == EventType.SCAN:
+        if exc.detail == "tx_failed" and etype == EventType.SCAN and expected_actor is not None and actor == expected_actor:
             with transaction(conn):
                 conn.execute("UPDATE events SET status='failed', tx_sig=? WHERE id=? AND status='pending'", (tx_sig, event_id))
-        raise HTTPException(exc.status, exc.detail) from exc
+        raise HTTPException(exc.status, exc.detail, headers=exc.headers) from exc
     if etype == EventType.SCAN:
         args = vt.args
         if vt.account("signer") != actor or (args is not None and args.get("counter") != counter):
@@ -919,7 +947,11 @@ def _confirm_event(event_id: int, tx_sig: str | None, actor: str | None, conn, s
             _apply_seal_dead(conn, cur["serial"], seal_uid_hash)
             conn.execute("UPDATE events SET grade_after=?, seal_uid_hash=? WHERE id=?", (Grade.VOID, seal_uid_hash, event_id))
     if etype == EventType.SCAN:
-        # bundle → ar_bundle, media preview → ar_media (sidecar subprocess; no-op when disabled) — after the commit
+        # media (only now that the scan is confirmed — never at upload), then bundle → ar_bundle and the media preview →
+        # ar_media (sidecar subprocess; no-op when disabled) — after the commit
+        media_list = payload.get("media") or []
+        if media_list and arweave.enabled(settings) and isinstance(media_list[0], dict) and media_list[0].get("sha256"):
+            arweave.archive_media(conn, settings, proof.strip0x(media_list[0]["sha256"]).lower())
         arweave.archive_scan_event(conn, settings, get_event(conn, event_id))
     return event_view(get_event(conn, event_id))  # type: ignore[arg-type]
 

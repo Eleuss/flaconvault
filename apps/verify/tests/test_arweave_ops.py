@@ -140,10 +140,11 @@ def test_reconcile_backfills_media_and_bundles(chain_client, settings, monkeypat
     from tests.conftest import PROGRAM_ID
     frames = [b"\xff\xd8frame-1" * 40, b"\xff\xd8frame-2" * 40]
     files = [("files", (f"f{i}.jpg", io.BytesIO(b), "image/jpeg")) for i, b in enumerate(frames)]
-    m = post_media(c, files=files).json()                  # archiving off at upload time → ar null
+    nonce = c.post("/api/session", json={}).json()["nonce"]
+    m = post_media(c, files=files, nonce=nonce).json()     # archiving off at upload time → ar null
     assert m["ar"] is None
     tag = c.post("/api/dev/tag", json={"serial": SERIAL, "kind": 1}).json()
-    v = _scan(c, tag["uid"], mediaHash=m["sha256"])
+    v = _scan(c, tag["uid"], mediaHash=m["sha256"], nonce=nonce)
     seal = pda_seal(PROGRAM_ID, bytes.fromhex(v["uidHash"][2:]))
     rpc.accounts[str(pda_scan(PROGRAM_ID, seal, v["counter"]))] = _account_for(v)
 

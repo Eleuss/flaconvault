@@ -250,9 +250,11 @@ def newer_confirmed_scan_exists(conn, serial: str, event_id: int, ts: int) -> bo
 
 
 # Tier of a confirmed SCAN: the on-chain ScanProof tier written by reconcile (payload.chain) wins, then the verified tier
-# written on confirmation (payload.tier), then, for rows confirmed before either existed, the tier claimed in the bundle.
+# written on confirmation (payload.tier), then, for rows confirmed before either existed, the tier claimed in the bundle —
+# but only when the confirmed signer is the claimed attester (a claim anchored by someone else counts as tier 0).
 _SCAN_TIER = ("COALESCE(json_extract(payload_json, '$.chain.tier'), json_extract(payload_json, '$.tier'), "
-              "json_extract(payload_json, '$.attester.tier'), 0)")
+              "CASE WHEN actor_pubkey IS NOT NULL AND actor_pubkey = json_extract(payload_json, '$.attester.pubkey') "
+              "THEN json_extract(payload_json, '$.attester.tier') END, 0)")
 # A SCAN the program counted in passport.scan_count (one per record_scan): a signed bundle scan (Tier-0 /t sightings carry
 # neither indicators nor a msgHex and never go on chain) backed by its record_scan tx, by the ScanProof PDA the reconcile
 # job found, or by decoded chain data. Seeded demo rows carry fake txSigs and are never on chain.
@@ -449,32 +451,101 @@ def sync_registry_partners(conn, partners: list[str], ts: int) -> int:
     return cur.rowcount
 
 
+ORDER_TERMINAL = (ORDER_RELEASED, ORDER_DISPUTE, 8)   # RELEASED, DISPUTE, CANCELLED: final for one listing
+_TERMINAL_SQL = ",".join(str(x) for x in ORDER_TERMINAL)
+
+
 def upsert_escrow_order(conn, order_pda: str, o: dict, ts: int) -> None:
+    """
+    An Order account as read from chain (reconcile). A listing in a final state is never moved back (a read taken
+    before a release must not undo the RELEASE the verifier recorded), and a placeholder row that a RELEASE/DISPUTE of
+    this listing wrote while the Order was unreadable (negative listed_at, see record_escrow_outcome) is merged into it.
+    """
+    listed_at = int(o["listedAt"])
+    ph = conn.execute("SELECT state FROM escrow_orders WHERE order_pda=? AND listed_at<0 AND -listed_at>=? "
+                      "ORDER BY listed_at LIMIT 1", (order_pda, listed_at)).fetchone()
+    state = int(o["state"])
+    if ph is not None:
+        conn.execute("DELETE FROM escrow_orders WHERE order_pda=? AND listed_at<0 AND -listed_at>=?", (order_pda, listed_at))
+        if state not in ORDER_TERMINAL:
+            state = int(ph["state"])
     conn.execute(
-        """INSERT INTO escrow_orders(order_pda, listed_at, passport, seller, buyer, price, state, updated_at) VALUES(?,?,?,?,?,?,?,?)
+        f"""INSERT INTO escrow_orders(order_pda, listed_at, passport, seller, buyer, price, state, updated_at) VALUES(?,?,?,?,?,?,?,?)
            ON CONFLICT(order_pda, listed_at) DO UPDATE SET buyer=excluded.buyer, price=excluded.price, state=excluded.state,
              updated_at=excluded.updated_at
-           WHERE escrow_orders.state != excluded.state OR COALESCE(escrow_orders.buyer, '') != COALESCE(excluded.buyer, '')
-             OR escrow_orders.price != excluded.price""",
-        (order_pda, int(o["listedAt"]), o["passport"], o["seller"], o["buyer"], int(o["price"]), int(o["state"]), ts))
+           WHERE escrow_orders.state NOT IN ({_TERMINAL_SQL})
+             AND (escrow_orders.state != excluded.state OR COALESCE(escrow_orders.buyer, '') != COALESCE(excluded.buyer, '')
+                  OR escrow_orders.price != excluded.price)""",
+        (order_pda, listed_at, o["passport"], o["seller"], o["buyer"], int(o["price"]), state, ts))
 
 
-def sync_escrow_counters(conn, ts: int) -> int:
+def record_escrow_outcome(conn, order_pda: str, *, state: int, at: int | None, ts: int, order: dict | None = None,
+                          passport: str | None = None, seller: str | None = None, buyer: str | None = None,
+                          price: int | None = None) -> None:
     """
-    attesters.escrows_ok / escrows_disputed from the on-chain orders: RELEASED counts as an escrow without dispute and
-    DISPUTE as a disputed one, for seller and buyer alike. Every order participant gets an attester row.
+    A confirmed RELEASE / DISPUTE (a verified release, release_after_timeout, dispute or resolve tx at block time `at`)
+    becomes the final `state` of its listing in escrow_orders — the single source of attesters.escrows_ok /
+    escrows_disputed — so the outcome keeps counting after close_order removes the account:
+      * the Order read with the tx (`order`) is that listing if it was listed by then (a re-list after close has a
+        later listed_at);
+      * otherwise the newest known listing of the PDA listed by then;
+      * otherwise (never seen, already closed) a placeholder row keyed by -at, merged into the real row should the
+        reconcile job still read the account.
+    The counters of seller and buyer are recomputed right away.
+    """
+    state = int(state)
+    if order is not None and (at is None or int(order["listedAt"]) <= at):
+        conn.execute(
+            """INSERT INTO escrow_orders(order_pda, listed_at, passport, seller, buyer, price, state, updated_at) VALUES(?,?,?,?,?,?,?,?)
+               ON CONFLICT(order_pda, listed_at) DO UPDATE SET buyer=COALESCE(excluded.buyer, escrow_orders.buyer),
+                 price=excluded.price, state=excluded.state, updated_at=excluded.updated_at""",
+            (order_pda, int(order["listedAt"]), order["passport"], order["seller"], order.get("buyer") or buyer,
+             int(order["price"]), state, ts))
+        seller, buyer = order["seller"], order.get("buyer") or buyer
+    else:
+        row = conn.execute("""SELECT listed_at, seller, buyer FROM escrow_orders WHERE order_pda=? AND listed_at>=0
+                                AND (? IS NULL OR listed_at<=?) ORDER BY listed_at DESC LIMIT 1""",
+                           (order_pda, at, at)).fetchone()
+        if row is not None:
+            conn.execute("UPDATE escrow_orders SET state=?, buyer=COALESCE(buyer, ?), updated_at=? WHERE order_pda=? AND listed_at=?",
+                         (state, buyer, ts, order_pda, row["listed_at"]))
+            seller, buyer = row["seller"], row["buyer"] or buyer
+        elif passport and seller:
+            conn.execute(
+                """INSERT INTO escrow_orders(order_pda, listed_at, passport, seller, buyer, price, state, updated_at) VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(order_pda, listed_at) DO UPDATE SET state=excluded.state, updated_at=excluded.updated_at""",
+                (order_pda, -int(at if at is not None else ts), passport, seller, buyer, int(price or 0), state, ts))
+        else:
+            return
+    sync_escrow_counters(conn, ts, pubkeys=[pk for pk in (seller, buyer) if pk])
+
+
+def sync_escrow_counters(conn, ts: int, pubkeys: list[str] | None = None) -> int:
+    """
+    attesters.escrows_ok / escrows_disputed from escrow_orders (on-chain orders read by the reconcile job, final states
+    recorded by confirmed RELEASE / DISPUTE events): RELEASED counts as an escrow without dispute and DISPUTE as a
+    disputed one, for seller and buyer alike. Every order participant gets an attester row. `pubkeys` limits the
+    recomputation to those wallets (one order's participants).
     """
     conn.execute("""INSERT INTO attesters(pubkey, first_seen)
-                    SELECT pk, MIN(t) FROM (SELECT seller AS pk, listed_at AS t FROM escrow_orders
-                                            UNION ALL SELECT buyer, listed_at FROM escrow_orders WHERE buyer IS NOT NULL)
+                    SELECT pk, MIN(t) FROM (SELECT seller AS pk, ABS(listed_at) AS t FROM escrow_orders
+                                            UNION ALL SELECT buyer, ABS(listed_at) FROM escrow_orders WHERE buyer IS NOT NULL)
                     GROUP BY pk ON CONFLICT(pubkey) DO NOTHING""")
+    only = ""
+    params: tuple = (ORDER_RELEASED, ORDER_DISPUTE, ORDER_RELEASED, ORDER_DISPUTE)
+    if pubkeys is not None:
+        if not pubkeys:
+            return 0
+        only = f"AND pubkey IN ({','.join('?' * len(pubkeys))})"
+        params = (*params, *pubkeys)
     cur = conn.execute(
-        """UPDATE attesters SET
+        f"""UPDATE attesters SET
              escrows_ok=(SELECT COUNT(*) FROM escrow_orders o WHERE o.state=? AND (o.seller=attesters.pubkey OR o.buyer=attesters.pubkey)),
              escrows_disputed=(SELECT COUNT(*) FROM escrow_orders o WHERE o.state=? AND (o.seller=attesters.pubkey OR o.buyer=attesters.pubkey))
-           WHERE escrows_ok != (SELECT COUNT(*) FROM escrow_orders o WHERE o.state=? AND (o.seller=attesters.pubkey OR o.buyer=attesters.pubkey))
-              OR escrows_disputed != (SELECT COUNT(*) FROM escrow_orders o WHERE o.state=? AND (o.seller=attesters.pubkey OR o.buyer=attesters.pubkey))""",
-        (ORDER_RELEASED, ORDER_DISPUTE, ORDER_RELEASED, ORDER_DISPUTE))
+           WHERE (escrows_ok != (SELECT COUNT(*) FROM escrow_orders o WHERE o.state=? AND (o.seller=attesters.pubkey OR o.buyer=attesters.pubkey))
+              OR escrows_disputed != (SELECT COUNT(*) FROM escrow_orders o WHERE o.state=? AND (o.seller=attesters.pubkey OR o.buyer=attesters.pubkey)))
+              {only}""",
+        params)
     return cur.rowcount
 
 
@@ -578,12 +649,6 @@ def open_seal_dead_report(conn, serial: str, seal_uid_hash: str | None, since: i
         """SELECT 1 FROM events WHERE serial=? AND type=9 AND status='reported' AND ts>=?
              AND (? IS NULL OR seal_uid_hash IS NULL OR seal_uid_hash=?) LIMIT 1""",
         (serial, since, h, h)).fetchone() is not None
-
-
-def bump_escrow_counts(conn, pubkey: str, ts: int, *, ok: int = 0, disputed: int = 0) -> None:
-    conn.execute("INSERT INTO attesters(pubkey, first_seen) VALUES(?,?) ON CONFLICT(pubkey) DO NOTHING", (pubkey, ts))
-    conn.execute("UPDATE attesters SET escrows_ok=escrows_ok+?, escrows_disputed=escrows_disputed+? WHERE pubkey=?",
-                 (ok, disputed, pubkey))
 
 
 TAP_ID_MIN, TAP_ID_MAX = 1 << 32, (1 << 53) - 1      # random, unguessable and still exact as a JavaScript number

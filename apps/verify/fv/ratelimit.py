@@ -5,12 +5,17 @@ In-process per-IP rate limiting (token buckets) as FastAPI dependencies.
     burst = the same number). Over the limit → 429 `rate_limited`.
   * `report_allowed(request)` — the stricter bucket for unverified SEAL_DEAD reports (FV_REPORT_LIMIT_PER_HOUR,
     default 3 per hour and IP). Over the limit → 429 `report_limited`.
+  * byte budgets (`allows` / `spend`, used by fv.media_store for /api/media) and the per-client cap on transaction
+    lookups in flight (fv.txverify) use the same client key.
 
 Client IP: the socket peer, unless the peer is the platform proxy (a non-global address: Railway's edge reaches the
 container over its private network). Only then is X-Forwarded-For used, and only its last entry — the address the
 proxy itself saw (the first hop in front of us); everything to the left of it can be written by the client.
 FV_TRUSTED_PROXY_HOPS (default 1) raises the number of trusted proxies in front of the app. The limits come from
 Settings (rate_limit_per_min, report_limit_per_hour, trusted_proxy_hops); the FV_* environment variable wins when set.
+
+Bucket key (`client_key`): an IPv4 client by its address, an IPv6 client by its /64 — one host controls a whole /64,
+so per-address buckets could be sidestepped by rotating source addresses.
 
 The buckets live in the app process (app.state), so the limit is per replica. Idle buckets are dropped.
 """
@@ -62,23 +67,40 @@ class RateLimiter:
     def hit(self, key: str, cost: float = 1.0, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now
         with self._lock:
-            b = self._buckets.get(key)
-            if b is None:
-                if len(self._buckets) >= self.max_keys:
-                    self._evict(now)
-                b = self._buckets[key] = TokenBucket(self.capacity, now)
-            else:
-                b.tokens = min(self.capacity, b.tokens + (now - b.at) * self.rate)
-                b.at = now
+            b = self._refilled(key, now)
             if b.tokens >= cost:
                 b.tokens -= cost
                 return True
             return False
 
-    def retry_after(self, key: str) -> int:
+    def _refilled(self, key: str, now: float) -> TokenBucket:
+        """The key's bucket, refilled up to `now` (created full). Caller holds the lock."""
+        b = self._buckets.get(key)
+        if b is None:
+            if len(self._buckets) >= self.max_keys:
+                self._evict(now)
+            b = self._buckets[key] = TokenBucket(self.capacity, now)
+        else:
+            b.tokens = min(self.capacity, b.tokens + (now - b.at) * self.rate)
+            b.at = now
+        return b
+
+    def allows(self, key: str, cost: float = 1.0, now: float | None = None) -> bool:
+        """Would `cost` tokens be available now? Takes nothing (a byte budget is charged with spend() afterwards)."""
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            return self._refilled(key, now).tokens >= cost
+
+    def spend(self, key: str, cost: float, now: float | None = None) -> None:
+        """Take `cost` tokens unconditionally (the balance may go negative: an overshoot is paid back by waiting)."""
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            self._refilled(key, now).tokens -= cost
+
+    def retry_after(self, key: str, cost: float = 1.0) -> int:
         with self._lock:
             b = self._buckets.get(key)
-            missing = 1.0 - (b.tokens if b else 0.0)
+            missing = cost - (b.tokens if b else 0.0)
         return max(1, int(missing / self.rate) + 1) if self.rate > 0 else 60
 
     def _evict(self, now: float) -> None:
@@ -118,12 +140,31 @@ def client_ip(request: Request) -> str:
     return peer or "unknown"
 
 
+def address_key(addr: str) -> str:
+    """Bucket key of one client address: IPv4 (and IPv4-mapped IPv6) per address, IPv6 per /64 network."""
+    try:
+        ip = ipaddress.ip_address(addr.strip("[]"))
+    except ValueError:
+        return addr
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return str(ip)
+
+
+def client_key(request: Request) -> str:
+    """The identity every per-client budget is keyed by (rate limits, reports, media bytes, tx lookups in flight)."""
+    return address_key(client_ip(request))
+
+
 # ---------- per-app limiters ----------
 
 _INIT_LOCK = threading.Lock()
 
 
-def _limiter(request: Request, name: str) -> RateLimiter:
+def _limiter(request: Request, name: str, factory=None) -> RateLimiter:
+    """The app's limiter `name`, created on first use (by `factory()` when given)."""
     state = request.app.state
     limiters = getattr(state, "rate_limiters", None)
     if limiters is None:
@@ -136,7 +177,9 @@ def _limiter(request: Request, name: str) -> RateLimiter:
         with _INIT_LOCK:
             lim = limiters.get(name)
             if lim is None:
-                if name == "report":
+                if factory is not None:
+                    lim = factory()
+                elif name == "report":
                     lim = RateLimiter.per_hour(_setting(request, "report_limit_per_hour", "FV_REPORT_LIMIT_PER_HOUR",
                                                         DEFAULT_REPORTS_PER_HOUR))
                 else:
@@ -145,15 +188,19 @@ def _limiter(request: Request, name: str) -> RateLimiter:
     return lim
 
 
+limiter = _limiter
+setting = _setting
+
+
 def rate_limit(request: Request) -> None:
     """Dependency for every POST route and GET /t."""
-    lim, key = _limiter(request, "default"), client_ip(request)
+    lim, key = _limiter(request, "default"), client_key(request)
     if not lim.hit(key):
         raise HTTPException(429, "rate_limited", headers={"Retry-After": str(lim.retry_after(key))})
 
 
 def report_allowed(request: Request) -> None:
     """Called by the SEAL_DEAD report path (unverified reports have their own, much smaller budget)."""
-    lim, key = _limiter(request, "report"), client_ip(request)
+    lim, key = _limiter(request, "report"), client_key(request)
     if not lim.hit(key):
         raise HTTPException(429, "report_limited", headers={"Retry-After": str(lim.retry_after(key))})

@@ -263,11 +263,21 @@ def test_events_mint_and_seal_attach_create_rows(chain_client):
 
 def test_media_upload(client, settings):
     data = b"\xff\xd8\xff\xe0frame-bytes-" * 100
-    r = post_media(client, files={"file": ("frames.jpg", io.BytesIO(data), "image/jpeg")})
+    nonce = _nonce(client)
+    r = post_media(client, files={"file": ("frames.jpg", io.BytesIO(data), "image/jpeg")}, nonce=nonce)
     assert r.status_code == 200
     j = r.json()
-    assert j["sha256"] == "0x" + proof.sha256(data).hex() and j["ar"] is None and j["bytes"] == len(data) and j["files"] == 1
-    assert (settings.media_dir / (proof.sha256(data).hex() + ".bin")).read_bytes() == data
+    sha = proof.sha256(data).hex()
+    assert j["sha256"] == "0x" + sha and j["ar"] is None and j["bytes"] == len(data) and j["files"] == 1
+    # staged under its session nonce until a signed scan uses it
+    assert (settings.media_dir / "staging" / nonce[2:] / (sha + ".bin")).read_bytes() == data
+    assert not (settings.media_dir / (sha + ".bin")).exists()
+    tag = client.post("/api/dev/tag", json={"serial": SERIAL, "kind": 1}).json()
+    tap = client.post("/api/dev/tap", json={"uid": tag["uid"]}).json()
+    v = client.post("/api/verify", json=_body(tap, nonce, mediaHash=j["sha256"])).json()
+    assert v["verdict"] == "VALID"
+    assert (settings.media_dir / (sha + ".bin")).read_bytes() == data
+    assert not (settings.media_dir / "staging" / nonce[2:]).exists()
     assert post_media(client).status_code == 422
 
 
@@ -370,12 +380,13 @@ def test_certify_console_mint_and_seal_attach_idempotent(chain_client):
                         "asset": "11111111111111111111111111111112", "issuerLabel": "Some other shop", "siteId": 1},
             "location": {"country": "DE", "city": "Düsseldorf"}}
     e1 = client.post("/api/events", json=mint).json()
-    assert e1["type"] == 0 and e1["status"] == "confirmed" and e1["txSig"] == sig("M") and e1["payload"]["siteId"] == 1
+    assert e1["type"] == 0 and e1["status"] == "confirmed" and e1["txSig"] == sig("M")
+    assert "siteId" not in e1["payload"] and "issuerLabel" not in e1["payload"]     # never a client-picked site
     assert e1["payload"]["asset"] == DEFAULT_ASSET and e1["payload"]["bindingHash"] == "0x" + "0b" * 32   # from the tx args
     assert e1["actorLabel"] == "Parfümerie X, Düsseldorf"                    # the server's record, never the client's label
     p = client.get("/api/passport/SN-2026-000042").json()
     assert p["asset"] == DEFAULT_ASSET and p["issuer"] == partner and p["batch"] == "AM01"
-    assert p["issuerLabel"] == "Parfümerie X, Düsseldorf" and p["grade"] == 0   # registry site 1, not the client's label
+    assert p["issuerLabel"] == "Parfümerie X, Düsseldorf" and p["grade"] == 0   # the issuer's label on record, not the client's
     # second MINT for the same serial by the issuer: the stored event comes back and the passport is never renamed
     n_calls = rpc.calls.count("getTransaction")
     e1b = client.post("/api/events", json={**mint, "txSig": sig("N"), "payload": {**mint["payload"], "name": "Interlude Man EDP"}}).json()

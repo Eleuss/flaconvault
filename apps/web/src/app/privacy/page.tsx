@@ -115,7 +115,8 @@ export default function PrivacyPage() {
           You can check a seal and read every passport without a wallet and without typing anything. Photos, country and
           place are optional. Data on the verification server can be corrected or deleted on request where that does not
           break the history of a passport; data on Solana and Arweave cannot be changed or deleted by anyone. For requests,
-          contact the operator named in the legal notice.
+          contact the operator of FlaconVault named in the legal notice on{" "}
+          <a href="https://flaconvault.com" className="link">flaconvault.com</a>.
         </p>
       </Section>
 

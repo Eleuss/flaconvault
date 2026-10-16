@@ -30,7 +30,7 @@ flacon = { path = "../flacon", features = ["no-entrypoint"] }
 litesvm = "0.10"
 solana-account = "3"
 solana-keypair = "3"
-solana-signer = "3"
+solana-signer = "4"
 solana-transaction = { version = "3", features = ["bincode"] }
 
 [lints.rust]

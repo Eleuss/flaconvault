@@ -67,13 +67,14 @@ function applyH(h: number[], p: Pt): Pt {
   const w = h[6] * p[0] + h[7] * p[1] + h[8];
   return [(h[0] * p[0] + h[1] * p[1] + h[2]) / w, (h[3] * p[0] + h[4] * p[1] + h[5]) / w];
 }
+/** Least-squares homography over all points (no RANSAC). Throws for degenerate input instead of returning an empty matrix. */
 function homography(cv: CV, src: Pt[], dst: Pt[]): CV {
   const s = pointsMat(cv, src), d = pointsMat(cv, dst);
-  let H: CV;
-  try { H = cv.findHomography(s, d, 0); }
-  catch { H = cv.getPerspectiveTransform(s, d); }
-  s.delete(); d.delete();
-  return H;
+  try {
+    const H = cv.findHomography(s, d, 0);
+    if (H.empty() || H.rows !== 3 || H.cols !== 3) { H.delete(); throw new Error("Homography could not be estimated (degenerate points)"); }
+    return H;
+  } finally { s.delete(); d.delete(); }
 }
 function invert(cv: CV, H: CV): number[] {
   const inv = new cv.Mat();
@@ -87,12 +88,14 @@ function invert(cv: CV, H: CV): number[] {
 function darknessMap(cv: CV, rgba: CV): CV {
   const ch = new cv.MatVector();
   cv.split(rgba, ch);
+  // MatVector.get returns a new Mat handle on every call: keep and delete them, or each call leaks the channel buffers
+  const r = ch.get(0), g = ch.get(1), b = ch.get(2);
   const mn = new cv.Mat();
-  cv.min(ch.get(0), ch.get(1), mn);
-  cv.min(mn, ch.get(2), mn);
+  cv.min(r, g, mn);
+  cv.min(mn, b, mn);
   const dark = new cv.Mat();
-  cv.subtract(new cv.Mat(mn.rows, mn.cols, cv.CV_8UC1, new cv.Scalar(255)), mn, dark);
-  ch.delete(); mn.delete();
+  cv.bitwise_not(mn, dark); // 8-bit: 255 − v
+  r.delete(); g.delete(); b.delete(); ch.delete(); mn.delete();
   return dark;
 }
 

@@ -188,11 +188,11 @@ def test_raw_uids_of_older_rows_are_scrubbed_from_views(chain_client):
     with c.app.state.db.connect() as conn:
         for t, status in ((1, "confirmed"), (9, "reported")):
             conn.execute("INSERT INTO events(serial, type, ts, status, payload_json) VALUES(?,?,?,?,?)",
-                         (SERIAL, t, 1790000000, status, json.dumps({"uid": "0438380ABD2390", "kind": 1})))
+                         (SERIAL, t, 1790000000, status, json.dumps({"uid": "04AABBCCDDEEFF", "kind": 1})))
     text = c.get(f"/api/passport/{SERIAL}").text
-    assert "0438380ABD2390" not in text
+    assert "04AABBCCDDEEFF" not in text
     rows = [e for e in c.get(f"/api/passport/{SERIAL}").json()["events"] if e["ts"] == 1790000000]
-    assert [e["payload"].get("uidTail") for e in rows] == ["…90", "…90"] and all("uid" not in e["payload"] for e in rows)
+    assert [e["payload"].get("uidTail") for e in rows] == ["…FF", "…FF"] and all("uid" not in e["payload"] for e in rows)
 
 
 # ---------- M7: tamper ----------

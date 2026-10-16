@@ -29,5 +29,6 @@ test("report-only CSP lists what the app loads", () => {
   assert.equal(dir("frame-ancestors"), "frame-ancestors 'none'");
   assert.equal(dir("object-src"), "object-src 'none'");
   assert.doesNotMatch(csp, /fonts\.googleapis\.com/, "no Google Fonts");
-  assert.doesNotMatch(csp, /localhost/, "production policy has no localhost");
+  assert.match(dir("connect-src"), /ws:\/\/localhost:\*/, "Mobile Wallet Adapter's local websocket");
+  assert.doesNotMatch(csp, /http:\/\/localhost/, "production policy allows no local http origin");
 });

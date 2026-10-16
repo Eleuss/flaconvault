@@ -34,7 +34,8 @@ export function contentSecurityPolicy(env = process.env) {
     `font-src ${list("'self'", "data:", "https://fonts.reown.com")}`,
     `img-src ${list("'self'", "data:", "blob:", arweave, walletConnect.filter((x) => x.startsWith("https:")), "https://explorer-api.walletconnect.com")}`,
     `media-src ${list("'self'", "blob:")}`,
-    `connect-src ${list("'self'", verify, originOf(rpc), wsOriginOf(rpc), "https://api.devnet.solana.com", "wss://api.devnet.solana.com", walletConnect, arweave, dev && "ws://localhost:*")}`,
+    // ws://localhost:* — the Android Mobile Wallet Adapter talks to the wallet app over a local websocket
+    `connect-src ${list("'self'", verify, originOf(rpc), wsOriginOf(rpc), "https://api.devnet.solana.com", "wss://api.devnet.solana.com", walletConnect, arweave, "ws://localhost:*", "ws://127.0.0.1:*", dev && "http://localhost:*")}`,
     `frame-src ${list("'self'", "https://verify.walletconnect.com", "https://verify.walletconnect.org", "https://secure.walletconnect.com", "https://secure.walletconnect.org", "https://*.reown.com")}`,
     `object-src 'none'`,
     `base-uri 'self'`,

@@ -8,7 +8,7 @@ from solders.pubkey import Pubkey
 from fv import proof
 from fv.chain import RpcError, pda_registry, pda_scan, pda_seal
 from fv.main import create_app
-from tests.conftest import ADMIN, PROGRAM_ID, FakeRpc, passport_pda, seal_pda
+from tests.conftest import ADMIN, PROGRAM_ID, FakeRpc, passport_pda, seal_pda, sig
 from tests.test_chain import passport_bytes, registry_bytes, scan_proof_bytes, seal_bytes
 from tests.test_reconcile import _scan
 
@@ -41,8 +41,8 @@ def _chain_like_production(c):
 def _real_scan(c):
     tag = c.post("/api/dev/tag", json={"serial": "SN-2026-000001", "kind": 1}).json()
     v = _scan(c, tag["uid"], attester=REAL_ATTESTER)
-    c.rpc.scan_tx("r" * 88, v, REAL_ATTESTER)
-    e = c.post("/api/events", json={"eventId": v["eventId"], "txSig": "r" * 88, "actor": REAL_ATTESTER}).json()
+    c.rpc.scan_tx(sig("r"), v, REAL_ATTESTER)
+    e = c.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("r"), "actor": REAL_ATTESTER}).json()
     assert e["status"] == "confirmed"
     return v, tag
 

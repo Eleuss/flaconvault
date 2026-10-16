@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import fv.arweave as aw
-from tests.conftest import ADMIN
+from tests.conftest import ADMIN, post_media
 from tests.test_reconcile import _account_for, _scan
 
 SERIAL = "SN-2026-000001"
@@ -140,7 +140,7 @@ def test_reconcile_backfills_media_and_bundles(chain_client, settings, monkeypat
     from tests.conftest import PROGRAM_ID
     frames = [b"\xff\xd8frame-1" * 40, b"\xff\xd8frame-2" * 40]
     files = [("files", (f"f{i}.jpg", io.BytesIO(b), "image/jpeg")) for i, b in enumerate(frames)]
-    m = c.post("/api/media", files=files).json()                    # archiving off at upload time → ar null
+    m = post_media(c, files=files).json()                  # archiving off at upload time → ar null
     assert m["ar"] is None
     tag = c.post("/api/dev/tag", json={"serial": SERIAL, "kind": 1}).json()
     v = _scan(c, tag["uid"], mediaHash=m["sha256"])

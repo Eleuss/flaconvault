@@ -6,7 +6,7 @@ from solders.pubkey import Pubkey
 
 import fv.reconcile as rc
 from fv.chain import pda_order, pda_registry, pda_scan, pda_seal
-from tests.conftest import ADMIN, ESCROW_ID, PROGRAM_ID, passport_pda, seal_pda
+from tests.conftest import ADMIN, ESCROW_ID, PROGRAM_ID, passport_pda, seal_pda, sig
 from tests.test_chain import order_bytes, passport_bytes, registry_bytes
 from tests.test_reconcile import _account_for, _scan
 
@@ -122,7 +122,7 @@ def test_confirm_race_applies_effects_once(chain_client, settings):
     v = _scan(c, tag["uid"])
     who = v["bundle"]["attester"]["pubkey"]
     rpc.accounts[_scan_pda(v)] = _account_for(v)
-    rpc.scan_tx("Z" * 88, v, who)
+    rpc.scan_tx(sig("Z"), v, who)
     before = c.get(f"/api/attester/{who}").json()["scanCount"]
     real = rpc.get_multiple_accounts
     state = {"fired": False}
@@ -131,7 +131,7 @@ def test_confirm_race_applies_effects_once(chain_client, settings):
         out = real(pubkeys)
         if not state["fired"]:
             state["fired"] = True
-            r = c.post("/api/events", json={"eventId": v["eventId"], "txSig": "Z" * 88, "actor": who})
+            r = c.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("Z"), "actor": who})
             assert r.status_code == 200 and r.json()["status"] == "confirmed", r.text
         return out
     rpc.get_multiple_accounts = racing

@@ -2,7 +2,7 @@
 import json
 
 from fv.db import passport_stats, set_passport_grade
-from tests.conftest import ADMIN, passport_pda
+from tests.conftest import ADMIN, passport_pda, sig
 from tests.test_chain import passport_bytes
 
 SERIAL = "SN-2026-000001"
@@ -52,7 +52,7 @@ def test_on_chain_scan_count(chain_client):
     before = _stats(c)
     assert before["onChainScanCount"] == 0                                   # seeded demo scans are never on chain
     v1 = _verify(c, tag["uid"])
-    _confirm(c, v1, "a" * 88)                                                # anchored with its record_scan tx
+    _confirm(c, v1, sig("a"))                                                # anchored with its record_scan tx
     sighting = c.post("/api/dev/tap", json={"uid": tag["uid"]}).json()
     assert c.get(sighting["url"] + "&format=json").json()["verdict"] == "VALID"   # Tier-0 /t sighting: confirmed, off chain
     s = _stats(c)
@@ -99,12 +99,12 @@ def test_heat_c_then_missing_scan_keeps_c_on_server_and_after_reconcile(chain_cl
     hot = _verify(c, tag["uid"], tier=2, mediaHash=MEDIA, indicators={"heat": 1, "humidity": 0, "uv": 3},
                   heatLevels=[1, 1, 1, 1, 1, 0], fill=95)
     assert hot["grade"] == 2
-    _confirm(c, hot, "b" * 88)
+    _confirm(c, hot, sig("b"))
     assert c.get(f"/api/passport/{SERIAL}").json()["grade"] == 2
     # 'Without photo': both indicators MISSING, fill 95 → the scan itself grades A ...
     plain = _verify(c, tag["uid"], indicators={"heat": 3, "humidity": 3, "uv": 3})
     assert plain["grade"] == 0
-    _confirm(c, plain, "c" * 88)
+    _confirm(c, plain, sig("c"))
     p = c.get(f"/api/passport/{SERIAL}").json()
     assert p["grade"] == 2 and p["void"] is False                            # ... but the passport stays C
     # the chain (non-sticky before the program fix) reports A after the second scan: reconcile keeps the worse grade

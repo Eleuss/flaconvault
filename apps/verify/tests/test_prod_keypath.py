@@ -12,7 +12,7 @@ from fv import proof, sdm
 from fv.config import Settings
 from fv.main import create_app
 from libsdm.sdm import ParamMode, calculate_sdmmac
-from tests.conftest import ADMIN_TOKEN, PROGRAM_ID, TEST_SEED_HEX, FakeRpc
+from tests.conftest import ADMIN_TOKEN, PROGRAM_ID, TEST_SEED_HEX, FakeRpc, sig
 
 MASTER = "00112233445566778899aabbccddeeff"        # obviously fake test master key, non-zero
 UID = "04C24EDA926980"                             # fake chip uid
@@ -63,12 +63,12 @@ def test_production_tap_to_confirmed_scan(prod):
     assert c.post("/api/dev/tap", json={"uid": UID}).status_code == 404
 
     # passport + seal through the certify console's events, backed by (fake) on-chain txs
-    rpc.mint_tx("m" * 88, SERIAL, ISSUER)
-    r = c.post("/api/events", json={"serial": SERIAL, "type": "MINT", "txSig": "m" * 88, "actor": ISSUER,
+    rpc.mint_tx(sig("m"), SERIAL, ISSUER)
+    r = c.post("/api/events", json={"serial": SERIAL, "type": "MINT", "txSig": sig("m"), "actor": ISSUER,
                                     "payload": {"brand": "Test Brand", "name": "Test Name", "batch": "B1"}})
     assert r.status_code == 200 and r.json()["status"] == "confirmed", r.text
-    rpc.attach_tx("s" * 88, SERIAL, UID, ISSUER)
-    r = c.post("/api/events", json={"serial": SERIAL, "type": "SEAL_ATTACH", "txSig": "s" * 88, "actor": ISSUER,
+    rpc.attach_tx(sig("s"), SERIAL, UID, ISSUER)
+    r = c.post("/api/events", json={"serial": SERIAL, "type": "SEAL_ATTACH", "txSig": sig("s"), "actor": ISSUER,
                                     "payload": {"uid": UID, "kind": 1}})
     assert r.status_code == 200 and r.json()["status"] == "confirmed", r.text
 
@@ -90,8 +90,8 @@ def test_production_tap_to_confirmed_scan(prod):
     assert proof.parse_message(msg)["uid_hash"] == proof.uid_hash(bytes.fromhex(UID))
 
     # anchored with record_scan, confirmed with the tx
-    rpc.scan_tx("k" * 88, v, OWNER)
-    e = c.post("/api/events", json={"eventId": v["eventId"], "txSig": "k" * 88, "actor": OWNER}).json()
+    rpc.scan_tx(sig("k"), v, OWNER)
+    e = c.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("k"), "actor": OWNER}).json()
     assert e["status"] == "confirmed" and e["actor"] == OWNER
 
     # a direct /api/verify with the next encrypted tap works too
@@ -106,11 +106,11 @@ def test_production_tap_to_confirmed_scan(prod):
 
 def test_null_key_taps_are_invalid_in_production(prod):
     c, rpc = prod, prod.rpc
-    rpc.mint_tx("m" * 88, SERIAL, ISSUER)
-    c.post("/api/events", json={"serial": SERIAL, "type": "MINT", "txSig": "m" * 88, "actor": ISSUER,
+    rpc.mint_tx(sig("m"), SERIAL, ISSUER)
+    c.post("/api/events", json={"serial": SERIAL, "type": "MINT", "txSig": sig("m"), "actor": ISSUER,
                                 "payload": {"brand": "Test Brand", "name": "Test Name"}})
-    rpc.attach_tx("s" * 88, SERIAL, UID, ISSUER)
-    c.post("/api/events", json={"serial": SERIAL, "type": "SEAL_ATTACH", "txSig": "s" * 88, "actor": ISSUER, "payload": {"uid": UID}})
+    rpc.attach_tx(sig("s"), SERIAL, UID, ISSUER)
+    c.post("/api/events", json={"serial": SERIAL, "type": "SEAL_ATTACH", "txSig": sig("s"), "actor": ISSUER, "payload": {"uid": UID}})
     j = {"Accept": "application/json"}
     # AN12196 vector (null keys): INVALID, at /t and at /api/preview
     assert c.get(f"/t?picc_data={AN12196['picc']}&cmac={AN12196['cmac']}", headers=j).json()["verdict"] == "INVALID"

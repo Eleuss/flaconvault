@@ -100,11 +100,9 @@ def _confirm_scan(conn, ev: dict, payload: dict, rec: dict, acct: dict, scan_pda
               tx_sig={'COALESCE(?, tx_sig)' if ev['status'] == 'failed' else 'COALESCE(tx_sig, ?)'} WHERE id=?""",
         (acct["attester"], label["label"] if label else None, tx_sig, ev["id"]))
     update_event_payload(conn, ev["id"], new_payload)
-    # stats are credited with the on-chain tier/role, never with what the client claimed at /api/verify
-    effective = {**new_payload, "attester": {**(payload.get("attester") or {}), "pubkey": acct["attester"],
-                                             "tier": acct["tier"], "role": acct["role"]}}
-    row = get_event(conn, ev["id"])
-    apply_confirmed_scan(conn, {**row, "payload_json": json.dumps(effective)}, acct["attester"], ts)
+    # stats, payload.tier/role and payload.confirmed are credited with the on-chain tier/role/site, never with what the
+    # client claimed at /api/verify; the signed claim in payload.attester stays as it was
+    apply_confirmed_scan(conn, get_event(conn, ev["id"]), acct["attester"], ts, chain={**acct, "mismatch": ["siteId" if m == "site_id" else m for m in mismatch]})
     return mismatch
 
 

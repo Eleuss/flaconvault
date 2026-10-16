@@ -43,6 +43,8 @@ def test_image_is_pinned_and_verified():
     assert len(froms) == 3
     for image in froms:
         assert re.search(r":\d+\.\d+\.\d+", image), image                           # exact version, never a moving tag
+        # ... and the image digest: official images are re-pushed under the same tag, the digest cannot move
+        assert re.search(r":\d+\.\d+\.\d+[^@\s]*@sha256:[0-9a-f]{64}$", image), image
     assert "latest" not in DOCKERFILE
     assert "COPY --from=ghcr.io/astral-sh/uv:latest" not in DOCKERFILE and "nodejs.org/dist" not in DOCKERFILE
     assert re.search(r"npm ci .*--ignore-scripts", DOCKERFILE)

@@ -5,6 +5,7 @@ use crate::{
     constants::*,
     error::EscrowError,
     events::OrderReserved,
+    instructions::list::check_seller_of,
     state::{EscrowConfig, Order},
 };
 
@@ -48,6 +49,15 @@ pub struct Reserve<'info> {
     /// Appended last so the indices of the accounts above stay unchanged.
     #[account(address = order.passport @ EscrowError::SealPassportMismatch)]
     pub passport: Account<'info, flacon::Passport>,
+    /// CHECK: the account at `order.asset` (address checked). Unless the asset sits in the order's
+    /// custody, the seller must still be allowed to sell (`rules::check_seller`): an order whose seller
+    /// gave the Core asset away after listing, or whose issuer was removed as a partner, cannot be bought.
+    /// Appended after `passport` so the indices above stay unchanged.
+    #[account(address = order.asset @ EscrowError::AssetMismatch)]
+    pub asset: UncheckedAccount<'info>,
+    /// flacon `Registry` (partner status of the issuer, see `asset`).
+    #[account(seeds = [flacon::REGISTRY_SEED], bump = registry.bump, seeds::program = flacon::ID)]
+    pub registry: Account<'info, flacon::Registry>,
 }
 
 /// `expected_price` is the price the buyer saw; a seller who re-listed at another price in the
@@ -66,6 +76,16 @@ pub fn handle_reserve(ctx: Context<Reserve>, expected_price: u64) -> Result<()> 
         !passport.void && passport.grade != flacon::GRADE_VOID,
         EscrowError::PassportVoid
     );
+    // `list` checked the seller once; ownership can change afterwards when the asset is not in custody
+    // (assets in a collection, `--no-deposit` listings, orders listed before the program checked it)
+    if !order.asset_deposited {
+        check_seller_of(
+            &order.seller,
+            passport,
+            &ctx.accounts.asset.to_account_info(),
+            &ctx.accounts.registry,
+        )?;
+    }
 
     token::transfer(
         CpiContext::new(

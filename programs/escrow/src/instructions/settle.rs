@@ -185,8 +185,9 @@ fn settle_to_seller(ctx: Context<Release>) -> Result<()> {
 /// - the admin from RESERVED / PRESHIP_SCANNED / SHIPPED (MISMATCH is settled with `resolve`);
 /// - the buyer from RESERVED / PRESHIP_SCANNED once `clock > reserved_at + dispute_after_s` (the
 ///   seller did not ship in time);
-/// - the buyer from RESERVED / PRESHIP_SCANNED / SHIPPED when the passed flacon `Seal` of the order's
-///   passport is dead — never after a matching receipt scan (RECEIPT_SCANNED: release instead).
+/// - the buyer from RESERVED / PRESHIP_SCANNED when the passed flacon `Seal` of the order's passport is
+///   dead. After `ship` a dead seal is settled by the admin (the program cannot tell whether the seal
+///   died before or after delivery), and never after a matching receipt scan (release instead).
 #[derive(Accounts)]
 pub struct Dispute<'info> {
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]

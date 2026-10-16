@@ -5,7 +5,8 @@
 //!                                          │      └─────────────→ MISMATCH ──(admin resolve)──→ RELEASED | DISPUTE
 //!                                          └──(no receipt scan within the window: release_after_timeout)──→ RELEASED
 //! RESERVED / PRESHIP_SCANNED ──(buyer, not shipped within the window after reserve)──→ DISPUTE
-//! RESERVED / PRESHIP_SCANNED / SHIPPED ──(admin, or buyer with a dead seal)──→ DISPUTE
+//! RESERVED / PRESHIP_SCANNED ──(buyer with a dead seal)──→ DISPUTE
+//! RESERVED / PRESHIP_SCANNED / SHIPPED ──(admin)──→ DISPUTE
 //! LISTED ──(seller)──→ CANCELLED
 //! ```
 //! The rules live in `rules.rs` (pure, unit-tested).
@@ -48,7 +49,8 @@ pub mod escrow {
     }
 
     /// Seller lists a (non-void) flacon passport for `price` USDC base units. The seller must own the
-    /// passport's Core asset (or be the issuer when there is no Core asset behind `passport.asset`).
+    /// passport's Core asset (or, when there is no Core asset behind `passport.asset`, be the issuer
+    /// while still a registry partner).
     pub fn list(ctx: Context<List>, price: u64) -> Result<()> {
         instructions::list::handle_list(ctx, price)
     }
@@ -68,12 +70,13 @@ pub mod escrow {
         instructions::list::handle_close_order(ctx)
     }
 
-    /// Buyer funds the vault with `price` USDC; `expected_price` must equal `order.price`.
+    /// Buyer funds the vault with `price` USDC; `expected_price` must equal `order.price`. Unless the
+    /// asset is in the order's custody, the seller must still pass the `list` ownership rule.
     pub fn reserve(ctx: Context<Reserve>, expected_price: u64) -> Result<()> {
         instructions::reserve::handle_reserve(ctx, expected_price)
     }
 
-    /// Seller links their flacon pre-ship ScanProof.
+    /// Seller links their flacon pre-ship ScanProof (signed no earlier than `reserved_at` − 600 s).
     pub fn record_pre_ship_scan(ctx: Context<RecordPreShipScan>) -> Result<()> {
         instructions::scans::handle_record_pre_ship_scan(ctx)
     }
@@ -83,7 +86,8 @@ pub mod escrow {
         instructions::scans::handle_ship(ctx)
     }
 
-    /// Buyer links their receipt ScanProof; compared with the pre-ship scan → RECEIPT_SCANNED or MISMATCH.
+    /// Buyer links their receipt ScanProof (signed no earlier than `shipped_at` − 600 s); compared with
+    /// the pre-ship scan → RECEIPT_SCANNED or MISMATCH.
     pub fn record_receipt_scan(ctx: Context<RecordReceiptScan>) -> Result<()> {
         instructions::scans::handle_record_receipt_scan(ctx)
     }
@@ -100,7 +104,8 @@ pub mod escrow {
     }
 
     /// Refund path: admin (RESERVED / PRESHIP_SCANNED / SHIPPED), or the buyer when the seller did not
-    /// ship within the window after `reserve`, or with a dead seal before a matching receipt scan.
+    /// ship within the window after `reserve`, or with a dead seal before `ship` (after `ship` a dead
+    /// seal is the admin's call).
     pub fn dispute(ctx: Context<Dispute>) -> Result<()> {
         instructions::settle::handle_dispute(ctx)
     }

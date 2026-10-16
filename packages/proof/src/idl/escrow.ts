@@ -207,7 +207,8 @@ export type Escrow = {
       "name": "dispute",
       "docs": [
         "Refund path: admin (RESERVED / PRESHIP_SCANNED / SHIPPED), or the buyer when the seller did not",
-        "ship within the window after `reserve`, or with a dead seal before a matching receipt scan."
+        "ship within the window after `reserve`, or with a dead seal before `ship` (after `ship` a dead",
+        "seal is the admin's call)."
       ],
       "discriminator": [
         216,
@@ -413,7 +414,8 @@ export type Escrow = {
       "name": "list",
       "docs": [
         "Seller lists a (non-void) flacon passport for `price` USDC base units. The seller must own the",
-        "passport's Core asset (or be the issuer when there is no Core asset behind `passport.asset`)."
+        "passport's Core asset (or, when there is no Core asset behind `passport.asset`, be the issuer",
+        "while still a registry partner)."
       ],
       "discriminator": [
         54,
@@ -491,6 +493,67 @@ export type Escrow = {
             "seller must own it; otherwise (no Core asset behind the passport) the seller must be the issuer.",
             "Appended last so the indices of the accounts above stay unchanged."
           ]
+        },
+        {
+          "name": "registry",
+          "docs": [
+            "flacon `Registry`: without a Core asset the issuer may list only while it is still a partner",
+            "(or the authority). Appended after `asset` so the indices above stay unchanged."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                98,
+                108,
+                109,
+                16,
+                130,
+                102,
+                18,
+                115,
+                0,
+                222,
+                123,
+                19,
+                243,
+                219,
+                185,
+                85,
+                27,
+                118,
+                26,
+                151,
+                165,
+                135,
+                66,
+                155,
+                73,
+                126,
+                45,
+                144,
+                154,
+                70,
+                27,
+                41
+              ]
+            }
+          }
         }
       ],
       "args": [
@@ -503,7 +566,7 @@ export type Escrow = {
     {
       "name": "recordPreShipScan",
       "docs": [
-        "Seller links their flacon pre-ship ScanProof."
+        "Seller links their flacon pre-ship ScanProof (signed no earlier than `reserved_at` − 600 s)."
       ],
       "discriminator": [
         112,
@@ -569,7 +632,8 @@ export type Escrow = {
     {
       "name": "recordReceiptScan",
       "docs": [
-        "Buyer links their receipt ScanProof; compared with the pre-ship scan → RECEIPT_SCANNED or MISMATCH."
+        "Buyer links their receipt ScanProof (signed no earlier than `shipped_at` − 600 s); compared with",
+        "the pre-ship scan → RECEIPT_SCANNED or MISMATCH."
       ],
       "discriminator": [
         192,
@@ -888,7 +952,8 @@ export type Escrow = {
     {
       "name": "reserve",
       "docs": [
-        "Buyer funds the vault with `price` USDC; `expected_price` must equal `order.price`."
+        "Buyer funds the vault with `price` USDC; `expected_price` must equal `order.price`. Unless the",
+        "asset is in the order's custody, the seller must still pass the `list` ownership rule."
       ],
       "discriminator": [
         92,
@@ -1004,6 +1069,74 @@ export type Escrow = {
             "flacon `Passport` of the order (a passport voided after listing cannot be bought).",
             "Appended last so the indices of the accounts above stay unchanged."
           ]
+        },
+        {
+          "name": "asset",
+          "docs": [
+            "custody, the seller must still be allowed to sell (`rules::check_seller`): an order whose seller",
+            "gave the Core asset away after listing, or whose issuer was removed as a partner, cannot be bought.",
+            "Appended after `passport` so the indices above stay unchanged."
+          ]
+        },
+        {
+          "name": "registry",
+          "docs": [
+            "flacon `Registry` (partner status of the issuer, see `asset`)."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                98,
+                108,
+                109,
+                16,
+                130,
+                102,
+                18,
+                115,
+                0,
+                222,
+                123,
+                19,
+                243,
+                219,
+                185,
+                85,
+                27,
+                118,
+                26,
+                151,
+                165,
+                135,
+                66,
+                155,
+                73,
+                126,
+                45,
+                144,
+                154,
+                70,
+                27,
+                41
+              ]
+            }
+          }
         }
       ],
       "args": [
@@ -1571,7 +1704,7 @@ export type Escrow = {
     {
       "code": 6023,
       "name": "notPassportOwner",
-      "msg": "Seller is not the owner of the passport's Core asset (or, without a Core asset, its issuer)"
+      "msg": "Seller is not the owner of the passport's Core asset (or, without a Core asset, its issuer while still a partner)"
     },
     {
       "code": 6024,
@@ -1582,6 +1715,16 @@ export type Escrow = {
       "code": 6025,
       "name": "wrongTokenOwner",
       "msg": "Token account does not belong to the expected recipient"
+    },
+    {
+      "code": 6026,
+      "name": "scanBeforeOrderStep",
+      "msg": "The scan is older than this order step: do a new scan after the reservation (shipping scan) or after shipping (receipt scan)"
+    },
+    {
+      "code": 6027,
+      "name": "deadSealAfterShipping",
+      "msg": "The order is shipped: a dead seal is settled by the escrow admin, not by the buyer"
     }
   ],
   "types": [
@@ -2161,6 +2304,51 @@ export type Escrow = {
       }
     },
     {
+      "name": "registry",
+      "docs": [
+        "Seeds: `[\"registry\"]`"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "serverKeys",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "serverKey"
+                }
+              }
+            }
+          },
+          {
+            "name": "partners",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "sites",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "site"
+                }
+              }
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
       "name": "scanProof",
       "docs": [
         "Seeds: `[\"scan\", seal, counter u32 LE]` — one PDA per accepted scan."
@@ -2301,6 +2489,62 @@ export type Escrow = {
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "serverKey",
+      "docs": [
+        "One accepted server signing key. `valid_to == 0` means open-ended."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "keyId",
+            "type": "u8"
+          },
+          {
+            "name": "pubkey",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "validFrom",
+            "type": "i64"
+          },
+          {
+            "name": "validTo",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "site",
+      "docs": [
+        "A physical location (vault, partner shop). `label` is UTF-8, zero padded."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "siteId",
+            "type": "u16"
+          },
+          {
+            "name": "label",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }

@@ -33,6 +33,23 @@ pub struct List<'info> {
     /// Appended last so the indices of the accounts above stay unchanged.
     #[account(address = passport.asset @ EscrowError::AssetMismatch)]
     pub asset: UncheckedAccount<'info>,
+    /// flacon `Registry`: without a Core asset the issuer may list only while it is still a partner
+    /// (or the authority). Appended after `asset` so the indices above stay unchanged.
+    #[account(seeds = [flacon::REGISTRY_SEED], bump = registry.bump, seeds::program = flacon::ID)]
+    pub registry: Account<'info, flacon::Registry>,
+}
+
+/// The seller rule (`rules::check_seller`) for a passport, its asset account and the flacon registry;
+/// shared by `list` and `reserve`.
+pub fn check_seller_of(
+    seller: &Pubkey,
+    passport: &flacon::Passport,
+    asset: &AccountInfo,
+    registry: &flacon::Registry,
+) -> Result<()> {
+    let asset_owner = core_asset_owner(asset.owner, &asset.try_borrow_data()?);
+    let issuer_active = registry.is_partner_or_authority(&passport.issuer);
+    check_seller(seller, &passport.issuer, asset_owner, issuer_active)
 }
 
 pub fn handle_list(ctx: Context<List>, price: u64) -> Result<()> {
@@ -42,9 +59,12 @@ pub fn handle_list(ctx: Context<List>, price: u64) -> Result<()> {
         !passport.void && passport.grade != flacon::GRADE_VOID,
         EscrowError::PassportVoid
     );
-    let asset = &ctx.accounts.asset;
-    let asset_owner = core_asset_owner(asset.owner, &asset.try_borrow_data()?);
-    check_seller(&ctx.accounts.seller.key(), &passport.issuer, asset_owner)?;
+    check_seller_of(
+        &ctx.accounts.seller.key(),
+        passport,
+        &ctx.accounts.asset.to_account_info(),
+        &ctx.accounts.registry,
+    )?;
     let now = Clock::get()?.unix_timestamp;
 
     let order = &mut ctx.accounts.order;

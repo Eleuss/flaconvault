@@ -1,6 +1,7 @@
 /**
- * Minimal Metaplex Core helpers without the umi stack: a hand-built `CreateV1` instruction and an
- * `AssetV1` reader. Used by the ops scripts and by tests/ (mint_passport only accepts a Core asset).
+ * Minimal Metaplex Core helpers without the umi stack: hand-built `CreateV1`, `TransferV1` and `BurnV1`
+ * instructions and an `AssetV1` reader. Used by the ops scripts and by tests/ (mint_passport only accepts a
+ * Core asset owned by the issuer).
  *
  * CreateV1 layout (mpl-core 0.12 IDL):
  *   data:     [0 (CreateV1), 0 (DataState::AccountState), name (u32 len + utf8), uri (u32 len + utf8), 0 (plugins: None)]
@@ -8,6 +9,11 @@
  *             · owner? · update_authority? · system_program · log_wrapper?
  * Absent optional accounts are passed as the Core program id (Metaplex convention); authority, owner and
  * update authority then default to the payer.
+ *
+ * TransferV1 (14) / BurnV1 (12) layout (as in programs/escrow/src/mpl_core.rs):
+ *   data:     [discriminator, 0 (compression_proof: None)]
+ *   TransferV1 accounts: asset (w) · collection? · payer (s, w) · authority? (s) · new_owner · system_program? · log_wrapper?
+ *   BurnV1 accounts:     asset (w) · collection? · payer (s, w) · authority? (s) · system_program? · log_wrapper?
  *
  * AssetV1 account: key u8 (1) · owner (32) · update_authority (enum u8 + 32 for Address/Collection) · …
  */
@@ -40,6 +46,43 @@ export function createCoreAssetIx(o: { asset: PublicKey; payer: PublicKey; owner
       none, // log wrapper
     ],
     data: Buffer.concat([Buffer.from([0, 0]), borshString(o.name), borshString(o.uri), Buffer.from([0])]),
+  });
+}
+
+/** Moves an asset (no collection) from `owner` (signer) to `newOwner`; `payer` pays the fee. */
+export function transferCoreAssetIx(o: { asset: PublicKey; payer: PublicKey; owner: PublicKey; newOwner: PublicKey }): TransactionInstruction {
+  const C = MPL_CORE_PROGRAM_ID;
+  const none = { pubkey: C, isSigner: false, isWritable: false };
+  return new TransactionInstruction({
+    programId: C,
+    keys: [
+      { pubkey: o.asset, isSigner: false, isWritable: true },
+      none, // collection
+      { pubkey: o.payer, isSigner: true, isWritable: true },
+      { pubkey: o.owner, isSigner: true, isWritable: false },
+      { pubkey: o.newOwner, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      none, // log wrapper
+    ],
+    data: Buffer.from([14, 0]),
+  });
+}
+
+/** Burns an asset (no collection) owned by `owner` (signer); the account stays, but is no longer an AssetV1. */
+export function burnCoreAssetIx(o: { asset: PublicKey; payer: PublicKey; owner: PublicKey }): TransactionInstruction {
+  const C = MPL_CORE_PROGRAM_ID;
+  const none = { pubkey: C, isSigner: false, isWritable: false };
+  return new TransactionInstruction({
+    programId: C,
+    keys: [
+      { pubkey: o.asset, isSigner: false, isWritable: true },
+      none, // collection
+      { pubkey: o.payer, isSigner: true, isWritable: true },
+      { pubkey: o.owner, isSigner: true, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      none, // log wrapper
+    ],
+    data: Buffer.from([12, 0]),
   });
 }
 

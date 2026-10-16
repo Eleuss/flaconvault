@@ -2,17 +2,18 @@
  * List a passport on the escrow market from the CLI wallet and record the LIST event on the verifier.
  *
  * Usage: npx tsx scripts/list-order.ts <serial> <priceUsdc> [--no-deposit] [--no-event] [verifyUrl]
- *   The wallet must own the passport's Metaplex Core asset (or be the issuer when there is no Core asset).
+ *   The wallet must own the passport's Metaplex Core asset (or, when there is no Core asset, be the issuer while still a
+ *   registry partner). The instructions come from apps/web/src/lib/escrow-ix.ts, the same builders the web app uses.
  *   An owned Core asset outside a collection is moved into escrow custody in the same transaction (it goes to the
  *   buyer on release) unless --no-deposit is given.
  * Env: ANCHOR_PROVIDER_URL (default devnet), ANCHOR_WALLET, FV_VERIFY_URL (default https://verify.flaconvault.com)
  */
-import { BN } from "@anchor-lang/core";
-import { PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { PublicKey, Transaction } from "@solana/web3.js";
 import { createHash } from "crypto";
-import { MPL_CORE_PROGRAM_ID, fetchCoreAsset } from "./lib/core";
+import { fetchCoreAsset } from "./lib/core";
 import { SERIAL_RE, loadWallet, postEvent, programFor, providerFor, verifyUrl } from "./lib/cli";
 import { formatUsdc, parsePriceUsdc } from "../apps/web/src/lib/escrow-rules";
+import { escrowIx, orderPdaOf, registryPdaOf } from "../apps/web/src/lib/escrow-ix";
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -32,23 +33,24 @@ async function main() {
   const seller = keypair.publicKey;
   const serialHash = createHash("sha256").update(serial).digest();
   const [passport] = PublicKey.findProgramAddressSync([Buffer.from("passport"), serialHash], flacon.programId);
-  const [config] = PublicKey.findProgramAddressSync([Buffer.from("config")], escrow.programId);
-  const [order] = PublicKey.findProgramAddressSync([Buffer.from("order"), passport.toBuffer(), seller.toBuffer()], escrow.programId);
+  const order = orderPdaOf(escrow.programId, passport, seller);
+  const registry = registryPdaOf(flacon.programId);
 
   const pp: any = await (flacon.account as any).passport.fetchNullable(passport);
   if (!pp) throw new Error(`passport ${serial} is not on chain`);
   if (pp.void || pp.grade === 4) throw new Error(`passport ${serial} is VOID`);
   const core = await fetchCoreAsset(connection, pp.asset);
-  const allowed = core ? core.owner.equals(seller) : pp.issuer.equals(seller);
-  if (!allowed) throw new Error(core ? `the Core asset ${pp.asset.toBase58()} belongs to ${core.owner.toBase58()}, not this wallet` : `only the issuer ${pp.issuer.toBase58()} can list this passport`);
-
-  const tx = new Transaction().add(
-    await escrow.methods.list(new BN(price.toString())).accountsStrict({ config, passport, order, seller, systemProgram: SystemProgram.programId, asset: pp.asset }).instruction()
-  );
-  const deposit = !!core && !core.inCollection && !flags.has("--no-deposit");
-  if (deposit) {
-    tx.add(await escrow.methods.depositAsset().accountsStrict({ order, seller, asset: pp.asset, mplCoreProgram: MPL_CORE_PROGRAM_ID, systemProgram: SystemProgram.programId }).instruction());
+  if (core && !core.owner.equals(seller)) throw new Error(`the Core asset ${pp.asset.toBase58()} belongs to ${core.owner.toBase58()}, not this wallet`);
+  if (!core) {
+    if (!pp.issuer.equals(seller)) throw new Error(`only the issuer ${pp.issuer.toBase58()} can list this passport`);
+    const reg: any = await (flacon.account as any).registry.fetch(registry);
+    const active = reg.authority.equals(seller) || reg.partners.some((p: PublicKey) => p.equals(seller));
+    if (!active) throw new Error(`the issuer ${seller.toBase58()} is no longer a registry partner, so it cannot list passports without a Core asset`);
   }
+
+  const tx = new Transaction().add(await escrowIx.list(escrow, passport, seller, price, pp.asset, registry).instruction());
+  const deposit = !!core && !core.inCollection && !flags.has("--no-deposit");
+  if (deposit) tx.add(await escrowIx.depositAsset(escrow, order, seller, pp.asset).instruction());
   const sig = await provider.sendAndConfirm(tx);
   console.log(`list ${serial} ${formatUsdc(price)} USDC → order ${order.toBase58()}${deposit ? " (Core asset in escrow custody)" : ""} ${sig}`);
 

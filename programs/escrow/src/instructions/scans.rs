@@ -6,17 +6,20 @@ use crate::{
     constants::*,
     error::EscrowError,
     events::{OrderShipped, PreShipScanRecorded, ReceiptScanRecorded},
+    rules::check_scan_not_before,
     state::Order,
 };
 
-/// Shared checks: the ScanProof belongs to `seal`, the seal to the order's passport,
-/// and the scan was attested by `expected_attester`.
+/// Shared checks: the ScanProof belongs to `seal`, the seal to the order's passport, the scan was
+/// attested by `expected_attester`, and it was signed no earlier than `not_before` (the order step it
+/// stands for, minus the clock-skew allowance; see `rules::check_scan_not_before`).
 fn check_scan(
     order: &Order,
     scan_proof: &flacon::ScanProof,
     seal_key: Pubkey,
     seal: &flacon::Seal,
     expected_attester: Pubkey,
+    not_before: i64,
 ) -> Result<()> {
     require_keys_eq!(scan_proof.seal, seal_key, EscrowError::ScanSealMismatch);
     require_keys_eq!(seal.passport, order.passport, EscrowError::SealPassportMismatch);
@@ -25,6 +28,7 @@ fn check_scan(
         expected_attester,
         EscrowError::ScanAttesterMismatch
     );
+    check_scan_not_before(scan_proof.ts, not_before)?;
     Ok(())
 }
 
@@ -53,6 +57,9 @@ pub fn handle_record_pre_ship_scan(ctx: Context<RecordPreShipScan>) -> Result<()
         ctx.accounts.seal.key(),
         &ctx.accounts.seal,
         order.seller,
+        // a scan from before the reservation (e.g. from when the seller bought the bottle) does not
+        // show that the seller still has it
+        order.reserved_at,
     )?;
 
     let now = Clock::get()?.unix_timestamp;
@@ -115,6 +122,7 @@ pub struct RecordReceiptScan<'info> {
     pub seller_scan: Account<'info, flacon::ScanProof>,
 }
 
+/// The receipt scan must be dated no earlier than `shipped_at − MAX_SCAN_TS_SKEW_S`.
 /// Compares the receipt scan with the pre-ship scan (briefing §11): `heat` equal,
 /// `hum` equal, |fill difference| ≤ FILL_TOLERANCE → RECEIPT_SCANNED, else MISMATCH.
 pub fn handle_record_receipt_scan(ctx: Context<RecordReceiptScan>) -> Result<()> {
@@ -128,6 +136,7 @@ pub fn handle_record_receipt_scan(ctx: Context<RecordReceiptScan>) -> Result<()>
         ctx.accounts.seal.key(),
         &ctx.accounts.seal,
         order.buyer,
+        order.shipped_at,
     )?;
     // Same seal ⇒ the receipt tap must be newer than the pre-ship tap.
     if buyer_scan.seal == seller_scan.seal {

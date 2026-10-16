@@ -4,9 +4,13 @@
  * and uses fresh random passports (each with a real Metaplex Core asset) so it never collides
  * with tests/flacon.ts.
  *
- * Windows: the dispute window is bounded to 1 h ..= 60 days, so the branches that need the window
- * to have passed (buyer refund when the seller never ships, release_after_timeout) are covered by the
- * Rust unit tests in programs/escrow/src/rules.rs; here only their "not yet" side runs on chain.
+ * Windows: the dispute window is bounded to 1 h ..= 60 days and this validator cannot move its clock, so
+ * the branches that need the window to have passed (buyer refund when the seller never ships,
+ * release_after_timeout) run in programs/escrow/tests/time_travel.rs (LiteSVM with a Clock override,
+ * scripts/test-escrow-time-travel.sh); here only their "not yet" side runs on chain.
+ *
+ * The payout test for a seller without a USDC account sends the web app's own builders
+ * (apps/web/src/lib/escrow-ix.ts), so dropping their create-ATA pre-instruction fails here.
  */
 import * as anchor from "@anchor-lang/core";
 import { BN, Program } from "@anchor-lang/core";
@@ -16,8 +20,11 @@ import type { Escrow } from "../target/types/escrow";
 import type { Flacon } from "../target/types/flacon";
 import { createAtaIdempotentIx, createMint, ensureAta, mintTo, TOKEN_PROGRAM_ID, tokenBalance, ataAddress } from "../scripts/lib/spl";
 import { MPL_CORE_PROGRAM_ID as MPL_CORE, fetchCoreAsset } from "../scripts/lib/core";
+import { escrowIx as webEscrowIx, type IxOrder } from "../apps/web/src/lib/escrow-ix";
 import {
   airdrop,
+  burnCoreAsset,
+  chainTime,
   createCoreAsset,
   ensureRegistry,
   enums,
@@ -25,6 +32,8 @@ import {
   mintPassportWithSeal,
   programDataOf,
   recordScan,
+  transferCoreAsset,
+  waitForChainTime,
   type PassportHandle,
   type RegistryHandle,
 } from "./lib/flacon";
@@ -72,7 +81,10 @@ describe("escrow", () => {
 
   // ---- flow helpers --------------------------------------------------------
 
-  const newPassport = () => mintPassportWithSeal(flacon, reg.registryPda, wallet);
+  /** passport PDA → its Core asset (reserve passes the order's asset) */
+  const assetOf = new Map<string, PublicKey>();
+  const track = (p: PassportHandle) => { assetOf.set(p.passportPda.toBase58(), p.asset); return p; };
+  const newPassport = async (opts: Parameters<typeof mintPassportWithSeal>[3] = {}) => track(await mintPassportWithSeal(flacon, reg.registryPda, wallet, opts));
 
   const listBuilder = (p: PassportHandle, price = PRICE, seller: Keypair = payer, asset: PublicKey = p.asset) => {
     const b = escrow.methods.list(new BN(price.toString())).accountsStrict({
@@ -82,6 +94,7 @@ describe("escrow", () => {
       seller: seller.publicKey,
       systemProgram: SystemProgram.programId,
       asset,
+      registry: reg.registryPda,
     });
     return seller === payer ? b : b.signers([seller]);
   };
@@ -89,7 +102,7 @@ describe("escrow", () => {
     await listBuilder(p, price).rpc();
     return orderPdaOf(p.passportPda, wallet);
   }
-  const reserveBuilder = (order: PublicKey, passport: PublicKey, expectedPrice: bigint = PRICE, who: Keypair = buyer) =>
+  const reserveBuilder = (order: PublicKey, passport: PublicKey, expectedPrice: bigint = PRICE, who: Keypair = buyer, asset?: PublicKey) =>
     escrow.methods
       .reserve(new BN(expectedPrice.toString()))
       .accountsStrict({
@@ -102,11 +115,14 @@ describe("escrow", () => {
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
         passport,
+        asset: asset ?? assetOf.get(passport.toBase58())!,
+        registry: reg.registryPda,
       })
       .signers([who]);
   const preShipBuilder = (order: PublicKey, scanProof: PublicKey, seal: PublicKey, seller: Keypair = payer) =>
     escrow.methods.recordPreShipScan().accountsStrict({ order, seller: seller.publicKey, scanProof, seal }).signers(seller === payer ? [] : [seller]);
-  const ship = (order: PublicKey) => escrow.methods.ship().accountsStrict({ order, seller: wallet }).rpc();
+  const ship = (order: PublicKey, seller: Keypair = payer) =>
+    escrow.methods.ship().accountsStrict({ order, seller: seller.publicKey }).signers(seller === payer ? [] : [seller]).rpc();
   const receipt = (order: PublicKey, scanProof: PublicKey, seal: PublicKey, sellerScan: PublicKey) =>
     escrow.methods
       .recordReceiptScan()
@@ -305,9 +321,9 @@ describe("escrow", () => {
     await expectAnchorError(listBuilder(p, PRICE, payer, other).rpc(), "AssetMismatch", idlErrors);
     await expectAnchorError(listBuilder(p, 0n).rpc(), "InvalidPrice", idlErrors);
 
-    // passport whose Core asset belongs to the buyer (issuer = wallet): the issuer may not list, the owner may
-    const ownedByBuyer = await createCoreAsset(connection, payer, { owner: buyer.publicKey });
-    const q = await mintPassportWithSeal(flacon, reg.registryPda, wallet, { asset: ownedByBuyer });
+    // passport whose Core asset the issuer (wallet) gave to the buyer: the issuer may not list any more, the owner may
+    const q = await newPassport();
+    await transferCoreAsset(connection, payer, q.asset, payer, buyer.publicKey);
     await expectAnchorError(listBuilder(q).rpc(), "NotPassportOwner", idlErrors);
     await listBuilder(q, PRICE, buyer).rpc();
     const oq = await order(orderPdaOf(q.passportPda, buyer.publicKey));
@@ -453,7 +469,7 @@ describe("escrow", () => {
     expect((await order(o)).state).to.equal(S.DISPUTE);
   });
 
-  it("dead seal: buyer refund while funded, but not once the receipt scan matched", async () => {
+  it("dead seal: buyer refund before shipping, but not once the receipt scan matched", async () => {
     const p = await newPassport();
     const o = await list(p);
     await reserveBuilder(o, p.passportPda).rpc();
@@ -533,8 +549,8 @@ describe("escrow", () => {
     expect(idl.accounts.map((a: any) => a.name).sort()).to.deep.equal(["EscrowConfig", "Order"]);
     // new accounts are appended, so existing account indices stay stable for the verifier
     const ix = (name: string) => idl.instructions.find((i: any) => i.name === name).accounts.map((a: any) => a.name);
-    expect(ix("list")).to.deep.equal(["config", "passport", "order", "seller", "system_program", "asset"]);
-    expect(ix("reserve")).to.deep.equal(["config", "order", "buyer", "buyer_token", "usdc_mint", "vault", "token_program", "system_program", "passport"]);
+    expect(ix("list")).to.deep.equal(["config", "passport", "order", "seller", "system_program", "asset", "registry"]);
+    expect(ix("reserve")).to.deep.equal(["config", "order", "buyer", "buyer_token", "usdc_mint", "vault", "token_program", "system_program", "passport", "asset", "registry"]);
     expect(ix("release_after_timeout")).to.deep.equal(ix("release"));
   });
 
@@ -572,5 +588,111 @@ describe("escrow", () => {
     await expectAnchorError(list(p), "NotPassportOwner", idlErrors);
     await listBuilder(p, USDC(520), buyer).rpc();
     expect((await order(orderPdaOf(p.passportPda, buyer.publicKey))).price.toString()).to.equal(USDC(520).toString());
+  });
+
+  it("dead seal after shipping: the buyer cannot refund it (the bottle may be delivered), the admin can", async () => {
+    const p = await newPassport();
+    const buyerBefore = await tokenBalance(connection, buyerAta);
+    const { o } = await upToShipped(p);
+    await markSealDead(p);
+    // e.g. a buyer who is also the issuer (or works with it) keeps the delivered bottle, kills its seal and disputes
+    await expectAnchorError(disputeBuilder(o, buyer, { seal: p.sealPda }).rpc(), "DeadSealAfterShipping", idlErrors);
+    await expectAnchorError(releaseAfterTimeoutBuilder(o).rpc(), "DisputeWindowNotElapsed", idlErrors);
+    expect((await order(o)).state).to.equal(S.SHIPPED);
+    await disputeBuilder(o, payer, { seal: p.sealPda }).rpc(); // admin
+    expect((await order(o)).state).to.equal(S.DISPUTE);
+    expect((await tokenBalance(connection, buyerAta)).toString()).to.equal(buyerBefore.toString());
+  });
+
+  it("stale scans: a scan from before the reservation is no shipping scan, one from before shipping no receipt scan", async () => {
+    const p = await newPassport();
+    const o = await list(p);
+    // the seller's scan from earlier (for example from when they bought the bottle), dated just inside flacon's window
+    const t0 = await chainTime(connection);
+    const oldSellerScan = await recordScan(flacon, provider, reg, p, { counter: 1, fill: 92, ts: t0 - 595 });
+    await waitForChainTime(connection, t0 - 595 + 602);
+    await reserveBuilder(o, p.passportPda).rpc();
+    expect((await order(o)).reservedAt.toNumber()).to.be.greaterThan(t0 - 595 + 600);
+    await expectAnchorError(preShipBuilder(o, oldSellerScan, p.sealPda).rpc(), "ScanBeforeOrderStep", idlErrors);
+    expect((await order(o)).state).to.equal(S.RESERVED);
+    const sellerScan = await recordScan(flacon, provider, reg, p, { counter: 2, fill: 92 });
+    await preShipBuilder(o, sellerScan, p.sealPda).rpc();
+
+    // a buyer scan anchored before the parcel was shipped
+    const t1 = await chainTime(connection);
+    const early = await recordScan(flacon, provider, reg, p, { counter: 3, fill: 92, role: enums.role.BUYER, attester: buyer, ts: t1 - 595 });
+    await waitForChainTime(connection, t1 - 595 + 602);
+    await ship(o);
+    await expectAnchorError(receipt(o, early, p.sealPda, sellerScan), "ScanBeforeOrderStep", idlErrors);
+    expect((await order(o)).state).to.equal(S.SHIPPED);
+    const fresh = await recordScan(flacon, provider, reg, p, { counter: 4, fill: 92, role: enums.role.BUYER, attester: buyer });
+    await receipt(o, fresh, p.sealPda, sellerScan);
+    expect((await order(o)).state).to.equal(S.RECEIPT_SCANNED);
+    await releaseBuilder(o).rpc();
+  });
+
+  it("reserve checks the seller again: an order whose seller gave the Core asset away cannot be bought", async () => {
+    const p = await newPassport();
+    const o = await list(p); // listed without custody (asset stays with the seller)
+    const newOwner = Keypair.generate().publicKey;
+    await transferCoreAsset(connection, payer, p.asset, payer, newOwner);
+    await expectAnchorError(reserveBuilder(o, p.passportPda).rpc(), "NotPassportOwner", idlErrors);
+    // the asset account must be the order's asset
+    const other = await createCoreAsset(connection, payer);
+    await expectAnchorError(reserveBuilder(o, p.passportPda, PRICE, buyer, other).rpc(), "AssetMismatch", idlErrors);
+    expect((await order(o)).state).to.equal(S.LISTED);
+    expect(await connection.getAccountInfo(vaultPdaOf(o))).to.be.null;
+  });
+
+  it("without a Core asset only the issuer sells, and only while it is a partner: removing it stops listing and reserving", async () => {
+    const issuer = Keypair.generate();
+    await airdrop(provider, issuer.publicKey, 2);
+    const admin = { registry: reg.registryPda, authority: wallet };
+    await flacon.methods.addPartner(issuer.publicKey).accountsStrict(admin).rpc();
+    const p = await newPassport({ issuer });
+    // the asset is burned: the passport points at an account that is no longer a Core asset (like passports minted
+    // before mint_passport checked the asset)
+    await burnCoreAsset(connection, payer, p.asset, issuer);
+    expect(await fetchCoreAsset(connection, p.asset)).to.equal(null);
+    await expectAnchorError(listBuilder(p, PRICE, payer).rpc(), "NotPassportOwner", idlErrors); // the authority is not the issuer
+    await listBuilder(p, PRICE, issuer).rpc();
+    const o = orderPdaOf(p.passportPda, issuer.publicKey);
+
+    await flacon.methods.removePartner(issuer.publicKey).accountsStrict(admin).rpc();
+    await expectAnchorError(reserveBuilder(o, p.passportPda).rpc(), "NotPassportOwner", idlErrors);
+    await escrow.methods
+      .cancel()
+      .accountsStrict({ order: o, seller: issuer.publicKey, asset: null, mplCoreProgram: null, systemProgram: SystemProgram.programId })
+      .signers([issuer])
+      .rpc();
+    await escrow.methods.closeOrder().accountsStrict({ order: o, seller: issuer.publicKey }).signers([issuer]).rpc();
+    await expectAnchorError(listBuilder(p, PRICE, issuer).rpc(), "NotPassportOwner", idlErrors);
+  });
+
+  it("a seller who never held USDC is paid: the web app's release builder creates the seller's token account first (M15)", async () => {
+    const seller = Keypair.generate();
+    await airdrop(provider, seller.publicKey, 2);
+    const p = await newPassport();
+    await transferCoreAsset(connection, payer, p.asset, payer, seller.publicKey);
+    await listBuilder(p, PRICE, seller).rpc();
+    const o = orderPdaOf(p.passportPda, seller.publicKey);
+    await reserveBuilder(o, p.passportPda).rpc();
+    const sellerScan = await recordScan(flacon, provider, reg, p, { counter: 1, fill: 92, attester: seller });
+    await preShipBuilder(o, sellerScan, p.sealPda, seller).rpc();
+    await ship(o, seller);
+    const buyerScan = await recordScan(flacon, provider, reg, p, { counter: 2, fill: 92, role: enums.role.BUYER, attester: buyer });
+    await receipt(o, buyerScan, p.sealPda, sellerScan);
+    const sellerUsdc = ataAddress(seller.publicKey, mint);
+    expect(await connection.getAccountInfo(sellerUsdc), "the seller has no USDC account").to.be.null;
+
+    const a = await order(o);
+    const view: IxOrder = {
+      pubkey: o, passport: a.passport, seller: a.seller, buyer: a.buyer, asset: a.asset, priceBase: BigInt(a.price.toString()),
+      sellerScan: a.sellerScan, assetDeposited: a.assetDeposited,
+    };
+    const tx = await webEscrowIx.release(escrow as unknown as Program, view, wallet, mint).transaction();
+    await provider.sendAndConfirm(tx);
+    expect((await order(o)).state).to.equal(S.RELEASED);
+    expect((await tokenBalance(connection, sellerUsdc)).toString()).to.equal(PRICE.toString());
   });
 });

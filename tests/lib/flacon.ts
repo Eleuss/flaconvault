@@ -20,7 +20,7 @@ import { createHash, randomBytes } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import nacl from "tweetnacl";
-import { createCoreAssetIx } from "../../scripts/lib/core";
+import { burnCoreAssetIx, createCoreAssetIx, transferCoreAssetIx } from "../../scripts/lib/core";
 
 export const ROOT = path.join(__dirname, "../..");
 export const vectors = JSON.parse(fs.readFileSync(path.join(ROOT, "docs/vectors.json"), "utf8"));
@@ -221,10 +221,36 @@ export async function createCoreAsset(
   return asset.publicKey;
 }
 
+/** Moves a Core asset from `owner` (signs) to `newOwner`; `payer` pays the fee. */
+export async function transferCoreAsset(connection: Connection, payer: Keypair, asset: PublicKey, owner: Keypair, newOwner: PublicKey): Promise<void> {
+  const ix = transferCoreAssetIx({ asset, payer: payer.publicKey, owner: owner.publicKey, newOwner });
+  const signers = owner.publicKey.equals(payer.publicKey) ? [payer] : [payer, owner];
+  await sendAndConfirmTransaction(connection, new Transaction().add(ix), signers, { commitment: "confirmed" });
+}
+
+/** Burns a Core asset owned by `owner` (signs): afterwards the passport that points at it has no Core asset any more. */
+export async function burnCoreAsset(connection: Connection, payer: Keypair, asset: PublicKey, owner: Keypair): Promise<void> {
+  const ix = burnCoreAssetIx({ asset, payer: payer.publicKey, owner: owner.publicKey });
+  const signers = owner.publicKey.equals(payer.publicKey) ? [payer] : [payer, owner];
+  await sendAndConfirmTransaction(connection, new Transaction().add(ix), signers, { commitment: "confirmed" });
+}
+
+/** Waits until the validator clock has reached `unix` (seconds). */
+export async function waitForChainTime(connection: Connection, unix: number, timeoutMs = 60_000): Promise<void> {
+  const until = Date.now() + timeoutMs;
+  while ((await chainTime(connection)) < unix) {
+    if (Date.now() > until) throw new Error(`validator clock did not reach ${unix}`);
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
 /** The provider's keypair (AnchorProvider.env() uses a NodeWallet that exposes `payer`). */
 export const providerPayer = (program: Program<any>): Keypair => ((program.provider as anchor.AnchorProvider).wallet as anchor.Wallet).payer;
 
-/** Mints a passport (issuer = wallet or `opts.issuer`, must be partner) with a fresh Core asset and attaches one seal. */
+/**
+ * Mints a passport (issuer = wallet or `opts.issuer`, must be partner) with a fresh Core asset owned by the issuer
+ * (mint_passport refuses an asset of anyone else) and attaches one seal.
+ */
 export async function mintPassportWithSeal(
   program: Program<any>,
   registryPda: PublicKey,

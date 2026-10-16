@@ -5,10 +5,20 @@
 //! seller never ships   RESERVED / PRESHIP_SCANNED, now > reserved_at + window → buyer refund (TIMEOUT)
 //! buyer never scans    SHIPPED,                     now > shipped_at  + window → anyone: pay the SELLER
 //! scans disagree       MISMATCH                                               → only the admin: resolve(to_seller)
-//! seal dead            RESERVED / PRESHIP_SCANNED / SHIPPED                   → buyer refund (SEAL_DEAD)
+//! seal dead            RESERVED / PRESHIP_SCANNED                             → buyer refund (SEAL_DEAD)
+//! seal dead, shipped   SHIPPED                                                → only the admin (dispute)
 //! receipt matched      RECEIPT_SCANNED                                        → release only (no dispute)
 //! admin                RESERVED / PRESHIP_SCANNED / SHIPPED                   → refund (ADMIN)
 //! ```
+//!
+//! A dead seal after `ship` is left to the admin: the program cannot tell whether the seal died before
+//! the parcel left or after it arrived (a `Seal` has no `dead_at`, and its layout is frozen), and the
+//! issuer and the registry authority may mark a seal dead. A buyer who is (or works with) one of them
+//! could otherwise keep the delivered bottle, kill its seal and take the USDC back.
+//!
+//! Scans: the shipping scan must be dated no earlier than `reserved_at − MAX_SCAN_TS_SKEW_S` and the
+//! receipt scan no earlier than `shipped_at − MAX_SCAN_TS_SKEW_S` (`check_scan_not_before`), so an old
+//! ScanProof (for example the scan from when the seller bought the bottle) never stands in for them.
 
 use anchor_lang::prelude::*;
 
@@ -65,7 +75,12 @@ pub fn buyer_dispute_reason(d: &BuyerDispute) -> Result<u8> {
     match d.seal_dead {
         Some(dead) => {
             require!(dead, EscrowError::SealNotDead);
-            require!(admin_may_refund(d.state), EscrowError::InvalidState);
+            // shipped: the bottle may already be with the buyer; only the admin refunds (see module docs)
+            require!(d.state != ORDER_STATE_SHIPPED, EscrowError::DeadSealAfterShipping);
+            require!(
+                d.state == ORDER_STATE_RESERVED || d.state == ORDER_STATE_PRESHIP_SCANNED,
+                EscrowError::InvalidState
+            );
             Ok(DISPUTE_REASON_SEAL_DEAD)
         }
         None => {
@@ -102,15 +117,28 @@ pub fn core_asset_owner(owner_program: &Pubkey, data: &[u8]) -> Option<Pubkey> {
     Pubkey::try_from(&data[1..33]).ok()
 }
 
-/// Who may list a passport: the owner of its Core asset when the asset exists; only when there is no
-/// Core asset behind `passport.asset` (passports minted before the program checked it) the issuer.
-/// While the asset sits in another order's custody its owner is that Order PDA, so nobody can list.
-pub fn check_seller(seller: &Pubkey, issuer: &Pubkey, asset_owner: Option<Pubkey>) -> Result<()> {
+/// Who may sell a passport (checked by `list`, and again by `reserve` unless the asset is in the order's
+/// custody): the owner of its Core asset when the asset exists; only when there is no Core asset behind
+/// `passport.asset` (passports minted before the program checked it) the issuer, and only while the
+/// issuer is still a registry partner or the authority (`issuer_active`), so a removed partner loses the
+/// right to sell the bottles it issued. While the asset sits in an order's custody its owner is that
+/// Order PDA, so nobody else can sell it.
+pub fn check_seller(seller: &Pubkey, issuer: &Pubkey, asset_owner: Option<Pubkey>, issuer_active: bool) -> Result<()> {
     let allowed = match asset_owner {
         Some(owner) => &owner == seller,
-        None => issuer == seller,
+        None => issuer == seller && issuer_active,
     };
     require!(allowed, EscrowError::NotPassportOwner);
+    Ok(())
+}
+
+/// A scan linked to an order step must not predate it: `scan_ts >= step_at − MAX_SCAN_TS_SKEW_S`
+/// (`step_at` = `reserved_at` for the shipping scan, `shipped_at` for the receipt scan). The allowance is
+/// the clock skew flacon accepts between the server's signed ts and the cluster clock, so an honest scan
+/// made after the step always passes.
+pub fn check_scan_not_before(scan_ts: i64, step_at: i64) -> Result<()> {
+    let earliest = step_at.saturating_sub(flacon::MAX_SCAN_TS_SKEW_S);
+    require!(scan_ts >= earliest, EscrowError::ScanBeforeOrderStep);
     Ok(())
 }
 
@@ -171,13 +199,35 @@ mod tests {
     }
 
     #[test]
-    fn dead_seal_refund_only_before_a_matched_receipt() {
-        for s in [ORDER_STATE_RESERVED, ORDER_STATE_PRESHIP_SCANNED, ORDER_STATE_SHIPPED] {
+    fn dead_seal_refund_only_before_shipping() {
+        for s in [ORDER_STATE_RESERVED, ORDER_STATE_PRESHIP_SCANNED] {
             assert_eq!(buyer(s, Some(true), 0).unwrap(), DISPUTE_REASON_SEAL_DEAD);
             assert_eq!(code(buyer(s, Some(false), 0)), err(EscrowError::SealNotDead));
         }
+        // shipped: the bottle may be with the buyer already — the admin decides, not the buyer
+        assert_eq!(code(buyer(ORDER_STATE_SHIPPED, Some(true), 0)), err(EscrowError::DeadSealAfterShipping));
+        assert_eq!(code(buyer(ORDER_STATE_SHIPPED, Some(true), i64::MAX / 2)), err(EscrowError::DeadSealAfterShipping));
+        assert_eq!(code(buyer(ORDER_STATE_SHIPPED, Some(false), 0)), err(EscrowError::SealNotDead));
+        assert!(admin_may_refund(ORDER_STATE_SHIPPED));
         assert_eq!(code(buyer(ORDER_STATE_RECEIPT_SCANNED, Some(true), 0)), err(EscrowError::ReceiptMatched));
         assert_eq!(code(buyer(ORDER_STATE_RECEIPT_SCANNED, None, i64::MAX / 2)), err(EscrowError::ReceiptMatched));
+        for s in [ORDER_STATE_LISTED, ORDER_STATE_RELEASED, ORDER_STATE_DISPUTE, ORDER_STATE_CANCELLED] {
+            assert_eq!(code(buyer(s, Some(true), 0)), err(EscrowError::InvalidState), "state {s}");
+        }
+    }
+
+    #[test]
+    fn scans_must_not_predate_the_order_step() {
+        let step = 1_000_000;
+        assert!(check_scan_not_before(step, step).is_ok());
+        assert!(check_scan_not_before(step + DAY, step).is_ok());
+        // the flacon clock-skew allowance: a scan signed up to 600 s before the step still counts
+        assert!(check_scan_not_before(step - 600, step).is_ok());
+        assert_eq!(code(check_scan_not_before(step - 601, step)), err(EscrowError::ScanBeforeOrderStep));
+        // an old scan (e.g. from when the seller bought the bottle) never does
+        assert_eq!(code(check_scan_not_before(step - 30 * DAY, step)), err(EscrowError::ScanBeforeOrderStep));
+        assert_eq!(code(check_scan_not_before(i64::MIN, i64::MIN)), None);
+        assert_eq!(code(check_scan_not_before(i64::MIN, 0)), err(EscrowError::ScanBeforeOrderStep));
     }
 
     #[test]
@@ -201,13 +251,16 @@ mod tests {
     #[test]
     fn seller_rule() {
         let (a, b, issuer) = (Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique());
-        assert!(check_seller(&a, &issuer, Some(a)).is_ok());
-        assert_eq!(code(check_seller(&b, &issuer, Some(a))), err(EscrowError::NotPassportOwner));
-        // once the asset changed hands the issuer can no longer list it
-        assert_eq!(code(check_seller(&issuer, &issuer, Some(a))), err(EscrowError::NotPassportOwner));
-        // no Core asset behind passport.asset: issuer only
-        assert!(check_seller(&issuer, &issuer, None).is_ok());
-        assert_eq!(code(check_seller(&a, &issuer, None)), err(EscrowError::NotPassportOwner));
+        for active in [true, false] {
+            assert!(check_seller(&a, &issuer, Some(a), active).is_ok());
+            assert_eq!(code(check_seller(&b, &issuer, Some(a), active)), err(EscrowError::NotPassportOwner));
+            // once the asset changed hands the issuer can no longer sell it
+            assert_eq!(code(check_seller(&issuer, &issuer, Some(a), active)), err(EscrowError::NotPassportOwner));
+            assert_eq!(code(check_seller(&a, &issuer, None, active)), err(EscrowError::NotPassportOwner));
+        }
+        // no Core asset behind passport.asset: the issuer, while still a partner (or the authority)
+        assert!(check_seller(&issuer, &issuer, None, true).is_ok());
+        assert_eq!(code(check_seller(&issuer, &issuer, None, false)), err(EscrowError::NotPassportOwner));
     }
 
     #[test]

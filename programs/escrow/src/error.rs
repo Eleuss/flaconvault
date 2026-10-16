@@ -50,10 +50,14 @@ pub enum EscrowError {
     // ---- appended (keep the codes above stable) ----
     #[msg("The order's price differs from the price the buyer agreed to")]
     PriceChanged,
-    #[msg("Seller is not the owner of the passport's Core asset (or, without a Core asset, its issuer)")]
+    #[msg("Seller is not the owner of the passport's Core asset (or, without a Core asset, its issuer while still a partner)")]
     NotPassportOwner,
     #[msg("The receipt scan matched the shipping scan: release the order instead of disputing it")]
     ReceiptMatched,
     #[msg("Token account does not belong to the expected recipient")]
     WrongTokenOwner,
+    #[msg("The scan is older than this order step: do a new scan after the reservation (shipping scan) or after shipping (receipt scan)")]
+    ScanBeforeOrderStep,
+    #[msg("The order is shipped: a dead seal is settled by the escrow admin, not by the buyer")]
+    DeadSealAfterShipping,
 }

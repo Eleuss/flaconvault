@@ -13,6 +13,10 @@ function loadCv(): Promise<any> {
         self.importScripts("/vendor/opencv.js");
         Promise.resolve(self.cv).then(resolve, reject);
       } catch (e) { reject(e); }
+    }).catch((e) => {
+      // a failed 13 MB download (mobile network drop) must not stay cached: the next request tries again
+      cvPromise = null;
+      throw e;
     });
   }
   return cvPromise;

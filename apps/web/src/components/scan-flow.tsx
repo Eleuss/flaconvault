@@ -7,21 +7,25 @@ import { ArrowRight, Camera, Loader2, Nfc, RefreshCw, ShieldOff, Zap } from "luc
 import { Indicator, Role, Tier, NONCE_TTL_S } from "@flaconvault/proof";
 import type { CardReading, FrameLike, HeatFieldsConfig } from "@flaconvault/vision";
 import { VisionClient, frameFromSource } from "@/vision/client";
-import { api, parseTagUrl, sha256Hex, type Preview, type Session, type SimTag, type TagParams } from "@/lib/verify-api";
-import { scanSession, tapHandoff } from "@/lib/handoff";
-import { buildRecordScanTx, flaconProgram, type VerifyResponse } from "@/lib/flacon";
-import { creatingSignature, sendAsV0 } from "@/lib/send-tx";
+import { combineReadings } from "@/vision/vote";
+import { api, attesterMismatch, parseTagUrl, sha256Hex, signedAttester, verifyBody, type Preview, type Session, type SimTag, type TagParams, type VerifyResult } from "@/lib/verify-api";
+import { adoptDeadline, scanSession, scanUrlFor, secondsLeft, sessionClock, tapHandoff, type SessionClock } from "@/lib/handoff";
+import { buildRecordScanTx, flaconProgram, programId } from "@/lib/flacon";
+import { creatingSignature, scanProofAttester, sendAsV0 } from "@/lib/send-tx";
 import { ApiError, friendly } from "@/lib/errors";
-import { DEV_SIMULATOR, PROGRAM_ID } from "@/lib/config";
-import { gradeLetter, gradeSentence, indicatorText, txUrl, verdictText } from "@/lib/format";
+import { PROGRAM_ID } from "@/lib/config";
+import { demoMode } from "@/lib/demo";
+import { effectiveVerdict, gradeLetter, gradeSentence, indicatorText, passportHref, short, txUrl, verdictText } from "@/lib/format";
 import { GradeMark, Lamp, Pill } from "./badges";
 import { WalletButton } from "./wallet-button";
-import { isIOS, noInjectedWallet, resumeState, resumeUrl, walletBrowseLinks } from "@/lib/wallet-links";
+import { isIOS, noInjectedWallet, resumeRef, resumeUrl, walletBrowseLinks } from "@/lib/wallet-links";
 import { WalletReadyState } from "@solana/wallet-adapter-base";
 
 type Step = "session" | "tap" | "preview" | "camera" | "read" | "verify" | "tx" | "done" | "dead";
 /** `tapId` + `tapToken`: a tap /t already verified (adopted via ?adopt=&k=); the token proves this browser saw that tap. */
 interface Tag extends TagParams { source: "nfc" | "simulator"; serial?: string | null; tapId?: number; tapToken?: string }
+/** The session's local deadline; `limitedBy: "tap"` when an adopted tap's 180 s server window ends first. */
+type Clock = SessionClock & { limitedBy: "session" | "tap" };
 const platform = () => (typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent) ? "ANDROID_WEB" : typeof navigator !== "undefined" && /iPhone|iPad/i.test(navigator.userAgent) ? "IOS_WEB" : "DESKTOP_WEB");
 const nonceCode = (nonce: string) => nonce.replace(/^0x/, "").slice(0, 6).toUpperCase();
 
@@ -41,6 +45,7 @@ export function ScanFlow() {
   const anchorWallet = useAnchorWallet();
   const [step, setStep] = useState<Step>("session");
   const [session, setSession] = useState<Session | null>(null);
+  const [clock, setClock] = useState<Clock | null>(null);
   const [left, setLeft] = useState(NONCE_TTL_S);
   const [tag, setTag] = useState<Tag | null>(null);
   const [simTags, setSimTags] = useState<SimTag[]>([]);
@@ -56,26 +61,49 @@ export function ScanFlow() {
   // Vault/Partner roles only exist in the certified flow (the role select offers them only there)
   const defaultRole = Number.isInteger(qRole) && qRole >= 0 && qRole <= 4 && (certified || qRole <= Role.BUYER) ? qRole : Role.OWNER;
   const [role, setRole] = useState<number>(defaultRole);
-  const siteId = certified && qSite > 0 ? qSite : 0;
+  const siteId = certified && Number.isInteger(qSite) && qSite > 0 ? qSite : 0;
   const [city, setCity] = useState("");
-  const [country, setCountry] = useState("DE");
-  const [verify, setVerify] = useState<VerifyResponse | null>(null);
+  const [country, setCountry] = useState("");
+  const [verify, setVerify] = useState<VerifyResult | null>(null);
   const [txSig, setTxSig] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nfcState, setNfcState] = useState<string>("");
   const [deadSerial, setDeadSerial] = useState("");
+  const [camReady, setCamReady] = useState(false);
   const cfg = useRef<HeatFieldsConfig | null>(null);
   const vision = useRef<VisionClient | null>(null);
   const video = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
   const nfcAbort = useRef<AbortController | null>(null);
+  /** synchronous guard: a second press on Capture must not start a parallel run before `busy` re-renders */
+  const capturing = useRef(false);
+  /** the photos uploaded for this session (one upload per set of frames; the verifier caps files per nonce) */
+  const uploaded = useRef<{ mediaHash: string; sha256: string } | null>(null);
+  // demo tools (virtual taps, test images, airdrop) — read after hydration, see lib/demo.ts
+  const [demo, setDemo] = useState(false);
+  useEffect(() => setDemo(demoMode()), []);
   // the virtual-tap card only makes sense when the verifier runs its simulator (off in production)
   const [serverSim, setServerSim] = useState(false);
-  useEffect(() => { if (DEV_SIMULATOR) api.health().then((h) => setServerSim(!!h.simulator)).catch(() => setServerSim(false)); }, []);
+  useEffect(() => { if (demo) api.health().then((h) => setServerSim(!!h.simulator)).catch(() => setServerSim(false)); }, [demo]);
+  useEffect(() => { if (demo && serverSim && step === "tap") api.simTags().then(setSimTags).catch(() => setSimTags([])); }, [demo, serverSim, step]);
   const deadNonceSpent = useRef<string | null>(null);
   const [tierOverride, setTierOverride] = useState<number | null>(null);
   const tier = tierOverride ?? (certified ? qTier : frames ? Tier.SELF_MEDIA : Tier.SELF);
+  const scanUrl = scanUrlFor(params);
+
+  /**
+   * Takes a fresh session from the server: local deadline + clock offset. `share` publishes it to /t in other tabs
+   * (localStorage) so a tap is handed over instead of consumed — only while this page waits for a tap.
+   */
+  const adoptSession = useCallback((s: Session, deadlineOverride?: { deadline: number; limitedBy: "session" | "tap" }, share = true) => {
+    const base = sessionClock(s);
+    const c: Clock = { ...base, deadline: deadlineOverride?.deadline ?? base.deadline, limitedBy: deadlineOverride?.limitedBy ?? "session" };
+    if (share) scanSession.set({ nonce: s.nonce, expiresAt: s.expiresAt, ttl: s.ttl, issuedAt: s.issuedAt, deadline: c.deadline, offset: c.offset, scanUrl });
+    setSession(s); setClock(c); setLeft(secondsLeft(c.deadline));
+    uploaded.current = null;
+    return c;
+  }, [scanUrl]);
 
   // ---- 1. session -------------------------------------------------------
   const startSession = useCallback(async () => {
@@ -84,25 +112,26 @@ export function ScanFlow() {
     setTierOverride(null); setRole(defaultRole); setNfcState(""); setDeadSerial("");
     try {
       const s = await api.session();
-      scanSession.set({ nonce: s.nonce, expiresAt: s.expiresAt, ttl: s.ttl, issuedAt: s.issuedAt });
-      setSession(s); setLeft(s.ttl ?? NONCE_TTL_S); setStep("tap");
-      if (DEV_SIMULATOR) api.simTags().then(setSimTags).catch(() => setSimTags([]));
+      adoptSession(s);
+      setStep("tap");
     } catch (e) { setError(friendly(e)); }
-  }, [defaultRole]);
+  }, [defaultRole, adoptSession]);
   useEffect(() => {
     vision.current = new VisionClient();
-    fetch("/heat_fields.json").then((r) => r.json()).then((c) => { cfg.current = c; });
+    fetch("/heat_fields.json").then((r) => r.json()).then((c) => { cfg.current = c; }).catch(() => { /* the read step reports a missing config */ });
     return () => { vision.current?.terminate(); stream.current?.getTracks().forEach((t) => t.stop()); nfcAbort.current?.abort(); };
   }, []);
   // The 90 s window covers tap → photo → server signature. Once the server has signed ("tx"), the signed scan stays
   // anchorable: the countdown stops and expiry no longer hides or blocks the anchor step.
   const timed = step !== "tx" && step !== "done" && step !== "dead";
   useEffect(() => {
-    if (!session || !timed) return;
-    const id = setInterval(() => setLeft(Math.max(0, Math.round(session.expiresAt - Date.now() / 1000))), 500);
+    if (!clock || !timed) return;
+    const tick = () => setLeft(secondsLeft(clock.deadline));
+    tick();
+    const id = setInterval(tick, 500);
     return () => clearInterval(id);
-  }, [session, timed]);
-  const expired = session != null && left <= 0 && timed;
+  }, [clock, timed]);
+  const expired = session != null && clock != null && left <= 0 && timed;
   useEffect(() => { if (!timed || expired) scanSession.clear(); }, [timed, expired]);
   // WebNFC: release the reader whenever the tap step is left (or the session runs out)
   useEffect(() => { if (step !== "tap" || expired) { nfcAbort.current?.abort(); nfcAbort.current = null; } }, [step, expired]);
@@ -112,8 +141,9 @@ export function ScanFlow() {
     setTag(t); setBusy("preview");
     try {
       const p = await api.preview(t);
-      setPreview(p);
-      setStep(p.verdict === "NO_RESPONSE" ? "dead" : "preview");
+      const verdict = effectiveVerdict(p);
+      setPreview({ ...p, verdict });
+      setStep(verdict === "NO_RESPONSE" ? "dead" : "preview");
     } catch (e) { setError(friendly(e)); }
     finally { setBusy(null); }
   }, []);
@@ -123,26 +153,39 @@ export function ScanFlow() {
   useEffect(() => {
     if (resumed.current || step !== "session") return;
     resumed.current = true;
+    if (params.has("resume") || params.has("adopt")) return; // those flows bring their own state
+    // only the tab that started the session takes it up again (a second /scan tab on the same nonce would fail)
     const s = scanSession.active();
-    if (!s) return;
+    if (!s || !scanSession.ownedHere(s)) return;
     setSession({ nonce: s.nonce, expiresAt: s.expiresAt, ttl: s.ttl ?? NONCE_TTL_S, issuedAt: s.issuedAt });
-    setLeft(Math.max(0, Math.round(s.expiresAt - Date.now() / 1000)));
+    setClock({ deadline: s.deadline, offset: s.offset, limitedBy: "session" });
+    setLeft(secondsLeft(s.deadline));
     setNfcState("Session resumed");
     setStep("tap");
-    if (DEV_SIMULATOR) api.simTags().then(setSimTags).catch(() => setSimTags([]));
-  }, [step]);
-  // Resume at the anchor step inside a wallet app's browser (iPhone): state travels in ?resume= (see lib/wallet-links.ts)
+  }, [step, params]);
+  // Resume at the anchor step inside a wallet app's browser (iPhone): ?resume=<eventId>.<token> (see lib/wallet-links.ts)
   const resumedTx = useRef(false);
   useEffect(() => {
     if (resumedTx.current) return;
     const r = params.get("resume");
     if (!r) return;
     resumedTx.current = true;
-    const st = resumeState.decode(r);
-    if (!st) { setError("Resume link invalid"); return; }
-    setVerify(st.v); setRole(st.role); setTierOverride(st.tier);
-    setStep("tx");
-  }, [params]);
+    const ref = resumeRef.decode(r);
+    if (!ref) { setError("This resume link is invalid. Start a new scan."); return; }
+    (async () => {
+      setBusy("resume");
+      try {
+        const v = await api.resume(ref.eventId, ref.token);
+        const signed = signedAttester(v);
+        setVerify(v);
+        setRole(signed.role ?? defaultRole);
+        // the server's record of the scan decides tier and role; the link's own parameters only as a fallback
+        setTierOverride(signed.tier ?? (params.get("tier") != null && Number.isInteger(qTier) ? qTier : null));
+        setStep(v.verdict === "VALID" ? "tx" : "verify");
+      } catch (e) { setError(friendly(e)); }
+      finally { setBusy(null); }
+    })();
+  }, [params, defaultRole, qTier]);
   // Adopt a tap that already landed on /t (phone background NFC read): one tap, then straight on to the card photo.
   const adopted = useRef(false);
   useEffect(() => {
@@ -153,16 +196,19 @@ export function ScanFlow() {
       setError(null);
       try {
         const [s, t] = await Promise.all([api.session(), api.tap(id)]);
-        scanSession.set({ nonce: s.nonce, expiresAt: s.expiresAt, ttl: s.ttl, issuedAt: s.issuedAt });
-        setSession(s); setLeft(s.ttl ?? NONCE_TTL_S);
-        if (Date.now() / 1000 - t.ts > 170) { setPreview({ ...t, verdict: "REPLAY" }); setStep("preview"); setNfcState("Tap is older than 3 minutes — please tap again"); return; }
+        // the server adopts a /t tap for 180 s after it happened: the countdown ends with whichever comes first
+        const ad = adoptDeadline(t.ts, sessionClock(s));
+        adoptSession(s, ad);
+        const verdict = effectiveVerdict(t);
+        const p: Preview = { verdict, counter: t.counter, serial: t.serial, serialHash: t.serialHash, uidHash: t.uidHash, sealKind: t.sealKind, sealDead: t.sealDead };
+        if (secondsLeft(ad.deadline) <= 0) { setPreview({ ...p, verdict: "TAP_TOO_OLD" }); setStep("preview"); setNfcState("This tap is older than 3 minutes — please tap the seal again"); return; }
         setTag({ uid: t.uid ?? "", ctr: t.counter != null ? t.counter.toString(16).padStart(6, "0").toUpperCase() : "", cmac: "", source: "nfc", serial: t.serial ?? undefined, tapId: t.tapId, tapToken: k ?? undefined });
-        setPreview({ verdict: t.verdict, counter: t.counter, serial: t.serial, serialHash: t.serialHash, uidHash: t.uidHash, sealKind: t.sealKind, sealDead: !!t.sealDead });
+        setPreview(p);
         setNfcState("Tap handed over");
-        setStep("preview");
+        setStep(verdict === "NO_RESPONSE" ? "dead" : "preview");
       } catch (e) { setError(`Tap could not be handed over: ${friendly(e)}`); }
     })();
-  }, [params]);
+  }, [params, adoptSession]);
   // adopt / k / resume are one-shot: drop them from the address bar once read (keeps tier, role, site)
   useEffect(() => {
     if (!params.has("adopt") && !params.has("k") && !params.has("resume")) return;
@@ -230,69 +276,77 @@ export function ScanFlow() {
   };
 
   // ---- 4. camera --------------------------------------------------------
-  const startCam = async () => {
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
-      stream.current = s;
-      if (video.current) { video.current.srcObject = s; await video.current.play(); }
-    } catch (e) { setError(`Camera: ${friendly(e)}`); }
-  };
-  const stopCam = () => { stream.current?.getTracks().forEach((t) => t.stop()); stream.current = null; };
-  useEffect(() => { if (step === "camera") startCam(); else stopCam(); return stopCam; /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [step]);
+  const stopCam = () => { stream.current?.getTracks().forEach((t) => t.stop()); stream.current = null; setCamReady(false); };
+  // on only while the camera step is shown and the session runs; a stream that arrives after the step was left is stopped at once
+  const camOn = step === "camera" && !expired;
+  useEffect(() => {
+    if (!camOn) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+        if (cancelled) { s.getTracks().forEach((t) => t.stop()); return; }
+        stream.current = s;
+        if (video.current) { video.current.srcObject = s; await video.current.play(); }
+      } catch (e) { if (!cancelled) setError(`Camera: ${friendly(e)}`); }
+    })();
+    return () => { cancelled = true; stopCam(); };
+  }, [camOn]);
 
   /** Frames → JPEG blobs with the nonce code burned in → media hash → indicator reading (briefing §8 steps 4–5). */
   const processFrames = async (imgs: FrameLike[]) => {
     if (!session) return;
-    setBusy("capture");
-    try {
-      const blobs: Blob[] = [];
-      for (const f of imgs) {
-        const c = document.createElement("canvas"); c.width = f.width; c.height = f.height;
-        const ctx = c.getContext("2d")!;
-        ctx.putImageData(new ImageData(new Uint8ClampedArray(f.data), f.width, f.height), 0, 0);
-        // the nonce code is burned into the frame as well, so the photo carries the session
-        ctx.font = `bold ${Math.round(f.height / 18)}px sans-serif`; ctx.fillStyle = "rgba(166,101,27,0.95)"; ctx.fillText(nonceCode(session.nonce), 24, Math.round(f.height / 14));
-        blobs.push(await new Promise<Blob>((res) => c.toBlob((b) => res(b!), "image/jpeg", 0.9)));
-      }
-      const mediaHash = await sha256Hex(await Promise.all(blobs.map((b) => b.arrayBuffer())));
-      setFrames({ img: imgs, blobs, mediaHash });
-      setStep("read");
-      setBusy("read");
-      let best: CardReading | null = null;
-      for (const f of imgs) {
-        const r = await vision.current!.read({ data: new Uint8ClampedArray(f.data), width: f.width, height: f.height }, cfg.current!, {});
-        if (r.found && (!best || r.confidence.heat + r.confidence.humidity > best.confidence.heat + best.confidence.humidity)) best = r;
-        if (!best && !r.found) best = r;
-      }
-      setReading(best);
-    } catch (e) { setError(friendly(e)); }
-    finally { setBusy(null); }
+    if (!vision.current || !cfg.current) throw new Error("The card reader is not ready yet. Wait a moment and capture again.");
+    const blobs: Blob[] = [];
+    for (const f of imgs) {
+      const c = document.createElement("canvas"); c.width = f.width; c.height = f.height;
+      const ctx = c.getContext("2d")!;
+      ctx.putImageData(new ImageData(new Uint8ClampedArray(f.data), f.width, f.height), 0, 0);
+      // the nonce code is burned into the frame as well, so the photo carries the session
+      ctx.font = `bold ${Math.round(f.height / 18)}px sans-serif`; ctx.fillStyle = "rgba(166,101,27,0.95)"; ctx.fillText(nonceCode(session.nonce), 24, Math.round(f.height / 14));
+      blobs.push(await new Promise<Blob>((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("Could not encode the photo"))), "image/jpeg", 0.9)));
+    }
+    const mediaHash = await sha256Hex(await Promise.all(blobs.map((b) => b.arrayBuffer())));
+    setFrames({ img: imgs, blobs, mediaHash });
+    setReading(null);
+    setStep("read");
+    setBusy("read");
+    // every frame is read; the indicators are decided by a majority of the frames (vision/vote.ts)
+    const readings: CardReading[] = [];
+    for (const f of imgs) readings.push(await vision.current.read({ data: new Uint8ClampedArray(f.data), width: f.width, height: f.height }, cfg.current, {}));
+    setReading(combineReadings(readings, imgs.length));
   };
-  const captureFrames = async () => {
-    if (!video.current) return;
+  const runCapture = async (grab: () => Promise<FrameLike[]>) => {
+    if (capturing.current) return;
+    capturing.current = true;
+    setBusy("capture"); setError(null);
+    try { await processFrames(await grab()); }
+    catch (e) { setError(friendly(e)); }
+    finally { capturing.current = false; setBusy(null); }
+  };
+  const captureFrames = () => runCapture(async () => {
+    const v = video.current;
+    if (!v || !v.videoWidth) throw new Error("The camera is not ready yet.");
     const imgs: FrameLike[] = [];
     for (let i = 0; i < 5; i++) {
-      imgs.push(frameFromSource(video.current, 1600));
+      imgs.push(frameFromSource(v, 1600));
       await new Promise((r) => setTimeout(r, 300));
     }
-    await processFrames(imgs);
-  };
-  /** Simulator only: five synthetic card renders instead of camera frames (tests the whole tier-2 path without hardware). */
-  const syntheticFrames = async (triggered: boolean) => {
-    if (!vision.current || !cfg.current) return;
-    setBusy("capture");
-    try {
-      const imgs: FrameLike[] = [];
-      for (let i = 0; i < 5; i++) {
-        imgs.push(await vision.current.synth(cfg.current, {
-          heatLevels: triggered ? [1, 1, 1, 1, 1, 0] : [1, 0, 0, 0, 0, 0], humidityTriggered: false,
-          tilt: 0.05 + i * 0.01, rot: -4 + i * 2, tint: [1.04, 1.0, 0.9], brightness: -15, blurSigma: 0.8, noiseSigma: 4,
-          width: 1280, height: 720, cardPx: 800, seed: 40 + i,
-        }));
-      }
-      await processFrames(imgs);
-    } catch (e) { setError(friendly(e)); setBusy(null); }
-  };
+    return imgs;
+  });
+  /** Demo only: five synthetic card renders instead of camera frames (tests the whole tier-2 path without hardware). */
+  const syntheticFrames = (triggered: boolean) => runCapture(async () => {
+    if (!vision.current || !cfg.current) throw new Error("The card reader is not ready yet.");
+    const imgs: FrameLike[] = [];
+    for (let i = 0; i < 5; i++) {
+      imgs.push(await vision.current.synth(cfg.current, {
+        heatLevels: triggered ? [1, 1, 1, 1, 1, 0] : [1, 0, 0, 0, 0, 0], humidityTriggered: false,
+        tilt: 0.05 + i * 0.01, rot: -4 + i * 2, tint: [1.04, 1.0, 0.9], brightness: -15, blurSigma: 0.8, noiseSigma: 4,
+        width: 1280, height: 720, cardPx: 800, seed: 40 + i,
+      }));
+    }
+    return imgs;
+  });
   const skipCamera = () => { setFrames(null); setReading(null); setStep("read"); };
 
   // ---- 6–7. bundle + signature -----------------------------------------
@@ -302,20 +356,20 @@ export function ScanFlow() {
     try {
       let mediaHash: string | undefined;
       if (frames) {
-        const m = await api.media(frames.blobs);
-        if (m.sha256.toLowerCase() !== frames.mediaHash.toLowerCase()) throw new Error("Media hash differs from the server");
-        mediaHash = m.sha256;
+        // one upload per set of frames: retrying "Get signature" reuses it (the verifier caps the files per session)
+        let up = uploaded.current;
+        if (!up || up.mediaHash !== frames.mediaHash) {
+          const m = await api.media(frames.blobs, session.nonce);
+          if (m.sha256.toLowerCase() !== frames.mediaHash.toLowerCase()) throw new Error("Media hash differs from the server");
+          up = { mediaHash: frames.mediaHash, sha256: m.sha256 };
+          uploaded.current = up;
+        }
+        mediaHash = up.sha256;
       }
-      const r = reading && reading.found ? reading : null;
-      const body = {
-        uid: tag.tapId ? undefined : tag.uid || undefined, ctr: tag.tapId ? undefined : tag.ctr || undefined, cmac: tag.tapId ? undefined : tag.cmac, piccData: tag.piccData, enc: tag.enc,
-        tapId: tag.tapId, tapToken: tag.tapId ? tag.tapToken : undefined, nonce: session.nonce, role, tier,
-        indicators: { heat: r ? r.heat : Indicator.MISSING, humidity: r ? r.humidity : Indicator.MISSING, uv: r ? r.uv : Indicator.MISSING },
-        heatLevels: r ? r.heatLevels : [0, 0, 0, 0, 0, 0], fill, mediaHash,
-        serial: preview?.serial ?? undefined, location: { country: country || null, city: city || null },
-        attester: wallet.publicKey?.toBase58() ?? null, platform: tag.source === "simulator" ? "SIMULATOR" : platform(),
-      };
-      const v = await api.verify(body);
+      const v = await api.verify(verifyBody({
+        tag, nonce: session.nonce, role, tier, reading: reading && reading.found ? reading : null, fill, mediaHash,
+        serial: preview?.serial, country, city, attester: wallet.publicKey?.toBase58() ?? null, platform: platform(),
+      }));
       setVerify(v);
       setStep(v.verdict === "VALID" ? "tx" : "verify");
     } catch (e) { setError(friendly(e)); }
@@ -323,28 +377,43 @@ export function ScanFlow() {
   };
 
   // ---- anchor step: transaction -----------------------------------------
+  const signed = signedAttester(verify);
+  const txTier = signed.tier ?? tier, txRole = signed.role ?? role;
   const sendTx = async () => {
     if (!verify || !anchorWallet || !wallet.publicKey) return;
-    setBusy("tx"); setError(null);
+    setError(null);
+    // the server signed this scan for the wallet connected at "Get signature": anchoring with another one cannot be confirmed
+    const other = attesterMismatch(verify, wallet.publicKey.toBase58());
+    if (other) { setError(`This scan was signed for wallet ${short(other)}. Switch back to that wallet (header) to anchor it.`); return; }
+    setBusy("tx");
     try {
       let sig = txSig; // set when the transaction landed but the server confirmation failed: only that is retried
       if (!sig) {
         const program = flaconProgram(connection, anchorWallet);
-        const { tx, scanProof } = await buildRecordScanTx(program, wallet.publicKey, verify, { tier, role, siteId });
-        // Already anchored (the wallet sent it but the answer never reached this page): take the signature from the chain.
-        sig = (await connection.getAccountInfo(scanProof, "confirmed")) ? await creatingSignature(connection, scanProof) : null;
-        if (!sig) sig = await sendAsV0(wallet, connection, tx);
+        const { tx, scanProof } = await buildRecordScanTx(program, wallet.publicKey, verify, { tier: txTier, role: txRole, siteId });
+        // Already anchored (the wallet sent it but the answer never reached this page)? Only a real ScanProof counts —
+        // owned by the flacon program and attested by this wallet; a SOL transfer to the address is not an anchor.
+        const info = await connection.getAccountInfo(scanProof, "confirmed");
+        const anchoredBy = scanProofAttester(info ? { owner: info.owner, data: info.data } : null, programId());
+        if (anchoredBy && !anchoredBy.equals(wallet.publicKey)) throw new Error(`This scan is already anchored by another wallet (${short(anchoredBy.toBase58())}). It cannot be anchored twice.`);
+        if (anchoredBy) {
+          sig = await creatingSignature(connection, scanProof, { programId: programId(), instruction: "record_scan", signer: wallet.publicKey });
+          if (!sig) throw new Error("This scan is anchored on chain, but its transaction was not found yet. Try again in a moment.");
+        } else {
+          sig = await sendAsV0(wallet, connection, tx);
+        }
         setTxSig(sig);
       }
       await api.events({ eventId: verify.eventId, txSig: sig, actor: wallet.publicKey.toBase58(), serial: verify.serial, type: 2 });
       setStep("done");
     } catch (e) {
-      if (e instanceof ApiError && e.code === "tx_failed") setTxSig(null); // the server saw it fail on chain: send again
+      // the server saw it fail on chain, or the signature does not belong to this scan: look again / send again next time
+      if (e instanceof ApiError && (e.code === "tx_failed" || e.code === "tx_mismatch")) setTxSig(null);
       setError(friendly(e));
     }
     finally { setBusy(null); }
   };
-  const airdropBurner = async () => {
+  const airdrop = async () => {
     if (!wallet.publicKey) return;
     setBusy("airdrop");
     try { const s = await connection.requestAirdrop(wallet.publicKey, 1e9); await connection.confirmTransaction(s, "confirmed"); }
@@ -360,9 +429,10 @@ export function ScanFlow() {
       const serial = (preview?.serial ?? tag?.serial ?? deadSerial).trim();
       if (!serial) throw new Error("Enter the passport serial number");
       let s = session;
-      if (!s || s.nonce === deadNonceSpent.current || s.expiresAt <= Date.now() / 1000 + 2) { s = await api.session(); setSession(s); }
+      if (!s || !clock || s.nonce === deadNonceSpent.current || secondsLeft(clock.deadline) <= 2) { s = await api.session(); adoptSession(s, undefined, false); }
       deadNonceSpent.current = s.nonce; // a failed attempt may still have used it: the next attempt takes a fresh session
-      await api.events({ serial, type: 9, nonce: s.nonce, actor: wallet.publicKey?.toBase58() ?? null, payload: { source: tag?.source ?? "manual", uid: tag?.uid || null, note: "Seal not responding" } });
+      // no chip UID in the report (it would become public); the seal is identified by its hash when the tap gave one
+      await api.events({ serial, type: 9, nonce: s.nonce, actor: wallet.publicKey?.toBase58() ?? null, sealUidHash: preview?.uidHash ?? undefined, payload: { source: tag?.source ?? "manual", note: "Seal not responding" } });
       setDeadSerial(serial);
       setStep("done");
     } catch (e) { setError(friendly(e)); }
@@ -371,9 +441,17 @@ export function ScanFlow() {
 
   const heatTxt = reading?.found ? indicatorText("heat", reading.heat) : null;
   const humTxt = reading?.found ? indicatorText("humidity", reading.humidity) : null;
-  const previewVerdict = preview ? verdictText(preview.verdict, preview.counter) : null;
+  const previewVerdict = preview
+    ? preview.verdict === "TAP_TOO_OLD"
+      ? { title: "Tap too old", tone: "warn" as const, hint: "The seal was tapped more than 3 minutes ago. Tap it again to start the check." }
+      : verdictText(preview.verdict, preview.counter)
+    : null;
   const finalGrade = verify?.grade ?? null;
   const stepNo = useMemo(() => ({ session: 1, tap: 2, preview: 3, camera: 4, read: 5, verify: 6, tx: 6, done: 7, dead: 3 })[step], [step]);
+  const doneSerial = verify?.serial ?? deadSerial;
+  const resumeLinks = verify?.eventId && verify.resumeToken
+    ? walletBrowseLinks(resumeUrl({ eventId: verify.eventId, token: verify.resumeToken, tier: txTier, role: txRole, siteId }))
+    : null;
 
   return (
     <div className="page-in container-page py-10">
@@ -386,20 +464,26 @@ export function ScanFlow() {
       )}
       {expired && (
         <div className="card mb-6 p-4 text-sm">
-          <p className="font-medium">Session expired</p>
-          <p className="mt-1 text-muted">Tap, photo and signature must happen within 90 seconds. Please restart.</p>
+          <p className="font-medium">{clock?.limitedBy === "tap" ? "Tap too old" : "Session expired"}</p>
+          <p className="mt-1 text-muted">{clock?.limitedBy === "tap"
+            ? "The server accepts a tap from the seal page for 3 minutes. Please restart and tap the seal again."
+            : "Tap, photo and signature must happen within 90 seconds. Please restart."}</p>
           <button onClick={startSession} className="btn btn-sm mt-3"><RefreshCw className="h-3.5 w-3.5" aria-hidden /> Restart</button>
         </div>
       )}
-      {error && <p className="mb-6 rounded-xl border border-bad/40 px-4 py-3 text-sm text-bad">{error}</p>}
+      {error && <p className="mb-6 rounded-xl border border-bad/40 px-4 py-3 text-sm text-bad" role="alert">{error}</p>}
 
       {step === "session" && (
         <div>
           <StepHeader n={1} title="Witness a scan" hint="Tap, photo of the card, server signature, transaction. All in one 90-second session; the session code is overlaid on the photo." />
-          <div className="mt-6 flex flex-wrap items-center gap-3">
-            <button onClick={startSession} className="btn">Start session <ArrowRight className="h-4 w-4" aria-hidden /></button>
-            <WalletButton />
-          </div>
+          {busy === "resume" ? (
+            <p className="mt-6 flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Loading the signed scan …</p>
+          ) : (
+            <div className="mt-6 flex flex-wrap items-center gap-3">
+              <button onClick={startSession} className="btn">Start session <ArrowRight className="h-4 w-4" aria-hidden /></button>
+              <WalletButton />
+            </div>
+          )}
           {!PROGRAM_ID && <p className="mt-4 text-xs text-muted">Note: no program ID set — the anchor step is disabled.</p>}
         </div>
       )}
@@ -412,11 +496,11 @@ export function ScanFlow() {
               <p className="flex items-center gap-2 text-sm font-medium"><Nfc className="h-4 w-4 text-amber" aria-hidden /> WebNFC (Android Chrome)</p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <button onClick={startNfc} className="btn-outline btn-sm">Start NFC reading</button>
-                <button onClick={() => { nfcAbort.current?.abort(); setTag(null); setStep("dead"); }} className="btn-outline btn-sm" title="Seal separated or removed — report as SEAL_DEAD"><ShieldOff className="h-3.5 w-3.5" aria-hidden /> Seal not responding</button>
+                <button onClick={() => { nfcAbort.current?.abort(); setTag(null); setPreview(null); setStep("dead"); }} className="btn-outline btn-sm" title="Seal separated or removed — report as SEAL_DEAD"><ShieldOff className="h-3.5 w-3.5" aria-hidden /> Seal not responding</button>
               </div>
               <p className="mt-2 break-words text-xs text-muted">{nfcState || "Session running — simply hold the seal to the phone. The phone opens the seal link and the tap is handed over here; then return to this tab."}</p>
             </div>
-            {DEV_SIMULATOR && serverSim && (
+            {demo && serverSim && (
               <div className="card p-4">
                 <p className="flex items-center gap-2 text-sm font-medium"><Zap className="h-4 w-4 text-amber" aria-hidden /> Inject a virtual tap</p>
                 <ul className="mt-3 divide-y divide-line">
@@ -455,30 +539,31 @@ export function ScanFlow() {
 
       {step === "camera" && !expired && (
         <div>
-          <StepHeader n={4} title="Photograph the card" hint="Place the card in its holder fully inside the frame. Five frames; the session code is overlaid." />
+          <StepHeader n={4} title="Photograph the card" hint="Place the card in its holder fully inside the frame. Five frames; the session code is overlaid. Keep faces and personal items out of the picture: the photos become part of the public scan record." />
           <div className="relative mt-6 overflow-hidden rounded-2xl border border-line bg-line">
-            <video ref={video} playsInline muted className="block w-full" />
+            <video ref={video} playsInline muted className="block w-full" onPlaying={() => setCamReady(true)} onLoadedData={(e) => { if (e.currentTarget.videoWidth > 0) setCamReady(true); }} />
             <div className="pointer-events-none absolute inset-0">
               <div className="absolute left-[10%] top-[18%] h-[64%] w-[80%] rounded-lg border-2 border-amber/80" />
               <div className="absolute left-3 top-3 rounded-md bg-amber px-2 py-1 font-mono text-lg font-bold text-white">{session ? nonceCode(session.nonce) : ""}</div>
             </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-3">
-            <button onClick={captureFrames} disabled={busy !== null} className="btn">{busy === "capture" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Camera className="h-4 w-4" aria-hidden />} Capture 5 frames</button>
+            <button onClick={captureFrames} disabled={busy !== null || !camReady} className="btn">{busy === "capture" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Camera className="h-4 w-4" aria-hidden />} Capture 5 frames</button>
             {!certified && <button onClick={skipCamera} className="btn-outline">Without photo (tier 1)</button>}
-            {DEV_SIMULATOR && (
+            {demo && (
               <>
                 <button onClick={() => syntheticFrames(false)} disabled={busy !== null} className="btn-outline btn-sm">Test image: intact</button>
                 <button onClick={() => syntheticFrames(true)} disabled={busy !== null} className="btn-outline btn-sm">Test image: 40 °C triggered</button>
               </>
             )}
           </div>
+          {!camReady && <p className="mt-2 text-xs text-muted">Waiting for the camera …</p>}
         </div>
       )}
 
       {step === "read" && !expired && (
         <div>
-          <StepHeader n={5} title="Indicators" hint={frames ? "Read from the frames: card outline → rectification → white balance → colour distance." : "Without photo: indicators count as not read (MISSING), tier 1."} />
+          <StepHeader n={5} title="Indicators" hint={frames ? "Read from the frames: card outline → rectification → white balance → colour distance; each indicator needs 3 of 5 frames to agree." : "Without photo: indicators count as not read (MISSING), tier 1."} />
           {busy === "read" && <p className="mt-6 flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Reading the card …</p>}
           {reading && !reading.found && (
             <div className="card mt-6 p-4 text-sm"><p className="font-medium">Card not recognized</p><p className="mt-1 text-muted">{reading.reason}. Photograph again or continue without a reading (indicators MISSING).</p></div>
@@ -506,15 +591,15 @@ export function ScanFlow() {
                 {certified && <span className="ml-2 text-xs text-muted">Tier {qTier} · Site {siteId}</span>}
               </label>
               <div className="mt-2 flex gap-2">
-                <input value={country} onChange={(e) => setCountry(e.target.value.toUpperCase().slice(0, 2))} placeholder="DE" className="w-14 rounded-full border border-line bg-surface px-2 py-0.5 text-sm" aria-label="Country" />
-                <input value={city} onChange={(e) => setCity(e.target.value)} placeholder="Place (rough, optional)" className="flex-1 rounded-full border border-line bg-surface px-3 py-0.5 text-sm" aria-label="Place" />
+                <input value={country} onChange={(e) => setCountry(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 2))} placeholder="DE" className="w-14 rounded-full border border-line bg-surface px-2 py-0.5 text-sm" aria-label="Country (optional)" />
+                <input value={city} onChange={(e) => setCity(e.target.value.slice(0, 80))} placeholder="Place (rough, optional)" className="flex-1 rounded-full border border-line bg-surface px-3 py-0.5 text-sm" aria-label="Place (optional)" />
               </div>
-              <p className="mt-1 text-xs text-muted">Location stays off-chain. No GPS.</p>
+              <p className="mt-1 text-xs text-muted">Optional. Country and place are not in the Solana transaction, but they are part of the public scan record and its permanent archive. No GPS. <Link href="/privacy" className="link">Privacy</Link></p>
             </div>
           </div>
           <div className="mt-6 flex flex-wrap gap-3">
             <button onClick={requestSignature} disabled={busy !== null} className="btn">{busy === "verify" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Get signature <ArrowRight className="h-4 w-4" aria-hidden /></button>
-            {frames && <button onClick={() => setStep("camera")} className="btn-outline">Photograph again</button>}
+            {frames && <button onClick={() => setStep("camera")} disabled={busy !== null} className="btn-outline">Photograph again</button>}
           </div>
         </div>
       )}
@@ -532,21 +617,26 @@ export function ScanFlow() {
           {!wallet.connected && isIOS() && noInjectedWallet(wallet.wallets.map((w) => ({ name: w.adapter.name, installed: w.readyState === WalletReadyState.Installed }))) && (
             <div className="card mt-6 p-4 text-sm">
               <p className="font-medium">Sign with your wallet app</p>
-              <p className="mt-1 text-muted">Safari cannot connect a wallet. The scan continues in the wallet app, where you sign directly.</p>
-              {(() => { const links = walletBrowseLinks(resumeUrl({ v: verify, tier, role, siteId })); return (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <a href={links.phantom} className="btn btn-sm">Continue in Phantom</a>
-                  <a href={links.solflare} className="btn-outline btn-sm">Continue in Solflare</a>
-                </div>
-              ); })()}
+              {resumeLinks ? (
+                <>
+                  <p className="mt-1 text-muted">Safari cannot connect a wallet. The scan continues in the wallet app, where you sign directly.</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <a href={resumeLinks.phantom} className="btn btn-sm">Continue in Phantom</a>
+                    <a href={resumeLinks.solflare} className="btn-outline btn-sm">Continue in Solflare</a>
+                  </div>
+                </>
+              ) : <p className="mt-1 text-muted">Safari cannot connect a wallet, and this scan cannot be handed to the wallet app. Connect a wallet (WalletConnect) above.</p>}
             </div>
+          )}
+          {signed.pubkey && wallet.publicKey && signed.pubkey !== wallet.publicKey.toBase58() && (
+            <p className="mt-6 text-sm text-warn">Signed for wallet {short(signed.pubkey)} — switch to that wallet in the header to anchor this scan.</p>
           )}
           <div className="mt-6 flex flex-wrap items-center gap-3">
             {!wallet.connected ? <WalletButton /> : (
               <>
                 <button onClick={sendTx} disabled={busy !== null || !PROGRAM_ID} className="btn">{busy === "tx" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} {txSig ? "Retry confirmation with the server" : `Sign and send with ${wallet.wallet?.adapter.name ?? "wallet"}`}</button>
                 {txSig && <a href={txUrl(txSig)} target="_blank" rel="noreferrer" className="link text-xs text-muted">Transaction landed · explorer</a>}
-                {DEV_SIMULATOR && <button onClick={airdropBurner} disabled={busy !== null} className="btn-outline btn-sm">1 SOL airdrop (test)</button>}
+                {demo && <button onClick={airdrop} disabled={busy !== null} className="btn-outline btn-sm">1 SOL airdrop (test)</button>}
               </>
             )}
           </div>
@@ -574,7 +664,7 @@ export function ScanFlow() {
             <div className="mt-6 flex flex-wrap gap-2"><Pill tone={heatTxt.tone}>{heatTxt.label}: {heatTxt.detail}</Pill><Pill tone={humTxt.tone}>{humTxt.label}: {humTxt.detail}</Pill></div>
           )}
           <div className="mt-8 flex flex-wrap gap-3">
-            {(verify?.serial ?? deadSerial) && <Link href={`/p/${verify?.serial ?? deadSerial}`} className="btn">View passport <ArrowRight className="h-4 w-4" aria-hidden /></Link>}
+            {doneSerial && <Link href={passportHref(doneSerial)} className="btn">View passport <ArrowRight className="h-4 w-4" aria-hidden /></Link>}
             <button onClick={startSession} className="btn-outline">New scan</button>
           </div>
         </div>
@@ -582,18 +672,23 @@ export function ScanFlow() {
 
       {step === "dead" && (
         <div>
-          <StepHeader n={3} title="No seal found" hint="Seal separated, removed or out of range. Your report is recorded as unverified; a partner checks the seal and confirms it on chain." />
+          {preview?.sealDead ? (
+            <StepHeader n={3} title="Seal recorded as not responding" hint="This seal is already marked as not responding on chain, so the passport is void. There is nothing more to report." />
+          ) : (
+            <StepHeader n={3} title="No seal found" hint="Seal separated, removed or out of range. Your report is recorded as unverified; a partner checks the seal and confirms it on chain." />
+          )}
           <div className="mt-6 flex items-center gap-3 text-bad"><ShieldOff className="h-5 w-5" aria-hidden /><span className="font-serif text-2xl">Seal not responding</span></div>
-          {!(preview?.serial ?? tag?.serial) && (
+          {preview?.serial && <p className="mt-2 text-sm text-muted">Passport <Link href={passportHref(preview.serial)} className="link mono text-ink">{preview.serial}</Link></p>}
+          {!preview?.sealDead && !(preview?.serial ?? tag?.serial) && (
             <label className="mt-4 block text-sm">Passport serial number <input value={deadSerial} onChange={(e) => setDeadSerial(e.target.value)} placeholder="SN-2026-000001" className="ml-2 rounded-full border border-line bg-surface px-3 py-0.5 font-mono text-sm" /></label>
           )}
           <div className="mt-6 flex flex-wrap gap-3">
-            <button onClick={reportDead} disabled={busy !== null} className="btn">{busy === "dead" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Report (SEAL_DEAD)</button>
-            <button onClick={startSession} className="btn-outline">Cancel</button>
+            {!preview?.sealDead && <button onClick={reportDead} disabled={busy !== null} className="btn">{busy === "dead" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Report (SEAL_DEAD)</button>}
+            <button onClick={startSession} className="btn-outline">{preview?.sealDead ? "New scan" : "Cancel"}</button>
           </div>
         </div>
       )}
-      <p className="mt-10 text-xs text-muted">Step {stepNo} · Tier {tier} · Wallet {wallet.publicKey ? `${wallet.publicKey.toBase58().slice(0, 4)}…` : "not connected"}</p>
+      <p className="mt-10 text-xs text-muted">Step {stepNo} · Tier {step === "tx" || step === "done" ? txTier : tier} · Wallet {wallet.publicKey ? `${wallet.publicKey.toBase58().slice(0, 4)}…` : "not connected"}</p>
     </div>
   );
 }

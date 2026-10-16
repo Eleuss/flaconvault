@@ -1,5 +1,6 @@
-import { Connection, TransactionMessage, VersionedTransaction, type PublicKey, type SignatureStatus, type Transaction, type TransactionError } from "@solana/web3.js";
+import { Connection, PublicKey, TransactionMessage, VersionedTransaction, type SignatureStatus, type Transaction, type TransactionError, type VersionedTransactionResponse } from "@solana/web3.js";
 import type { WalletContextState } from "@solana/wallet-adapter-react";
+import { PROGRAM_ID } from "./config";
 import { TxFailedError } from "./errors";
 
 /** The blockhash expired while the wallet app was open (mobile wallets can take longer than its ~60–90 s lifetime). */
@@ -101,17 +102,83 @@ async function failureReason(connection: Connection, signature: string, err: Tra
   return reason;
 }
 
-/** Signature of the transaction that created an account (oldest successful signature touching it, up to 1000 back), or null. */
-export async function creatingSignature(connection: Connection, account: PublicKey): Promise<string | null> {
-  const PAGE = 250, MAX = 1000;
-  let before: string | undefined, oldest: string | null = null, seen = 0;
-  while (seen < MAX) {
-    const limit = Math.min(PAGE, MAX - seen);
+// ---- recovery: the transaction landed but its answer never reached this page ----------------------------------
+
+/** What the transaction that created an account must look like. */
+export interface CreatingTxExpectation {
+  /** program whose instruction must reference the account (default: the flacon program, NEXT_PUBLIC_PROGRAM_ID) */
+  programId?: PublicKey;
+  /** Anchor instruction name(s) as in the IDL (snake_case, e.g. "record_scan"); any instruction of the program when omitted */
+  instruction?: string | string[];
+  /** the transaction must carry this key's signature (e.g. the connected wallet) */
+  signer?: PublicKey;
+}
+
+/** Anchor's instruction discriminator: sha256("global:<name>")[0..8]. */
+export async function anchorDiscriminator(name: string): Promise<Uint8Array> {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`global:${name}`));
+  return new Uint8Array(d).slice(0, 8);
+}
+const startsWith = (data: Uint8Array, prefix: Uint8Array) => data.length >= prefix.length && prefix.every((b, i) => data[i] === b);
+
+/** true when `tx` carries an instruction of `programId` (with one of `discriminators`, if any) that references `account`. */
+export function txCreates(tx: VersionedTransactionResponse, account: PublicKey, programId: PublicKey, discriminators: Uint8Array[], signer?: PublicKey): boolean {
+  if (tx.meta?.err) return false;
+  const msg = tx.transaction.message;
+  const keys = msg.version === 0 ? msg.getAccountKeys({ accountKeysFromLookups: tx.meta?.loadedAddresses }) : msg.getAccountKeys();
+  if (signer) {
+    let signed = false;
+    for (let i = 0; i < msg.header.numRequiredSignatures; i++) if (keys.get(i)?.equals(signer)) signed = true;
+    if (!signed) return false;
+  }
+  return msg.compiledInstructions.some((ix) =>
+    !!keys.get(ix.programIdIndex)?.equals(programId)
+    && (discriminators.length === 0 || discriminators.some((d) => startsWith(ix.data, d)))
+    && ix.accountKeyIndexes.some((i) => !!keys.get(i)?.equals(account)));
+}
+
+const SIG_PAGE = 250, SIG_WINDOW = 1000, MAX_CANDIDATES = 12;
+
+/**
+ * Signature of the transaction that created `account`: the oldest successful transaction that carries the expected
+ * instruction on that account (a plain SOL transfer to the address, sent before, is skipped). Returns null when the
+ * account has more than 1000 signatures (the creating one is out of reach) or no candidate matches.
+ */
+export async function creatingSignature(connection: Connection, account: PublicKey, expect: CreatingTxExpectation = {}): Promise<string | null> {
+  const programId = expect.programId ?? (PROGRAM_ID ? new PublicKey(PROGRAM_ID) : null);
+  if (!programId) return null;
+  const names = expect.instruction == null ? [] : Array.isArray(expect.instruction) ? expect.instruction : [expect.instruction];
+  const discriminators = await Promise.all(names.map(anchorDiscriminator));
+  let before: string | undefined, seen = 0, complete = false;
+  const ok: string[] = []; // newest first
+  while (seen < SIG_WINDOW) {
+    const limit = Math.min(SIG_PAGE, SIG_WINDOW - seen);
     const sigs = await connection.getSignaturesForAddress(account, { limit, before }, "confirmed");
-    for (const s of sigs) if (!s.err) oldest = s.signature;
+    for (const s of sigs) if (!s.err) ok.push(s.signature);
     seen += sigs.length;
-    if (sigs.length < limit) break;
+    if (sigs.length < limit) { complete = true; break; }
     before = sigs[sigs.length - 1].signature;
   }
-  return oldest;
+  if (!complete) return null; // the window ended before the account's first transaction
+  for (const sig of ok.reverse().slice(0, MAX_CANDIDATES)) {
+    const tx = await connection.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+    if (tx && txCreates(tx, account, programId, discriminators, expect.signer)) return sig;
+  }
+  return null;
+}
+
+/** Anchor account discriminator of flacon's ScanProof (sha256("account:ScanProof")[0..8], as in the IDL). */
+export const SCAN_PROOF_DISCRIMINATOR = Uint8Array.from([208, 136, 45, 119, 131, 191, 85, 170]);
+/** ScanProof layout: disc 8 · seal 32 · counter 4 · tier…fill 8 · site_id 2 · media_hash 32 · bundle_hash 32 · attester 32 … */
+const SCAN_PROOF_ATTESTER_OFFSET = 8 + 32 + 4 + 8 + 2 + 32 + 32;
+
+/**
+ * Attester of an existing ScanProof account, or null when the address holds no real ScanProof: no account, an
+ * account the flacon program does not own (e.g. someone pre-funded the address with a SOL transfer), or data
+ * without the ScanProof discriminator.
+ */
+export function scanProofAttester(info: { owner: PublicKey; data: Uint8Array } | null, programId: PublicKey): PublicKey | null {
+  if (!info || !info.owner.equals(programId)) return null;
+  if (info.data.length < SCAN_PROOF_ATTESTER_OFFSET + 32 || !startsWith(info.data, SCAN_PROOF_DISCRIMINATOR)) return null;
+  return new PublicKey(info.data.subarray(SCAN_PROOF_ATTESTER_OFFSET, SCAN_PROOF_ATTESTER_OFFSET + 32));
 }

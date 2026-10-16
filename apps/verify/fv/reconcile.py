@@ -154,7 +154,7 @@ def _confirm_scan(conn, ev: dict, payload: dict, rec: dict, acct: dict, scan_pda
     # for a recovered failed scan, the verified creating signature found on chain — or none: the client's failed tx is
     # never kept as the signature of a confirmed scan (the client may fill in the real one later, _confirm_event)
     conn.execute(
-        f"""UPDATE events SET status='confirmed', actor_pubkey=?, actor_label=?,
+        f"""UPDATE events SET status='confirmed', actor_pubkey=?, actor_label=?, resume_hash=NULL,
               tx_sig={'?' if ev['status'] == 'failed' else 'COALESCE(tx_sig, ?)'} WHERE id=?""",
         (acct["attester"], label["label"] if label else None, tx_sig, ev["id"]))
     update_event_payload(conn, ev["id"], new_payload)

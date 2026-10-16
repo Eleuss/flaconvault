@@ -749,6 +749,10 @@ def events(body: EventBody, request: Request, conn=Depends(get_conn), settings: 
                                        asset=payload.get("asset"), issuer=actor,
                                        issuer_label=payload.get("issuerLabel") or actor_label, grade=Grade.A, void=False,
                                        created_at=ts)
+            # the event shows the names the passport keeps: for an existing passport (e.g. one a purge left without a
+            # MINT) never the poster's brand/name/batch, which upsert_passport did not apply either
+            payload = {k: v for k, v in payload.items() if k not in ("brand", "name", "batch")}
+            payload.update({k: passport[k] for k in ("brand", "name", "batch") if passport.get(k)})
             if existing:
                 return event_view(_settle_existing(conn, existing, payload, tx_sig, actor))
         if not passport:

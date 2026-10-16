@@ -1,14 +1,16 @@
 """
-Request body size limit (ASGI middleware). FastAPI parses a JSON body before any dependency runs, so a size check has to
-sit in front of the app: every request except POST /api/media (which checks its own, larger Content-Length) may carry at
-most `max_bytes`. A declared Content-Length above the limit is refused before anything is read; a body without one
-(chunked) is counted while it streams in. Over the limit → 413 {"detail": "request_too_large"}.
+Request body size limit (ASGI middleware, FV_MAX_JSON_BODY, default 64 KiB). FastAPI parses a JSON body before any
+dependency runs, so a size check has to sit in front of the app: every request — any route, any method, unknown paths
+included — except POST /api/media (which checks its own, larger Content-Length) may carry at most `max_bytes`. A
+declared Content-Length above the limit is refused before anything is read; a body without one (chunked) is counted
+while it streams in. Over the limit → 413 {"detail": "request_too_large"}. fv.main installs it inside the CORS
+middleware, so the 413 carries the CORS headers a browser needs to read it.
 """
 from __future__ import annotations
 
 import json
 
-UNLIMITED_PATHS = ("/api/media",)
+UNLIMITED = frozenset({("POST", "/api/media")})     # (method, path) that enforce their own body limit
 
 
 class BodyTooLarge(Exception):
@@ -26,7 +28,7 @@ class BodySizeLimit:
         await send({"type": "http.response.body", "body": body})
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope.get("path") in UNLIMITED_PATHS:
+        if scope["type"] != "http" or (scope.get("method"), scope.get("path")) in UNLIMITED:
             await self.app(scope, receive, send)
             return
         declared = next((v for k, v in scope.get("headers") or [] if k == b"content-length"), None)

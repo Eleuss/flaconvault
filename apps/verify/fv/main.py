@@ -125,9 +125,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.db = db
     app.state.rpc = Rpc(settings.solana_rpc)
+    # The body limit runs before routing and any body parsing (every route except POST /api/media); CORS is added last,
+    # so it is the outermost layer and its headers reach the 413 too (otherwise a browser cannot read the error code).
+    app.add_middleware(BodySizeLimit, max_bytes=settings.max_json_body)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
                        allow_methods=["*"], allow_headers=["*"])
-    app.add_middleware(BodySizeLimit, max_bytes=settings.max_json_body)   # outermost: refuses before anything is parsed
     app.include_router(routes_api.router)
     app.include_router(routes_tag.router)
     app.include_router(routes_chain.router)

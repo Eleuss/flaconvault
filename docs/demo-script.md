@@ -25,7 +25,7 @@ Rule from the briefing: every scene runs for real, nothing is rendered. Wording 
 
 1. Web app and verifier reachable over HTTPS (a deployment or `scripts/tunnel.sh`). The demo tools (dev wallets A/B, test images, airdrop) exist only on a **demo deployment** of the web app (`NEXT_PUBLIC_DEV_SIMULATOR=true`; production sets it to `false`, which also turns `/dev` into a 404, see `docs/deploy.md`) and only in a browser with demo mode on: open `/dev?demo=1` once on every device that needs them (it is on automatically on `localhost`), and `/dev?demo=0` after the shoot.
 2. Deploy wallet at least 0.5 SOL; scanning wallets about 0.05 SOL each; test USDC for the buyer.
-3. Three passports prepared: a fresh one (scene 1), one with history (scenes 2 and 6), and a dedicated demo passport for grade C (scene 4). Grades only get worse: a triggered scan cannot be undone, so never use SN-2026-000007 or any other passport the README links for scene 4.
+3. Three passports prepared: a fresh one (scene 1), one with history (scenes 2 and 6), and a dedicated demo passport for grade C (scene 4). C and VOID are sticky (only A/B/D follow the latest scan): a triggered scan cannot be undone, so never use SN-2026-000007 or any other passport the README links for scene 4.
 4. Screen recording on the phone, a second camera on hands and bottle, sound recorded separately.
 5. Explorer tabs open in advance (program, passport PDA, latest transaction).
 

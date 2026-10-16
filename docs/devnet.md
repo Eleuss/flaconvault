@@ -143,6 +143,13 @@ The account layouts and the signed message are unchanged, so an upgrade keeps ev
 ([`programs/README.md`](../programs/README.md#upgrade-compatibility) lists the behaviour that changes for existing
 accounts). Operator steps, from the upgrade/registry authority wallet:
 
+0. Before: the manual CI run (Actions → CI → Run workflow, "anchor" ticked) passes, which includes the escrow's LiteSVM
+   time-travel tests (`scripts/test-escrow-time-travel.sh`). Order: deploy the web app and the verifier of the same
+   commit first ([`deploy.md`](deploy.md#deploying); a push to `main` deploys nothing), then upgrade both programs right away. The
+   old web app breaks against the upgraded programs (certify, list, reserve take new accounts or arguments); the new web
+   app mostly works against the old ones, but the new instructions fail until the upgrade, so keep the gap short. Both
+   programs are larger than the deployed ones: `solana program deploy` extends the ProgramData account by itself; if
+   `anchor upgrade` refuses for lack of space, run `solana program extend <program id> <additional bytes>` first.
 1. `anchor build --verifiable`, then `anchor upgrade target/verifiable/flacon.so --program-id 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL --provider.cluster devnet` and `anchor upgrade target/verifiable/escrow.so --program-id 9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL --provider.cluster devnet`. The verifiable build writes to `target/verifiable/`; `target/deploy/` holds whatever plain `anchor build` ran last, which `anchor verify` would not reproduce. Check both programs with `anchor verify` against the pushed commit ([`programs/README.md`](../programs/README.md#verifiable-builds)), copy the IDLs (see Commands) and record the commit next to the upgrade signatures here.
 2. Register a production-only server key under a new key id (`scripts/server-key.ts add <pubkeyHex> <keyId>`), switch the verifier to it (`FV_SERVER_ED25519_SEED`, `FV_SERVER_KEY_ID`), then revoke key id 1 (`scripts/server-key.ts revoke 1`): its seed is also in local development environments, and demo scans signed with it were published.
 3. Remove the browser-held demo partner Dev wallet A (`scripts/partner.ts remove AciBj4mKqxhPDF7KRYqvpGt8EZm75b582dumVmTv2LJ1`) and review the other test partners.

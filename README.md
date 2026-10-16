@@ -17,7 +17,7 @@ Colosseum Crypto World's Fair hackathon build · Solana **devnet** · tested wit
 | Verifier health | https://verify.flaconvault.com/health |
 | Programs on devnet | flacon [`7dCr825i…eAcWL`](https://explorer.solana.com/address/7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL?cluster=devnet) · escrow [`9vabBySt…ScexKL`](https://explorer.solana.com/address/9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL?cluster=devnet) |
 
-A buyer needs no app and no wallet: tapping the sticker with an iPhone opens the result page ("Seal genuine · tap N") and the passport. On every passport, **"Check live on-chain"** reads the Passport account straight from Solana in the browser and compares its grade and scan counter with what the server shows.
+A buyer needs no app and no wallet: tapping the sticker with an iPhone opens the result page ("Seal genuine · tap N") and the passport. On every passport, **"Check live on-chain"** reads the Passport account straight from Solana in the browser and compares its grade and its count of anchored scans with what the server shows (the confirmed scans the program counted, not Tier-0 sightings).
 
 ## How it works
 
@@ -48,7 +48,7 @@ A buyer needs no app and no wallet: tapping the sticker with an iPhone opens the
 - Indicator and fill readings are currently reported by the scanning phone and signed as sent. Binding them to the server or a partner, and binding attester/tier into the signed message, are the next protocol steps.
 - The verifier only accepts history entries that are backed by a verified on-chain transaction signed by the actor, and it takes the facts (price, seal kind, counters, match, attester, tier, role) from the decoded instruction and the program's accounts and events, never from the client. A minted passport is never renamed. Unverified seal reports are shown as "reported · unverified" (one per seal and day) and never void a passport. The simulator is off in production, and the verifier refuses to start with forgeable key settings.
 - A pending signed scan is never published (no message, signature or nonce in public views); the wallet-app resume link carries only an event id and a token that works only while the scan is pending (it stops working once the scan is anchored or fails). Certified tiers and the vault/partner roles are signed only for wallets in the on-chain partner registry.
-- Grades only get worse on the server: a heat-triggered C or an opened (VOID) passport stays so. The programs in this repository enforce the same on chain; on the current devnet deployment a later scan can still overwrite a C or VOID grade until it is upgraded (next point).
+- VOID and C are sticky; A/B/D follow the latest scan. A heat-triggered C or an opened (VOID) passport stays so, while one low fill reading is corrected by the next scan. The verifier applies this rule on every confirmation and in its reconcile job, and the programs in this repository enforce it on chain; on the current devnet deployment a later scan can still overwrite a C or VOID grade on chain until it is upgraded (next point), and the verifier keeps C and VOID regardless.
 - The programs in this repository add sticky C and VOID grades, server-key revocation with a freshness window (10 minutes against the cluster clock), partner removal, issuer-only seal administration, owner-only escrow listing, a price-bound reserve, a buyer refund when the seller does not ship, a seller payout when the buyer never scans, and an admin `resolve` for disagreeing scans. The devnet deployment is upgraded to them separately (operator step, see [`programs/README.md`](programs/README.md)).
 - Before mainnet: a multisig for upgrade, registry and escrow authority, binding attester/tier into the signed message, indicator readings that do not rely on the scanning phone, and an external audit.
 
@@ -101,12 +101,13 @@ cd apps/verify && uv run pytest -q          # SUN vectors, signatures, tap adopt
 cargo test -p flacon && cargo test -p escrow   # message reconstruction, grade rule, escrow state rules
 npm run mocha:unit                          # web escrow action matrix and price parser, ops-script argument checks (no validator)
 anchor test --validator legacy              # record_scan with/without Ed25519 ix, replay, tier gating, dead seal, escrow flows
+bash scripts/test-escrow-time-travel.sh     # escrow timeout branches in LiteSVM (needs the Solana CLI's cargo build-sbf)
 anchor build && bash .github/scripts/idl-check.sh   # the committed IDLs in packages/proof/src/idl equal the build output
 bash .github/scripts/docker-smoke.sh        # needs Docker: build Dockerfile.verify, start it with a throwaway config, check /health
 bash .github/scripts/hygiene.sh             # no tracked env files, keys, local tool config, absolute home paths or machine PATH lines
 ```
 
-CI (`.github/workflows/ci.yml`) runs all of these on every push to `main` and every pull request, except `anchor test`, which needs a local validator and runs on manual dispatch, and the IDL check, which `.github/workflows/programs.yml` runs whenever the programs, the committed IDLs or the toolchain pins change.
+CI (`.github/workflows/ci.yml`) runs all of these on every push to `main` and every pull request, except `anchor test` and the escrow time-travel tests, which run on manual dispatch (Actions → CI → Run workflow, "anchor" ticked), and the IDL check, which `.github/workflows/programs.yml` runs whenever the programs, the committed IDLs or the toolchain pins change. CI never deploys: Vercel and Railway are not connected to GitHub, and both services are deployed by hand ([`docs/deploy.md`](docs/deploy.md#deploying)).
 
 ## Wording
 
@@ -125,4 +126,4 @@ The seal is a **handling and provenance record, not a damage record**. Say "Seal
 | Escrow seller protection, key revocation, partner removal (programs in this repo) | done; devnet upgrade pending |
 | Attester binding in the signed message, multisig authorities | next |
 
-More: what is stored where: https://app.flaconvault.com/privacy (`apps/web/src/app/privacy/page.tsx`) · devnet addresses [`docs/devnet.md`](docs/devnet.md) · hardware runbook [`docs/hardware-day.md`](docs/hardware-day.md) · hosting [`docs/deploy.md`](docs/deploy.md) · demo video script [`docs/demo-script.md`](docs/demo-script.md) · original briefing (German) [`docs/Dev-Briefing_v2.md`](docs/Dev-Briefing_v2.md).
+More: what is stored where: https://app.flaconvault.com/privacy (`apps/web/src/app/privacy/page.tsx`; it refers data requests to the operator named in the legal notice, which the operator publishes: the app has no legal notice page yet) · devnet addresses [`docs/devnet.md`](docs/devnet.md) · hardware runbook [`docs/hardware-day.md`](docs/hardware-day.md) · hosting [`docs/deploy.md`](docs/deploy.md) · demo video script [`docs/demo-script.md`](docs/demo-script.md) · original briefing (German) [`docs/Dev-Briefing_v2.md`](docs/Dev-Briefing_v2.md).

@@ -69,12 +69,45 @@ describe("runbooks match the code", () => {
     expect(deploy).to.match(/`null` after a `railway up` without `FV_BUILD_SHA`/);
     const adminRow = deploy.split("\n").find((l) => l.startsWith("| `FV_ADMIN_TOKEN` |")) ?? "";
     expect(adminRow, "FV_ADMIN_TOKEN row").to.match(/POST \/api\/dev\/reset/);
-    // While routes_dev.py checks the token only when one is set, an empty token leaves /api/dev/reset open, and the
-    // table must say so (re-check this when the reset route requires a token).
-    if (/if settings\.admin_token and not admin_token_ok/.test(read("apps/verify/fv/routes_dev.py"))) {
-      expect(adminRow).not.to.match(/empty disables them/);
-      expect(adminRow).to.match(/`POST \/api\/dev\/reset`[^|]*open/);
+    // routes_dev.py guards the reset with require_admin (403 while FV_ADMIN_TOKEN is unset or wrong): no doc may call
+    // the reset open, or say it needs the token only "when set".
+    expect(read("apps/verify/fv/routes_dev.py")).to.match(/@router\.post\("\/reset", dependencies=\[[^\]]*Depends\(require_admin\)/);
+    expect(adminRow).to.match(/403/).and.not.to.match(/open to anyone/);
+    for (const { where, text } of lines()) {
+      if (/dev\/reset/.test(text)) expect(text, where).not.to.match(/when (`?FV_ADMIN_TOKEN`? is )?set|open to anyone/);
     }
+  });
+
+  it("deploys are manual: nothing claims that a push deploys, and deploy.md has the real commands", () => {
+    for (const { where, text } of [...lines(), ...read(".github/workflows/ci.yml").split("\n").map((t, i) => ({ where: `ci.yml:${i + 1}`, text: t }))]) {
+      expect(text, where).not.to.match(/deploy(s|ed)? on push|Git integrations?|Git deploys|push(es|ing)? (to )?`?main`? (starts|triggers|deploys(?! nothing))|switch(ing)? to Git/i);
+    }
+    const deploy = read("docs/deploy.md");
+    expect(deploy).to.match(/\*\*not\*\* connected to GitHub/);
+    expect(deploy).to.match(/vercel --cwd "\$D" --prod --yes/).and.to.match(/git archive "\$SHA"/);
+    expect(deploy).to.match(/railway variable set FV_BUILD_SHA="\$SHA" --service verify --skip-deploys/);
+    expect(deploy).to.match(/railway up --service verify --detach --ci/);
+  });
+
+  it("every web environment variable the code reads is in apps/web/.env.example and the deploy.md web table", () => {
+    const src = (dir: string): string[] => fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? src(path.join(dir, e.name)) : /\.(ts|tsx)$/.test(e.name) ? [read(path.join(dir, e.name))] : []);
+    const names = new Set(src("apps/web/src").flatMap((t) => [...t.matchAll(/process\.env\.((?:NEXT_PUBLIC_)[A-Z0-9_]+|VERIFY_URL)/g)].map((m) => m[1])));
+    expect([...names]).to.include.members(["NEXT_PUBLIC_VERIFY_URL", "NEXT_PUBLIC_ESCROW_ADMIN_CONTACT", "VERIFY_URL"]);
+    const example = read("apps/web/.env.example");
+    const deploy = read("docs/deploy.md");
+    for (const n of names) {
+      expect(example, `apps/web/.env.example: ${n}`).to.match(new RegExp(`^#? ?${n}=`, "m"));
+      expect(deploy, `docs/deploy.md: ${n}`).to.include(`| \`${n}\` |`);
+    }
+  });
+
+  it("the manual CI anchor job runs the escrow time-travel tests", () => {
+    const ci = read(".github/workflows/ci.yml");
+    const anchorJob = ci.slice(ci.indexOf("\n  anchor:"));
+    expect(anchorJob).to.match(/run: bash scripts\/test-escrow-time-travel\.sh/);
+    expect(anchorJob.indexOf("test-escrow-time-travel.sh")).to.be.lessThan(anchorJob.indexOf("anchor test --validator legacy"));
+    expect(fs.existsSync(path.join(ROOT, "scripts/test-escrow-time-travel.sh"))).to.equal(true);
   });
 
   it("README security claims stay within what the code does", () => {
@@ -82,8 +115,11 @@ describe("runbooks match the code", () => {
     const resume = readme.split("\n").find((l) => /wallet-app resume link/.test(l)) ?? "";
     expect(resume, "the resume token works while the scan is pending, it is not consumed").not.to.match(/single-use/);
     expect(resume).to.match(/pending/);
-    const sticky = readme.split("\n").find((l) => /Grades only get worse/.test(l)) ?? "";
+    // the grade rule of record_scan and the verifier: VOID and C sticky, A/B/D from the latest scan
+    const sticky = readme.split("\n").find((l) => /VOID and C are sticky/.test(l)) ?? "";
+    expect(sticky, "README grade sentence").to.match(/A\/B\/D follow the latest scan/);
     expect(sticky, "sticky grades are on devnet only after the upgrade").to.match(/devnet/);
+    for (const { where, text } of lines()) expect(text, where).not.to.match(/[Gg]rades? only (ever )?gets? worse|the worse of DB and chain/);
   });
 
   it("demo-script: demo tools need demo mode, and the triggered scene never uses the featured bottle", () => {

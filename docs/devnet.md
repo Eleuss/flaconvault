@@ -56,7 +56,7 @@ solana account 4JPPCBA7DpbmfDsq1oHDuiJD1zL8VhfuJSoWQyYZXZWt --url devnet
 ```bash
 solana config set --url https://api.devnet.solana.com
 solana balance                                  # deploy + rent need a few SOL; https://faucet.solana.com if airdrops are rate-limited
-anchor build --verifiable && anchor deploy --provider.cluster devnet     # note the commit next to the deploy signature
+anchor build --verifiable && anchor deploy --verifiable --provider.cluster devnet     # target/verifiable/*.so; note the commit next to the deploy signature
 # registry: init_registry (upgrade authority only), server key id 1, the wallet as partner, sites 1 and 2 (idempotent)
 npx tsx scripts/seed-devnet.ts --server-pubkey <pubkeyHex from the target verifier's GET /health>
 npx tsx scripts/partner.ts add <partner pubkey>  # optional, authority only (scripts/add-partner.ts delegates to it)
@@ -143,7 +143,7 @@ The account layouts and the signed message are unchanged, so an upgrade keeps ev
 ([`programs/README.md`](../programs/README.md#upgrade-compatibility) lists the behaviour that changes for existing
 accounts). Operator steps, from the upgrade/registry authority wallet:
 
-1. `anchor build --verifiable`, then `anchor upgrade target/deploy/flacon.so --program-id 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL --provider.cluster devnet` and the same for escrow (`9vabBySt…`); copy the IDLs (see Commands) and record the commit next to the upgrade signatures here.
+1. `anchor build --verifiable`, then `anchor upgrade target/verifiable/flacon.so --program-id 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL --provider.cluster devnet` and `anchor upgrade target/verifiable/escrow.so --program-id 9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL --provider.cluster devnet`. The verifiable build writes to `target/verifiable/`; `target/deploy/` holds whatever plain `anchor build` ran last, which `anchor verify` would not reproduce. Check both programs with `anchor verify` against the pushed commit ([`programs/README.md`](../programs/README.md#verifiable-builds)), copy the IDLs (see Commands) and record the commit next to the upgrade signatures here.
 2. Register a production-only server key under a new key id (`scripts/server-key.ts add <pubkeyHex> <keyId>`), switch the verifier to it (`FV_SERVER_ED25519_SEED`, `FV_SERVER_KEY_ID`), then revoke key id 1 (`scripts/server-key.ts revoke 1`): its seed is also in local development environments, and demo scans signed with it were published.
 3. Remove the browser-held demo partner Dev wallet A (`scripts/partner.ts remove AciBj4mKqxhPDF7KRYqvpGt8EZm75b582dumVmTv2LJ1`) and review the other test partners.
    Removing the partner does not take away what Dev wallet A *owns*: it owns the Core asset `FEM7HG84tRevMsUWcazdYJJhDCu2tWDLYpDdFeyKm4xG` of SN-2026-000005 (minted from `/certify`), and the escrow lets the asset's owner list and sell the bottle. Move the asset to the deploy wallet with Dev wallet A's key: in the browser that holds it, copy the value of `localStorage["fv.devwallet.a"]` (the 64-byte secret key as a JSON array) into a temporary file, run `ANCHOR_WALLET=<that file> npx tsx scripts/core-transfer.ts FEM7HG84tRevMsUWcazdYJJhDCu2tWDLYpDdFeyKm4xG <deploy wallet>`, then delete the file. Check that no open order of Dev wallet A exists for SN-2026-000005 (`getProgramAccounts(escrow)` with the seller filter at offset 40); `reserve` now refuses such an order once the asset has moved, and the seller can cancel it.

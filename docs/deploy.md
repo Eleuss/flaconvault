@@ -35,7 +35,8 @@ Read these before setting any variable.
 | `FV_MASTER_KEY` | **secret**, 16 bytes hex | the SDM master key the stickers were programmed with; never all zeros, never a key used for local development |
 | `FV_SERVER_ED25519_SEED` | **secret**, 32 bytes hex | production-only seed, e.g. `python3 -c "import secrets; print(secrets.token_hex(32))"`; `GET /health` shows its public key |
 | `FV_SERVER_KEY_ID` | the key id registered for that public key | must match the on-chain registry entry |
-| `FV_ADMIN_TOKEN` | **secret**, e.g. `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` | `x-admin-token` for `POST /api/reconcile`, `GET /api/admin/status`, `POST /api/admin/purge-seed` and `POST /api/dev/reset`; empty disables them |
+| `FV_ADMIN_TOKEN` | **secret**, e.g. `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` | `x-admin-token` for `POST /api/reconcile`, `GET /api/admin/status`, `POST /api/admin/purge-seed` and `POST /api/dev/reset`. Empty disables reconcile and the admin endpoints, but leaves `POST /api/dev/reset` (simulator only: it wipes and reseeds the database) open to anyone, so set a token on every reachable simulator deployment, a tunnelled local verifier included |
+| `FV_BUILD_SHA` | unset with Git deploys; `git rev-parse HEAD` for a CLI deploy | shown as `build` by `GET /health`. Railway's Git deploys set `RAILWAY_GIT_COMMIT_SHA`, which the verifier uses when `FV_BUILD_SHA` is unset; a `railway up` from the CLI sets neither, so set `FV_BUILD_SHA` before every CLI deploy (see Deploying). It takes precedence over `RAILWAY_GIT_COMMIT_SHA`: delete it from the service variables when you switch to Git deploys |
 | `FV_NONCE_TTL_S` | `90` | scan session lifetime |
 | `FV_RATE_LIMIT_PER_MIN` | `60` (default) | per-IP request budget for the POST routes, `GET /t` and the resume `GET /api/verify/<id>` (429 `rate_limited`) |
 | `FV_REPORT_LIMIT_PER_HOUR` | `3` (default) | unverified SEAL_DEAD reports per IP and hour (429 `report_limited`) |
@@ -75,10 +76,10 @@ Read these before setting any variable.
 
 ## After both are up
 
-1. `curl -s https://verify.flaconvault.com/health` shows `"ok": true`, `"simulator": false`, the program id, the deployed commit (`build`), the Arweave status, and a `pubkeyHex` equal to the on-chain server key with the same `keyId` (`curl -s https://verify.flaconvault.com/api/registry`).
+1. `curl -s https://verify.flaconvault.com/health` shows `"ok": true`, `"simulator": false`, the program id, the deployed commit (`build`; `null` after a `railway up` without `FV_BUILD_SHA`, so compare it with the commit that passed CI), the Arweave status, and a `pubkeyHex` equal to the on-chain server key with the same `keyId` (`curl -s https://verify.flaconvault.com/api/registry`).
 2. `curl -s -o /dev/null -w '%{http_code}\n' https://verify.flaconvault.com/api/dev/tags` prints `404` (simulator off).
 3. `curl -s -D - -o /dev/null -H 'Origin: http://localhost:3000' https://verify.flaconvault.com/health | grep -i access-control-allow-origin` prints nothing (localhost is not an allowed origin).
-4. Tap a real sticker (iPhone: background NFC opens Safari): `/t` shows "Seal genuine · Tap N". Opening the same URL again shows "Repeated tap".
+4. Tap a real sticker (iPhone: background NFC opens Safari): `/t` shows "Seal genuine · Tap N". For the replay check, read the sticker with an NFC reader app (NFC Tools, TagInfo), copy its tap URL (`…/t?picc_data=…&cmac=…`) and open it twice: the second time shows "Repeated tap". Reopening the result page (`/t?tap=…`) only shows the stored result again.
 5. On that sticker's passport page, "Check live on-chain" reads the Passport account from devnet.
 
 ### Removing demo data from an older production database
@@ -101,6 +102,7 @@ Deploy from a clean checkout of a commit that passed CI (`.github/workflows/ci.y
 ```bash
 vercel --prod                                   # web, from the repo root (project linked in .vercel/)
 vercel env add NAME production                  # change a web variable (value from stdin), then redeploy
+railway variables --service <service> --skip-deploys --set FV_BUILD_SHA=$(git rev-parse HEAD)   # CLI deploys: the commit for /health
 railway up --service <service>                  # verifier, from the repo root
 railway variables --service <service> --set K=V # change a verifier variable (triggers a redeploy)
 railway logs --service <service>                # verifier logs

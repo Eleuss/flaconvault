@@ -23,16 +23,16 @@ The verifier must then run with `FV_KEY_MODE=sdmbackend` and `FV_SDM_DERIVE=lega
 
 1. Verifier with the simulator off (`FV_DEV_SIMULATOR=false`) and the real master key.
 2. Tap the sticker with an iPhone (background NFC opens Safari) → `/t` shows **"Seal genuine · Tap N"**, or "Chip genuine, but not assigned to a passport" for a chip that is not bound yet.
-3. Open the same URL again → **"Repeated tap"** (the counter did not go up).
+3. Replay: read the sticker once with an NFC reader app (NFC Tools, TagInfo) and copy the URL it shows (`…/t?picc_data=…&cmac=…`; that read counts as a tap). Open the copied URL in Safari once (**"Seal genuine · Tap N"**), then open the same URL again, or after a newer tap → **"Repeated tap"** (its counter is not above the last one seen). Reopening the result page (`/t?tap=…`, where the first tap lands) only shows the stored result again, not a replay.
 
 ## 3. Bind the chip to a passport
 
 - **Browser (partner wallet):** `/certify` → mint a Metaplex Core asset and the passport, then attach the seal. **"UID from the last tap"** fills in the UID that `/t` remembered (iPhone), **"Read UID via NFC"** reads it directly where WebNFC works. **"Go to scan"** starts the certification scan (tier 4, photo required).
-- **CLI (partner wallet in `~/.config/solana/id.json`):** `npx tsx scripts/bind-chip.ts <serial> <uid14hex> "<brand>" "<name>" "<batch>" [kind=1] [verifyUrl]` sends `mint_passport` and `attach_seal`, then posts the MINT and SEAL_ATTACH events with their transaction signatures. The verifier records history entries only together with a verified on-chain transaction (`POST /api/events` needs `txSig` and `actor`).
+- **CLI (partner wallet in `~/.config/solana/id.json`):** `npx tsx scripts/bind-chip.ts <serial> <uid14hex> "<brand>" "<name>" "<batch>" <coreAssetPubkey|new> [kind=1] [verifyUrl]` (`mint_passport` only accepts a Metaplex Core asset owned by the issuer: pass an existing one owned by the CLI wallet, or `new` to mint one owned by the CLI wallet whose uri is the verifier's `/api/passport/<serial>/metadata.json`) sends `mint_passport` and `attach_seal`, then posts the MINT and SEAL_ATTACH events with their transaction signatures. The verifier records history entries only together with a verified on-chain transaction (`POST /api/events` needs `txSig` and `actor`).
 
 ## 4. Seal not responding (tamper test)
 
-Stick a sticker over a cardboard edge, tear it, tap: nothing happens on the phone, the chip is dead. In `/scan`, choose **"Seal not responding"** → "No seal found" and file the report. The report shows as unverified until a partner confirms the dead seal on chain (`mark_seal_dead`). Repeat until the sticker tears reliably (score the foil first if needed).
+Stick a sticker over a cardboard edge, tear it, tap: nothing happens on the phone, the chip is dead. In `/scan`, choose **"Seal not responding"** → "No seal found" and file the report. The report shows as unverified (it never voids the passport) until the passport's issuer, while it is a registry partner, or the registry authority confirms the dead seal on chain with `mark_seal_dead`. Repeat until the sticker tears reliably (score the foil first if needed).
 
 ## 5. Range
 

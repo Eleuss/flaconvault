@@ -47,9 +47,9 @@ A buyer needs no app and no wallet: tapping the sticker with an iPhone opens the
 - The server proves that the genuine chip was tapped, once: within a 90-second scan session, or, on the one-tap iPhone path, at most 180 seconds before the scan adopts that tap. It does not prove what is inside the bottle, and a genuine sticker moved to another bottle is not detected by the chip alone.
 - Indicator and fill readings are currently reported by the scanning phone and signed as sent. Binding them to the server or a partner, and binding attester/tier into the signed message, are the next protocol steps.
 - The verifier only accepts history entries that are backed by a verified on-chain transaction signed by the actor, and it takes the facts (price, seal kind, counters, match, attester, tier, role) from the decoded instruction and the program's accounts and events, never from the client. A minted passport is never renamed. Unverified seal reports are shown as "reported · unverified" (one per seal and day) and never void a passport. The simulator is off in production, and the verifier refuses to start with forgeable key settings.
-- A pending signed scan is never published (no message, signature or nonce in public views); the wallet-app resume link carries only an event id and a single-use token. Certified tiers and the vault/partner roles are signed only for wallets in the on-chain partner registry.
-- Grades only get worse: a heat-triggered C or an opened (VOID) passport stays so on chain and on the server.
-- The programs in this repository add server-key revocation with a freshness window (10 minutes against the cluster clock), partner removal, issuer-only seal administration, owner-only escrow listing, a price-bound reserve, a buyer refund when the seller does not ship, a seller payout when the buyer never scans, and an admin `resolve` for disagreeing scans. The devnet deployment is upgraded to them separately (operator step, see [`programs/README.md`](programs/README.md)).
+- A pending signed scan is never published (no message, signature or nonce in public views); the wallet-app resume link carries only an event id and a token that works only while the scan is pending (it stops working once the scan is anchored or fails). Certified tiers and the vault/partner roles are signed only for wallets in the on-chain partner registry.
+- Grades only get worse on the server: a heat-triggered C or an opened (VOID) passport stays so. The programs in this repository enforce the same on chain; on the current devnet deployment a later scan can still overwrite a C or VOID grade until it is upgraded (next point).
+- The programs in this repository add sticky C and VOID grades, server-key revocation with a freshness window (10 minutes against the cluster clock), partner removal, issuer-only seal administration, owner-only escrow listing, a price-bound reserve, a buyer refund when the seller does not ship, a seller payout when the buyer never scans, and an admin `resolve` for disagreeing scans. The devnet deployment is upgraded to them separately (operator step, see [`programs/README.md`](programs/README.md)).
 - Before mainnet: a multisig for upgrade, registry and escrow authority, binding attester/tier into the signed message, indicator readings that do not rely on the scanning phone, and an external audit.
 
 ## Repo
@@ -64,7 +64,7 @@ A buyer needs no app and no wallet: tapping the sticker with an iPhone opens the
 | `apps/web` | Next.js 14: landing, tap result, scan flow, public passport, certification console, market. |
 | `docs/` | Briefing, card layout, `heat_fields.json` (card geometry, change the file, not the code), shared fixtures `vectors.json` and `enums.json`, devnet addresses, hardware runbook, deploy runbook, demo script. |
 | `scripts/` | Devnet seeding, `partner` / `server-key` registry admin, `bind-chip`, `fund-dev-wallet`, `list-order`. |
-| `.github/` | CI (GitHub Actions: every test suite below except `anchor test`, which runs on manual dispatch) and Dependabot. |
+| `.github/` | CI (GitHub Actions: every test suite below except `anchor test`, which runs on manual dispatch; the verifier Docker image; the IDL drift check when the programs change) and Dependabot. |
 
 ## Run it locally
 
@@ -99,11 +99,14 @@ npm run vision:test                         # card reading under tilt, light, bl
 npm run web:typecheck && npm run web:lint && npm run web:test && npm run web:build
 cd apps/verify && uv run pytest -q          # SUN vectors, signatures, tap adoption, authenticated events, limits, reconcile
 cargo test -p flacon && cargo test -p escrow   # message reconstruction, grade rule, escrow state rules
+npm run mocha:unit                          # web escrow action matrix and price parser, ops-script argument checks (no validator)
 anchor test --validator legacy              # record_scan with/without Ed25519 ix, replay, tier gating, dead seal, escrow flows
-bash .github/scripts/hygiene.sh             # no tracked env files, keys, local tool config or absolute home paths
+anchor build && bash .github/scripts/idl-check.sh   # the committed IDLs in packages/proof/src/idl equal the build output
+bash .github/scripts/docker-smoke.sh        # needs Docker: build Dockerfile.verify, start it with a throwaway config, check /health
+bash .github/scripts/hygiene.sh             # no tracked env files, keys, local tool config, absolute home paths or machine PATH lines
 ```
 
-CI (`.github/workflows/ci.yml`) runs all of these on every push to `main` and every pull request, except `anchor test`, which needs a local validator and runs on manual dispatch.
+CI (`.github/workflows/ci.yml`) runs all of these on every push to `main` and every pull request, except `anchor test`, which needs a local validator and runs on manual dispatch, and the IDL check, which `.github/workflows/programs.yml` runs whenever the programs, the committed IDLs or the toolchain pins change.
 
 ## Wording
 

@@ -9,7 +9,9 @@ import {
   MAX_DISPUTE_AFTER_S,
   MIN_DISPUTE_AFTER_S,
   OrderState as S,
+  SCAN_TS_SKEW_S,
   availableActions,
+  buyerNeedsAdmin,
   coreAssetUri,
   effectiveWindow,
   formatUsdc,
@@ -20,6 +22,7 @@ import {
   parsePriceUsdc,
   passportPath,
   receiptDeadline,
+  scanFitsStep,
   shipDeadline,
   type OrderLike,
 } from "../apps/web/src/lib/escrow-rules";
@@ -93,14 +96,42 @@ describe("web escrow rules", () => {
     expect(availableActions(order(S.RECEIPT_SCANNED), viewer({ isBuyer: true, sealDead: true, isAdmin: true }), 0)).to.deep.equal(["release"]);
   });
 
-  it("dead seal / admin refunds while funded and before a matched receipt; seller closes terminal orders", () => {
-    for (const s of [S.RESERVED, S.PRESHIP_SCANNED, S.SHIPPED]) {
+  it("dead seal: the buyer's own refund only before shipping; the admin refunds while funded; seller closes terminal orders", () => {
+    for (const s of [S.RESERVED, S.PRESHIP_SCANNED]) {
       expect(availableActions(order(s), viewer({ isBuyer: true, sealDead: true }), 0)).to.include("disputeSealDead");
+    }
+    // shipped: DeadSealAfterShipping — the buyer is pointed to the admin instead
+    expect(availableActions(order(S.SHIPPED), viewer({ isBuyer: true, sealDead: true }), 0)).to.not.include("disputeSealDead");
+    for (const s of [S.RESERVED, S.PRESHIP_SCANNED, S.SHIPPED]) {
       expect(availableActions(order(s), viewer({ isAdmin: true }), 0)).to.include("adminRefund");
     }
     for (const s of [S.RELEASED, S.DISPUTE, S.CANCELLED]) {
       expect(availableActions(order(s), viewer({ isSeller: true }), 0)).to.deep.equal(["close"]);
       expect(availableActions(order(s), viewer({ isBuyer: true, isAdmin: true }), 0)).to.deep.equal([]);
     }
+  });
+
+  it("shipped: the buyer is told to ask the admin before the receipt deadline (not received, or seal dead)", () => {
+    const o = order(S.SHIPPED, { shippedAt: 10_000 });
+    expect(buyerNeedsAdmin(o, viewer({ isBuyer: true }))).to.deep.equal({ reason: "notReceived", before: 10_000 + 7 * DAY });
+    expect(buyerNeedsAdmin(o, viewer({ isBuyer: true, sealDead: true }))).to.deep.equal({ reason: "sealDead", before: 10_000 + 7 * DAY });
+    expect(buyerNeedsAdmin(o, viewer({ isSeller: true }))).to.equal(null);
+    expect(buyerNeedsAdmin(o, viewer())).to.equal(null);
+    for (const s of [S.RESERVED, S.PRESHIP_SCANNED, S.RECEIPT_SCANNED, S.MISMATCH, S.RELEASED]) {
+      expect(buyerNeedsAdmin(order(s), viewer({ isBuyer: true, sealDead: true })), `state ${s}`).to.equal(null);
+    }
+  });
+
+  it("scans offered for a step never predate it (ScanBeforeOrderStep), with the 600 s clock allowance", () => {
+    const o = order(S.SHIPPED, { reservedAt: 100_000, shippedAt: 200_000 });
+    expect(SCAN_TS_SKEW_S).to.equal(600);
+    expect(scanFitsStep(o, "preShip", 100_000)).to.be.true;
+    expect(scanFitsStep(o, "preShip", 100_000 - 600)).to.be.true;
+    expect(scanFitsStep(o, "preShip", 100_000 - 601)).to.be.false;
+    // e.g. the receipt scan from when the seller bought the bottle
+    expect(scanFitsStep(o, "preShip", 100_000 - 30 * DAY)).to.be.false;
+    expect(scanFitsStep(o, "receipt", 150_000)).to.be.false;
+    expect(scanFitsStep(o, "receipt", 200_000 - 600)).to.be.true;
+    expect(scanFitsStep(o, "receipt", 200_000 + DAY)).to.be.true;
   });
 });

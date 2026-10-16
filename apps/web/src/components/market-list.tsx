@@ -9,6 +9,7 @@ import { fetchCoreAsset, fetchPassportChain, passportPda } from "@/lib/flacon";
 import { escrowProgram, fetchConfig, fetchOrders, escrowIx, orderPda, orderStateLabel, orderStateTone, type OrderView } from "@/lib/escrow";
 import { formatUsdc, isValidSerial, orderPath, parsePriceUsdc } from "@/lib/escrow-rules";
 import { api } from "@/lib/verify-api";
+import { forgetPending, rememberPending } from "@/lib/pending-events";
 import { sendAsV0 } from "@/lib/send-tx";
 import { friendly } from "@/lib/errors";
 import type { PassportListItem } from "@/lib/api";
@@ -17,8 +18,12 @@ import { isTestPassport, short } from "@/lib/format";
 import { GradeMark, Pill } from "./badges";
 import { WalletButton } from "./wallet-button";
 
-/** A listing that landed on chain but whose LIST event did not reach the verifier yet. */
+/**
+ * A listing that landed on chain but whose LIST event did not reach the verifier yet. It is also stored as the order's
+ * pending event (lib/pending-events.ts), so after a reload the order page offers "Retry confirmation".
+ */
 interface PendingList { sig: string; serial: string; priceBase: string; order: string }
+const listPayload = (p: PendingList) => ({ priceUsdc: Number(formatUsdc(BigInt(p.priceBase))), currency: "USDC", market: "flaconvault" });
 
 export function MarketList() {
   const { connection } = useConnection();
@@ -47,7 +52,8 @@ export function MarketList() {
 
   const postList = async (p: PendingList) => {
     if (!wallet.publicKey) return;
-    await api.events({ serial: p.serial, type: EventType.LIST, txSig: p.sig, actor: wallet.publicKey.toBase58(), payload: { priceUsdc: Number(formatUsdc(BigInt(p.priceBase))), currency: "USDC", market: "flaconvault", order: p.order } });
+    await api.events({ serial: p.serial, type: EventType.LIST, txSig: p.sig, actor: wallet.publicKey.toBase58(), payload: { ...listPayload(p), order: p.order } });
+    forgetPending(p.order, p.sig);
     setPending(null);
   };
   const retryConfirmation = async () => {
@@ -79,6 +85,7 @@ export function MarketList() {
       const sig = await sendAsV0(wallet, connection, tx);
       const p: PendingList = { sig, serial: form.serial, priceBase: price.toString(), order: orderPda(passport, seller).toBase58() };
       setPending(p);
+      rememberPending(p.order, { sig: p.sig, type: EventType.LIST, payload: listPayload(p) });
       setNotice(deposit ? "Listed. The bottle's Core asset is now held by the escrow and goes to the buyer on release." : "Listed.");
       await postList(p);
       await load();
@@ -94,7 +101,10 @@ export function MarketList() {
       {error && <p role="alert" className="mt-4 rounded-xl border border-bad/40 px-4 py-3 text-sm text-bad">{error}</p>}
       {notice && !error && <p className="mt-4 rounded-xl border border-line px-4 py-3 text-sm text-muted">{notice}</p>}
       {pending && error && (
-        <p className="mt-3 text-sm"><button onClick={retryConfirmation} disabled={busy} className="btn-outline btn-sm">Retry confirmation</button></p>
+        <p className="mt-3 flex flex-wrap items-center gap-3 text-sm">
+          <button onClick={retryConfirmation} disabled={busy} className="btn-outline btn-sm">Retry confirmation</button>
+          <span className="text-muted">This browser remembers it: the <Link href={orderPath(pending.order)} className="link">order page</Link> offers the retry later too.</span>
+        </p>
       )}
 
       <section className="card mt-8 p-5">

@@ -8,6 +8,8 @@ export const OrderState = { LISTED: 0, RESERVED: 1, PRESHIP_SCANNED: 2, SHIPPED:
 /** Dispute window bounds (MIN_DISPUTE_AFTER_S / MAX_DISPUTE_AFTER_S). */
 export const MIN_DISPUTE_AFTER_S = 60 * 60;
 export const MAX_DISPUTE_AFTER_S = 60 * 24 * 60 * 60;
+/** flacon MAX_SCAN_TS_SKEW_S: how far a server-signed scan ts may lie before the order step it stands for. */
+export const SCAN_TS_SKEW_S = 600;
 // BigInt() instead of literals: the web tsconfig has no ES2020 target
 const MICRO = BigInt(1_000_000);
 const ZERO = BigInt(0);
@@ -58,6 +60,26 @@ export type EscrowAction =
   | "reserve" | "cancel" | "preShip" | "ship" | "receipt" | "release"
   | "refundNotShipped" | "releaseAfterTimeout" | "disputeSealDead" | "adminRefund" | "resolve" | "close";
 
+/**
+ * Whether a scan (its signed `ts`, unix s) may stand for an order step: the shipping scan must not predate the
+ * reservation and the receipt scan must not predate shipping (programs/escrow rules.rs check_scan_not_before, with the
+ * same clock-skew allowance). Older scans would be refused with ScanBeforeOrderStep.
+ */
+export function scanFitsStep(o: OrderLike, step: "preShip" | "receipt", scanTs: number): boolean {
+  const stepAt = step === "preShip" ? o.reservedAt : o.shippedAt;
+  return scanTs >= stepAt - SCAN_TS_SKEW_S;
+}
+
+/**
+ * What only the escrow admin can settle for the buyer of a SHIPPED order: the parcel did not arrive (the buyer cannot
+ * record a receipt scan without the bottle, and after the receipt deadline anyone may pay the seller), or the seal
+ * stopped answering after shipping (the program leaves that to the admin). `before` is the receipt deadline.
+ */
+export function buyerNeedsAdmin(o: OrderLike, v: Viewer): { reason: "notReceived" | "sealDead"; before: number } | null {
+  if (o.state !== OrderState.SHIPPED || !v.isBuyer) return null;
+  return { reason: v.sealDead ? "sealDead" : "notReceived", before: receiptDeadline(o) };
+}
+
 /** The actions the program would accept from this viewer right now (`now` in unix seconds). */
 export function availableActions(o: OrderLike, v: Viewer, now: number): EscrowAction[] {
   const a: EscrowAction[] = [];
@@ -70,7 +92,8 @@ export function availableActions(o: OrderLike, v: Viewer, now: number): EscrowAc
   if (o.state === OrderState.RECEIPT_SCANNED) a.push("release");
   if (preShipping && v.isBuyer && now > shipDeadline(o)) a.push("refundNotShipped");
   if (o.state === OrderState.SHIPPED && now > receiptDeadline(o)) a.push("releaseAfterTimeout");
-  if (refundable && v.isBuyer && v.sealDead) a.push("disputeSealDead");
+  // after shipping a dead seal is the admin's call (DeadSealAfterShipping): see buyerNeedsAdmin
+  if (preShipping && v.isBuyer && v.sealDead) a.push("disputeSealDead");
   if (refundable && v.isAdmin) a.push("adminRefund");
   if (o.state === OrderState.MISMATCH && v.isAdmin) a.push("resolve");
   if (isTerminal(o.state) && v.isSeller) a.push("close");

@@ -7,10 +7,11 @@ import { ArrowRight, Loader2 } from "lucide-react";
 import { EventType, hexToBytes, serialHash } from "@flaconvault/proof";
 import { fetchSealStates, passportPda, scanPda, sealPda } from "@/lib/flacon";
 import { escrowProgram, escrowIx, fetchConfig, fetchOrder, fetchOrders, OrderState, orderStateLabel, orderStateTone, FILL_TOLERANCE, type EscrowConfigView, type OrderView } from "@/lib/escrow";
-import { availableActions, formatUsdc, isTerminal, isValidSerial, marketPassportPath, orderPath, passportPath, receiptDeadline, shipDeadline, type EscrowAction } from "@/lib/escrow-rules";
+import { availableActions, buyerNeedsAdmin, formatUsdc, isTerminal, isValidSerial, marketPassportPath, orderPath, passportPath, receiptDeadline, scanFitsStep, shipDeadline, type EscrowAction } from "@/lib/escrow-rules";
+import { flushPending, loadPending, rememberPending, savePending, type PendingEvent } from "@/lib/pending-events";
 import { api } from "@/lib/verify-api";
 import { sendAsV0 } from "@/lib/send-tx";
-import { friendly } from "@/lib/errors";
+import { ApiError, friendly } from "@/lib/errors";
 import type { Passport, PassportEvent, PassportListItem } from "@/lib/api";
 import { PUBLIC_VERIFY_URL } from "@/lib/config";
 import { fmtDate, gradeLetter, short, txUrl } from "@/lib/format";
@@ -20,11 +21,15 @@ import { WalletButton } from "./wallet-button";
 const STEPS = [OrderState.LISTED, OrderState.RESERVED, OrderState.PRESHIP_SCANNED, OrderState.SHIPPED, OrderState.RECEIPT_SCANNED, OrderState.RELEASED];
 interface ScanOpt { counter: number; ts: number; fill: number | null; pda: PublicKey; seal: PublicKey; label: string }
 type Ev = { type: number; payload?: Record<string, unknown> };
-/** A transaction that landed whose history entry has not reached the verifier yet (kept across reloads). */
-interface PendingEvent { sig: string; type: number; payload: Record<string, unknown> }
-const pendingKey = (order: string) => `fv.pendingEvent.${order}`;
-const loadPending = (order: string): PendingEvent | null => { try { const v = window.localStorage.getItem(pendingKey(order)); return v ? (JSON.parse(v) as PendingEvent) : null; } catch { return null; } };
-const savePending = (order: string, p: PendingEvent | null) => { try { if (p) window.localStorage.setItem(pendingKey(order), JSON.stringify(p)); else window.localStorage.removeItem(pendingKey(order)); } catch { /* ignore */ } };
+/** The verifier already holds this entry (with another transaction): nothing left to retry. */
+const alreadyRecorded = (e: unknown) => e instanceof ApiError && e.code === "event_confirmed";
+/**
+ * How a buyer reaches the escrow admin (who alone can refund a SHIPPED order): a mailto: or https: link from
+ * NEXT_PUBLIC_ESCROW_ADMIN_CONTACT; without one the page shows the admin wallet only.
+ */
+const ADMIN_CONTACT = /^(mailto:|https:\/\/)/.test(process.env.NEXT_PUBLIC_ESCROW_ADMIN_CONTACT ?? "") ? process.env.NEXT_PUBLIC_ESCROW_ADMIN_CONTACT! : null;
+const adminContactHref = (orderPda: string) =>
+  ADMIN_CONTACT && ADMIN_CONTACT.startsWith("mailto:") && !ADMIN_CONTACT.includes("?") ? `${ADMIN_CONTACT}?subject=${encodeURIComponent(`FlaconVault order ${orderPda}`)}` : ADMIN_CONTACT;
 
 async function passportFor(passport: PublicKey): Promise<{ serial: string; passport: Passport | null } | null> {
   const list = (await fetch(`${PUBLIC_VERIFY_URL}/api/passports`).then((r) => (r.ok ? r.json() : []))) as PassportListItem[];
@@ -90,7 +95,8 @@ export function OrderDetail({ orderPda }: { orderPda: string }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastTx, setLastTx] = useState<string | null>(null);
-  const [pending, setPending] = useState<PendingEvent | null>(null);
+  // every landed transaction whose history entry has not reached the verifier yet (oldest first, kept across reloads)
+  const [pending, setPending] = useState<PendingEvent[]>([]);
   useEffect(() => { setPending(loadPending(orderPda)); }, [orderPda]);
   const [now, setNow] = useState(() => Date.now() / 1000);
   useEffect(() => { const t = setInterval(() => setNow(Date.now() / 1000), 30_000); return () => clearInterval(t); }, []);
@@ -133,12 +139,18 @@ export function OrderDetail({ orderPda }: { orderPda: string }) {
   const postEvent = async (p: PendingEvent) => {
     if (!wallet.publicKey || !serial) throw new Error("The passport of this order is unknown to the verifier.");
     await api.events({ serial, type: p.type, txSig: p.sig, actor: wallet.publicKey.toBase58(), payload: { ...p.payload, order: orderPda } });
-    setPending(null); savePending(orderPda, null);
+  };
+  /** Posts every pending entry (oldest first) and keeps what failed; throws the first error after all were tried. */
+  const postAllPending = async () => {
+    const { left, error } = await flushPending(loadPending(orderPda), postEvent, alreadyRecorded);
+    savePending(orderPda, left);
+    setPending(left);
+    if (error !== null) throw error;
   };
   const retryConfirmation = async () => {
-    if (!pending) return;
+    if (!pending.length) return;
     setBusy("retry"); setError(null);
-    try { await postEvent(pending); await load(); }
+    try { await postAllPending(); await load(); }
     catch (e) { setError(`The transaction is on chain, but the history entry failed again: ${friendly(e)}`); }
     finally { setBusy(null); }
   };
@@ -162,10 +174,10 @@ export function OrderDetail({ orderPda }: { orderPda: string }) {
       const ev = typeof event === "function" ? event(orderRef.current) : event;
       if (ev) {
         // keep the landed transaction + planned event until the verifier has it, so it can be retried without
-        // repeating the (now impossible) on-chain action
+        // repeating the (now impossible) on-chain action; earlier unposted entries stay and are posted first
         landed = { sig, type: ev.type, payload: ev.payload ?? {} };
-        setPending(landed); savePending(orderPda, landed);
-        await postEvent(landed);
+        setPending(rememberPending(orderPda, landed));
+        await postAllPending();
       }
     } catch (e) {
       setError(landed ? `The transaction is on chain, but the history entry failed: ${friendly(e)}` : friendly(e));
@@ -175,9 +187,18 @@ export function OrderDetail({ orderPda }: { orderPda: string }) {
   // Anchor's .rpc() sends a legacy tx, which mobile wallets (MWA) return unsigned
   const prog = () => escrowProgram(connection);
   const send = async (b: { transaction(): Promise<Transaction> }) => sendAsV0(wallet, connection, await b.transaction());
-  const chosen = myScans.find((s) => s.pda.toBase58() === scanChoice) ?? myScans[0];
+  // only scans made after the step they stand for count (ScanBeforeOrderStep): after the reservation for the shipping
+  // scan, after shipping for the receipt scan — an older scan (for example from when the seller bought the bottle) is
+  // never offered
+  const step = order?.state === OrderState.RESERVED ? "preShip" : order?.state === OrderState.SHIPPED ? "receipt" : null;
+  const stepScans = order && step ? myScans.filter((s) => scanFitsStep(order, step, s.ts)) : [];
+  const olderHidden = myScans.length - stepScans.length;
+  const noScanLabel = olderHidden > 0 ? `— no scan of this wallet after the ${step === "receipt" ? "shipping" : "reservation"} yet —` : "— no anchored scan of this wallet yet —";
+  const chosen = stepScans.find((s) => s.pda.toBase58() === scanChoice) ?? stepScans[0];
   const sellerScanCounter = passport?.events.find((e) => e.type === EventType.SHIP && (e.payload.order === orderPda || e.payload.order === undefined))?.payload.preShipScanCounter as number | undefined;
-  const actions: EscrowAction[] = order ? availableActions(order, { isSeller, isBuyer, isAdmin, sealDead: !!deadSeal }, now) : [];
+  const viewer = { isSeller, isBuyer, isAdmin, sealDead: !!deadSeal };
+  const actions: EscrowAction[] = order ? availableActions(order, viewer, now) : [];
+  const askAdmin = order ? buyerNeedsAdmin(order, viewer) : null;
   const can = (a: EscrowAction) => actions.includes(a);
   const amount = order ? `${formatUsdc(order.priceBase)} USDC` : "";
   const assetNote = order?.assetDeposited ? ", Core asset → buyer" : "";
@@ -218,10 +239,12 @@ export function OrderDetail({ orderPda }: { orderPda: string }) {
         {passport && <GradeMark grade={passport.void ? 4 : passport.grade} />}
       </div>
       {error && <p role="alert" className="mt-4 rounded-xl border border-bad/40 px-4 py-3 text-sm text-bad">{error}</p>}
-      {pending && (
+      {pending.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-3 text-sm">
-          <span className="text-muted">The last transaction ({short(pending.sig, 8)}) is not in the passport history yet.</span>
-          <button onClick={retryConfirmation} disabled={busy !== null} className="btn-outline btn-sm">{spin("retry")} Retry confirmation</button>
+          <span className="text-muted">{pending.length === 1
+            ? <>A transaction on chain ({short(pending[0].sig, 8)}) is not in the passport history yet.</>
+            : <>{pending.length} transactions on chain ({pending.map((p) => short(p.sig, 6)).join(", ")}) are not in the passport history yet.</>}</span>
+          <button onClick={retryConfirmation} disabled={busy !== null || !wallet.connected} className="btn-outline btn-sm">{spin("retry")} Retry confirmation</button>
         </div>
       )}
       {lastTx && <p className="mt-4 text-xs text-muted">Last transaction: <a className="link" href={txUrl(lastTx)} target="_blank" rel="noreferrer">{short(lastTx, 8)}</a></p>}
@@ -273,12 +296,12 @@ export function OrderDetail({ orderPda }: { orderPda: string }) {
                 {can("cancel") && <button onClick={act.cancel} disabled={busy !== null} className="btn-outline btn-sm">{spin("cancel")} Withdraw listing</button>}
                 {can("preShip") && (
                   <div className="space-y-2">
-                    <p className="text-muted">Do the shipping scan (tier 2, with photo), then record it here. The scan must come from this wallet and be anchored on chain.</p>
+                    <p className="text-muted">Do the shipping scan (tier 2, with photo), then record it here. The scan must come from this wallet, be anchored on chain and be made after the reservation{olderHidden > 0 ? ` (${olderHidden} older scan${olderHidden === 1 ? " is" : "s are"} not offered)` : ""}.</p>
                     <div className="flex flex-wrap items-center gap-2">
                       <Link href="/scan?role=1" className="btn-outline btn-sm">Do shipping scan <ArrowRight className="h-3.5 w-3.5" aria-hidden /></Link>
                       <select value={chosen?.pda.toBase58() ?? ""} onChange={(e) => setScanChoice(e.target.value)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
-                        {myScans.length === 0 && <option value="">— no anchored scan of this wallet yet —</option>}
-                        {myScans.map((s) => <option key={s.pda.toBase58()} value={s.pda.toBase58()}>{s.label}</option>)}
+                        {stepScans.length === 0 && <option value="">{noScanLabel}</option>}
+                        {stepScans.map((s) => <option key={s.pda.toBase58()} value={s.pda.toBase58()}>{s.label}</option>)}
                       </select>
                       <button onClick={act.preShip} disabled={busy !== null || !chosen} className="btn btn-sm">{spin("preShip")} Record shipping scan</button>
                     </div>
@@ -287,15 +310,27 @@ export function OrderDetail({ orderPda }: { orderPda: string }) {
                 {can("ship") && <button onClick={act.ship} disabled={busy !== null} className="btn btn-sm">{spin("ship")} Mark as shipped</button>}
                 {can("receipt") && (
                   <div className="space-y-2">
-                    <p className="text-muted">After receipt: do a scan (tier 2, with photo) and record it before {fmtDate(receiptDeadline(order))}. Release happens when heat and humidity match and the fill level differs by at most {FILL_TOLERANCE} %. Without a receipt scan by the deadline the USDC goes to the seller.</p>
+                    <p className="text-muted">After receipt: do a scan (tier 2, with photo) and record it before {fmtDate(receiptDeadline(order))}. Only scans made after shipping count{olderHidden > 0 ? ` (${olderHidden} older scan${olderHidden === 1 ? " is" : "s are"} not offered)` : ""}. Release happens when heat and humidity match and the fill level differs by at most {FILL_TOLERANCE} %. Without a receipt scan by the deadline the USDC goes to the seller.</p>
                     <div className="flex flex-wrap items-center gap-2">
                       <Link href="/scan?role=2" className="btn-outline btn-sm">Do receipt scan <ArrowRight className="h-3.5 w-3.5" aria-hidden /></Link>
                       <select value={chosen?.pda.toBase58() ?? ""} onChange={(e) => setScanChoice(e.target.value)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
-                        {myScans.length === 0 && <option value="">— no anchored scan of this wallet yet —</option>}
-                        {myScans.map((s) => <option key={s.pda.toBase58()} value={s.pda.toBase58()}>{s.label}</option>)}
+                        {stepScans.length === 0 && <option value="">{noScanLabel}</option>}
+                        {stepScans.map((s) => <option key={s.pda.toBase58()} value={s.pda.toBase58()}>{s.label}</option>)}
                       </select>
                       <button onClick={act.receipt} disabled={busy !== null || !chosen} className="btn btn-sm">{spin("receipt")} Record receipt scan</button>
                     </div>
+                  </div>
+                )}
+                {askAdmin && (
+                  <div role="note" className="rounded-xl border border-line px-4 py-3">
+                    <p className="font-medium">{askAdmin.reason === "sealDead" ? "The seal stopped responding after shipping." : "Not received?"}</p>
+                    <p className="mt-1 text-muted">
+                      {askAdmin.reason === "sealDead"
+                        ? <>After shipping only the escrow admin can refund this order. Contact the admin before {fmtDate(askAdmin.before)}{now > askAdmin.before ? " (the deadline has passed: contact the admin at once)" : ""}.</>
+                        : <>Without the bottle you cannot record a receipt scan, and after {fmtDate(askAdmin.before)} anyone can release the USDC to the seller. Contact the escrow admin before then{now > askAdmin.before ? " (the deadline has passed: contact the admin at once)" : ""}: the admin can refund a shipped order.</>}
+                      {" "}Escrow admin: {config ? <Link href={`/wallet/${encodeURIComponent(config.admin)}`} className="link mono">{short(config.admin)}</Link> : "–"}.
+                    </p>
+                    {adminContactHref(orderPda) && <a href={adminContactHref(orderPda)!} className="btn-outline btn-sm mt-2" target={ADMIN_CONTACT!.startsWith("https://") ? "_blank" : undefined} rel="noreferrer">Contact the escrow admin</a>}
                   </div>
                 )}
                 {can("release") && <button onClick={act.release} disabled={busy !== null || !config} className="btn btn-sm">{spin("release")} Release · USDC → seller{assetNote}</button>}

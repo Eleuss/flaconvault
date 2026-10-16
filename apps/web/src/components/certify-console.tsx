@@ -143,6 +143,8 @@ export function CertifyConsole() {
         if (!/^[0-9A-Fa-f]{14}$/.test(form.uid)) throw new Error("UID of the first seal (7 bytes hex) is needed for the binding_hash");
         const core = await fetchCoreAsset(connection, new PublicKey(asset.pubkey));
         if (!core) throw new Error("The Core asset is not visible on chain yet. Wait a few seconds and try again.");
+        // mint_passport refuses an asset the issuer does not own (AssetNotOwnedByIssuer)
+        if (!core.owner.equals(wallet.publicKey)) throw new Error(`The Core asset belongs to another wallet (${core.owner.toBase58().slice(0, 8)}…). Connect that wallet, or mint a new Core asset with this one.`);
         usedAsset = asset.pubkey; bh = bindingHash(serial, form.batch, uidHash(form.uid));
         const tx = await program.methods.mintPassport(Array.from(sh), Array.from(bh), new PublicKey(usedAsset))
           .accountsStrict({ registry: registryPda(), passport: pda, issuer: wallet.publicKey, systemProgram: SystemProgram.programId, coreAsset: new PublicKey(usedAsset) }).transaction();

@@ -7,8 +7,11 @@ URL and a wallet app's browser).
 cp apps/web/.env.example apps/web/.env.local      # local values; never put a secret in a NEXT_PUBLIC_* variable
 npm run dev -w @flaconvault/web                  # http://localhost:3000 (copies OpenCV.js and the card files into public/)
 npm run test -w @flaconvault/web                 # unit tests (node:test via tsx, tsconfig.test.json)
-npx tsc --noEmit -p apps/web && npx next lint --dir apps/web/src
+npm run web:typecheck && npm run web:lint      # what CI runs (tsc --noEmit, then next lint inside apps/web)
 ```
+
+`next lint` is deprecated in Next 15.5 and is removed in Next 16; before that upgrade the `lint` script has to move to
+the ESLint CLI.
 
 Everything is read from the verification server (`NEXT_PUBLIC_VERIFY_URL`, default `http://localhost:8787`) and from
 Solana (`NEXT_PUBLIC_SOLANA_RPC`, `NEXT_PUBLIC_PROGRAM_ID`, `NEXT_PUBLIC_ESCROW_PROGRAM_ID`).

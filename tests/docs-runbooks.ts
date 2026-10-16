@@ -192,6 +192,25 @@ describe("runbooks match the code", () => {
     expect(read("apps/web/src/components/certify-console.tsx")).to.match(/Mint Metaplex Core/);
   });
 
+  it("every `npm run <script>` in the docs exists (root script, or the -w workspace's), and lint runs inside apps/web", () => {
+    const scriptsOf = (rel: string) => Object.keys((JSON.parse(read(rel)) as { scripts?: Record<string, string> }).scripts ?? {});
+    const workspaces = new Map(["packages/proof", "packages/vision", "apps/web"].map((dir) => [
+      (JSON.parse(read(`${dir}/package.json`)) as { name: string }).name, scriptsOf(`${dir}/package.json`)]));
+    const root = scriptsOf("package.json");
+    let checked = 0;
+    for (const { where, text } of lines()) {
+      for (const m of text.matchAll(/npm run ([a-z][a-z0-9:-]*)(?: -w (@[a-z0-9/-]+))?/g)) {
+        checked++;
+        const scripts = m[2] ? workspaces.get(m[2]) ?? [] : root;
+        expect(scripts, `${where}: npm run ${m[1]}${m[2] ? ` -w ${m[2]}` : ""}`).to.include(m[1]);
+      }
+      // `next lint` looks for app/ in the current directory: run from the repo root with --dir apps/... it finds none
+      expect(text, where).not.to.match(/next lint --dir apps\//);
+    }
+    expect(checked).to.be.greaterThan(10);
+    expect(read("apps/web/README.md")).to.include("npm run web:typecheck && npm run web:lint");
+  });
+
   it("the CI npm audit step fails on a critical advisory in a production dependency", () => {
     const ci = read(".github/workflows/ci.yml");
     const webJob = ci.slice(ci.indexOf("\n  web:"), ci.indexOf("\n  verify:"));

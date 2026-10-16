@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventType, Grade } from "@flaconvault/proof";
 import type { PassportEvent } from "./api";
-import { MAX_REPORTS_SHOWN, PASSPORT_DISCRIMINATOR, decodePassportAccount, effectiveVerdict, eventLine, liveCheckVerdict, passportHref, visibleEvents } from "./format";
+import { MAX_REPORTS_SHOWN, PASSPORT_DISCRIMINATOR, decodePassportAccount, effectiveVerdict, eventLine, liveCheckVerdict, passportHref, tapLanding, visibleEvents } from "./format";
 
 const ev = (o: Partial<PassportEvent>): PassportEvent => ({
   id: 1, type: EventType.SCAN, ts: 1000, actor: null, actorLabel: null, txSig: null, status: "confirmed", sealUidHash: null,
@@ -23,6 +23,15 @@ test("a VALID tap on a dead seal counts as not responding (contract C3)", () => 
   assert.equal(effectiveVerdict({ verdict: "VALID", sealDead: false }), "VALID");
   assert.equal(effectiveVerdict({ verdict: "VALID", sealDead: null }), "VALID");
   assert.equal(effectiveVerdict({ verdict: "REPLAY", sealDead: true }), "REPLAY");
+});
+
+test("/t: a dead seal's VALID tap shows 'not responding' and offers no condition check (contract C3)", () => {
+  assert.deepEqual(tapLanding({ verdict: "VALID", sealDead: true }, "12", "tok"), { verdict: "NO_RESPONSE", conditionHref: null });
+  assert.deepEqual(tapLanding({ verdict: "REPLAY", sealDead: false }, "12", "tok"), { verdict: "REPLAY", conditionHref: null });
+  assert.deepEqual(tapLanding({ verdict: "UNREGISTERED", sealDead: null }, "12", "tok"), { verdict: "UNREGISTERED", conditionHref: null });
+  // a live seal: adopt this tap with its token, or start a fresh scan without one
+  assert.deepEqual(tapLanding({ verdict: "VALID", sealDead: false }, "12", "a b"), { verdict: "VALID", conditionHref: "/scan?adopt=12&k=a%20b" });
+  assert.deepEqual(tapLanding({ verdict: "VALID", sealDead: false }, "12", null), { verdict: "VALID", conditionHref: "/scan" });
 });
 
 test("passport links encode the serial", () => {

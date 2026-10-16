@@ -1,4 +1,5 @@
 "use client";
+import { ZERO32, bytesEqual, hexToBytes, parseScanMessage, serialHash } from "@flaconvault/proof";
 import { PUBLIC_VERIFY_URL } from "./config";
 import { ApiError, apiError } from "./errors";
 import type { VerifyResponse } from "./flacon";
@@ -47,6 +48,8 @@ export const api = {
   simTap: (uid: string) => post<TapResult>("/api/dev/tap", { uid }),
   preview: (t: TagParams) => post<Preview>("/api/preview", { uid: t.uid || undefined, ctr: t.ctr || undefined, cmac: t.cmac, piccData: t.piccData, enc: t.enc }),
   verify: (body: Record<string, unknown>) => post<VerifyResult>("/api/verify", body),
+  /** Brand and name of a passport, for the anchor step (the full passport view; only these fields are used). */
+  passport: (serial: string) => get<{ serial: string; brand: string; name: string }>(`/api/passport/${encodeURIComponent(serial)}`),
   /** The pending signed scan behind a resume link (404 resume_not_found once it is anchored or failed, or for a wrong token). */
   resume: (eventId: number, token: string) => get<VerifyResult>(`/api/verify/${encodeURIComponent(String(eventId))}?token=${encodeURIComponent(token)}`),
   /**
@@ -120,6 +123,30 @@ export function signedAttester(v: Pick<VerifyResponse, "bundle"> | null): { pubk
 export function attesterMismatch(v: Pick<VerifyResponse, "bundle"> | null, connected: string): string | null {
   const signedFor = signedAttester(v).pubkey;
   return signedFor && signedFor !== connected ? signedFor : null;
+}
+
+/** What the server signed, as the anchor step shows it before the wallet signs. */
+export interface SignedScanSummary {
+  /** the passport serial, only when it is the one the signed message commits to (its hash) */
+  serial: string | null;
+  counter: number; heat: number; humidity: number; uv: number; fill: number;
+  /** the message commits to card photos (non-zero media hash) */
+  photos: boolean;
+  /** "city, country" as typed for the public record, or null */
+  place: string | null;
+}
+/**
+ * Read from the signed 152-byte message itself — exactly what record_scan anchors — rather than from the response's
+ * other fields; the place comes from the signed bundle. null when there is no readable message.
+ */
+export function signedScanSummary(v: Pick<VerifyResponse, "msgHex" | "serial" | "bundle"> | null): SignedScanSummary | null {
+  if (!v?.msgHex) return null;
+  let m: ReturnType<typeof parseScanMessage>;
+  try { m = parseScanMessage(hexToBytes(v.msgHex)); } catch { return null; }
+  const serial = v.serial && bytesEqual(serialHash(v.serial), m.serialHash) ? v.serial : null;
+  const loc = (v.bundle?.location ?? null) as { country?: unknown; city?: unknown } | null;
+  const place = [loc?.city, loc?.country].filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim()).join(", ") || null;
+  return { serial, counter: m.counter, heat: m.heat, humidity: m.hum, uv: m.uv, fill: m.fill, photos: !bytesEqual(m.mediaHash, ZERO32), place };
 }
 
 /** Parse uid/ctr/cmac out of a SUN URL (tag or simulator). */

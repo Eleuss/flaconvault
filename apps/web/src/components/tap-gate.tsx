@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Loader2 } from "lucide-react";
 import { PUBLIC_VERIFY_URL } from "@/lib/config";
-import { safeScanUrl, scanSession, tapHandoff } from "@/lib/handoff";
+import { scanSession, tapGateAction, tapHandoff } from "@/lib/handoff";
 import type { TagParams } from "@/lib/verify-api";
 
 /**
@@ -17,18 +17,14 @@ export function TapGate({ params }: { params: TagParams }) {
   const [handed, setHanded] = useState<null | { back: string | null }>(null);
   useEffect(() => {
     const s = scanSession.active();
-    if (s) {
-      tapHandoff.set(params);
-      const back = scanSession.ownedHere(s) ? safeScanUrl(s.scanUrl) : null;
-      setHanded({ back });
-      if (!back) return;
-      const id = setTimeout(() => window.location.replace(back), 1500);
-      return () => clearTimeout(id);
-    }
-    const q = params.piccData
-      ? `picc_data=${encodeURIComponent(params.piccData)}&cmac=${encodeURIComponent(params.cmac)}${params.enc ? `&enc=${encodeURIComponent(params.enc)}` : ""}`
-      : `uid=${encodeURIComponent(params.uid)}&ctr=${encodeURIComponent(params.ctr)}&cmac=${encodeURIComponent(params.cmac)}`;
-    window.location.replace(`${PUBLIC_VERIFY_URL}/t?${q}`);
+    const action = tapGateAction(params, s, s ? scanSession.ownedHere(s) : false, PUBLIC_VERIFY_URL);
+    if (action.kind === "verify") { window.location.replace(action.url); return; }
+    tapHandoff.set(params);
+    const { back } = action;
+    setHanded({ back });
+    if (!back) return;
+    const id = setTimeout(() => window.location.replace(back), 1500);
+    return () => clearTimeout(id);
   }, [params]);
   if (handed) {
     return (

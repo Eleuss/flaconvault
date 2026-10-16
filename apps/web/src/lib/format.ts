@@ -50,6 +50,17 @@ export function sealStatusText(s: "INTACT" | "NO_RESPONSE" | "OPENED"): { label:
 /** A VALID tap on a seal that is recorded as dead counts as a seal that does not respond — never "Seal genuine". */
 export const effectiveVerdict = (t: { verdict: string; sealDead?: boolean | null }): string => (t.verdict === "VALID" && t.sealDead ? "NO_RESPONSE" : t.verdict);
 
+/**
+ * The /t result page for a tap the verifier consumed: the verdict it shows (effectiveVerdict, so a dead seal is "not
+ * responding") and the "Check condition" link, offered only for a genuine tap on a live seal. With the adoption token
+ * `k` the link adopts this very tap into a scan; without it a new scan starts.
+ */
+export function tapLanding(t: { verdict: string; sealDead?: boolean | null }, tapId: string | null | undefined, k: string | null | undefined): { verdict: string; conditionHref: string | null } {
+  const verdict = effectiveVerdict(t);
+  if (verdict !== "VALID") return { verdict, conditionHref: null };
+  return { verdict, conditionHref: k && tapId ? `/scan?adopt=${encodeURIComponent(tapId)}&k=${encodeURIComponent(k)}` : "/scan" };
+}
+
 export function verdictText(v: string, counter: number | null): { title: string; tone: "ok" | "warn" | "bad" | "none"; hint: string } {
   switch (v) {
     case "VALID": return { title: `Seal genuine · Tap ${counter ?? "?"}`, tone: "ok", hint: "The chip has authenticated itself cryptographically. The counter is the number of taps this seal has seen." };

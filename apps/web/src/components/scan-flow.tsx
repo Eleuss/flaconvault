@@ -8,11 +8,13 @@ import { Indicator, Role, Tier, NONCE_TTL_S } from "@flaconvault/proof";
 import type { CardReading, FrameLike, HeatFieldsConfig } from "@flaconvault/vision";
 import { VisionClient, frameFromSource } from "@/vision/client";
 import { combineReadings } from "@/vision/vote";
-import { api, attesterMismatch, parseTagUrl, sha256Hex, signedAttester, verifyBody, type Preview, type Session, type SimTag, type TagParams, type VerifyResult } from "@/lib/verify-api";
+import { api, parseTagUrl, sha256Hex, signedAttester, signedScanSummary, verifyBody, type Preview, type Session, type SimTag, type TagParams, type VerifyResult } from "@/lib/verify-api";
 import { adoptDeadline, scanSession, scanUrlFor, secondsLeft, sessionClock, tapHandoff, type SessionClock } from "@/lib/handoff";
 import { buildRecordScanTx, flaconProgram, programId } from "@/lib/flacon";
-import { creatingSignature, scanProofAttester, sendAsV0 } from "@/lib/send-tx";
-import { ApiError, friendly } from "@/lib/errors";
+import { creatingSignature, sendAsV0 } from "@/lib/send-tx";
+import { AnchorRefused, anchorScan, needsOwnScanConfirmation } from "@/lib/anchor-scan";
+import { cameraOn, timedStep, type ScanStep } from "@/lib/scan-steps";
+import { friendly } from "@/lib/errors";
 import { PROGRAM_ID } from "@/lib/config";
 import { demoMode } from "@/lib/demo";
 import { effectiveVerdict, gradeLetter, gradeSentence, indicatorText, passportHref, short, txUrl, verdictText } from "@/lib/format";
@@ -21,7 +23,7 @@ import { WalletButton } from "./wallet-button";
 import { isIOS, noInjectedWallet, resumeRef, resumeUrl, walletBrowseLinks } from "@/lib/wallet-links";
 import { WalletReadyState } from "@solana/wallet-adapter-base";
 
-type Step = "session" | "tap" | "preview" | "camera" | "read" | "verify" | "tx" | "done" | "dead";
+type Step = ScanStep;
 /** `tapId` + `tapToken`: a tap /t already verified (adopted via ?adopt=&k=); the token proves this browser saw that tap. */
 interface Tag extends TagParams { source: "nfc" | "simulator"; serial?: string | null; tapId?: number; tapToken?: string }
 /** The session's local deadline; `limitedBy: "tap"` when an adopted tap's 180 s server window ends first. */
@@ -66,6 +68,11 @@ export function ScanFlow() {
   const [country, setCountry] = useState("");
   const [verify, setVerify] = useState<VerifyResult | null>(null);
   const [txSig, setTxSig] = useState<string | null>(null);
+  /** the signed scan came from a resume link (?resume=), and whether the user confirmed it is their own scan */
+  const [resumedScan, setResumedScan] = useState(false);
+  const [ownScan, setOwnScan] = useState(false);
+  /** brand · name of the passport being anchored (shown before signing) */
+  const [passportName, setPassportName] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nfcState, setNfcState] = useState<string>("");
@@ -110,6 +117,7 @@ export function ScanFlow() {
     setError(null); setTag(null); setPreview(null); setFrames(null); setReading(null); setVerify(null); setTxSig(null);
     // a resumed scan (?resume=) may have set tier and role: a new scan starts from the page's own defaults again
     setTierOverride(null); setRole(defaultRole); setNfcState(""); setDeadSerial("");
+    setResumedScan(false); setOwnScan(false);
     try {
       const s = await api.session();
       adoptSession(s);
@@ -121,9 +129,8 @@ export function ScanFlow() {
     fetch("/heat_fields.json").then((r) => r.json()).then((c) => { cfg.current = c; }).catch(() => { /* the read step reports a missing config */ });
     return () => { vision.current?.terminate(); stream.current?.getTracks().forEach((t) => t.stop()); nfcAbort.current?.abort(); };
   }, []);
-  // The 90 s window covers tap → photo → server signature. Once the server has signed ("tx"), the signed scan stays
-  // anchorable: the countdown stops and expiry no longer hides or blocks the anchor step.
-  const timed = step !== "tx" && step !== "done" && step !== "dead";
+  // The 90 s window covers tap → photo → server signature; from "tx" on the signed scan stays anchorable (lib/scan-steps.ts)
+  const timed = timedStep(step);
   useEffect(() => {
     if (!clock || !timed) return;
     const tick = () => setLeft(secondsLeft(clock.deadline));
@@ -178,6 +185,7 @@ export function ScanFlow() {
         const v = await api.resume(ref.eventId, ref.token);
         const signed = signedAttester(v);
         setVerify(v);
+        setResumedScan(true); setOwnScan(false);
         setRole(signed.role ?? defaultRole);
         // the server's record of the scan decides tier and role; the link's own parameters only as a fallback
         setTierOverride(signed.tier ?? (params.get("tier") != null && Number.isInteger(qTier) ? qTier : null));
@@ -278,7 +286,7 @@ export function ScanFlow() {
   // ---- 4. camera --------------------------------------------------------
   const stopCam = () => { stream.current?.getTracks().forEach((t) => t.stop()); stream.current = null; setCamReady(false); };
   // on only while the camera step is shown and the session runs; a stream that arrives after the step was left is stopped at once
-  const camOn = step === "camera" && !expired;
+  const camOn = cameraOn(step, expired);
   useEffect(() => {
     if (!camOn) return;
     let cancelled = false;
@@ -379,38 +387,33 @@ export function ScanFlow() {
   // ---- anchor step: transaction -----------------------------------------
   const signed = signedAttester(verify);
   const txTier = signed.tier ?? tier, txRole = signed.role ?? role;
+  const ownScanNeeded = needsOwnScanConfirmation(resumedScan, verify);
+  const summary = useMemo(() => signedScanSummary(verify), [verify]);
+  useEffect(() => {
+    setPassportName(null);
+    if (step !== "tx" || !summary?.serial) return;
+    let alive = true;
+    api.passport(summary.serial).then((p) => { if (alive) setPassportName(`${p.brand} · ${p.name}`); }).catch(() => { /* the serial alone is shown */ });
+    return () => { alive = false; };
+  }, [step, summary?.serial]);
+  /** The decisions (wallet check, already anchored, recovery, which signature to keep) live in lib/anchor-scan.ts. */
   const sendTx = async () => {
     if (!verify || !anchorWallet || !wallet.publicKey) return;
-    setError(null);
-    // the server signed this scan for the wallet connected at "Get signature": anchoring with another one cannot be confirmed
-    const other = attesterMismatch(verify, wallet.publicKey.toBase58());
-    if (other) { setError(`This scan was signed for wallet ${short(other)}. Switch back to that wallet (header) to anchor it.`); return; }
-    setBusy("tx");
+    const me = wallet.publicKey;
+    setError(null); setBusy("tx");
     try {
-      let sig = txSig; // set when the transaction landed but the server confirmation failed: only that is retried
-      if (!sig) {
-        const program = flaconProgram(connection, anchorWallet);
-        const { tx, scanProof } = await buildRecordScanTx(program, wallet.publicKey, verify, { tier: txTier, role: txRole, siteId });
-        // Already anchored (the wallet sent it but the answer never reached this page)? Only a real ScanProof counts —
-        // owned by the flacon program and attested by this wallet; a SOL transfer to the address is not an anchor.
-        const info = await connection.getAccountInfo(scanProof, "confirmed");
-        const anchoredBy = scanProofAttester(info ? { owner: info.owner, data: info.data } : null, programId());
-        if (anchoredBy && !anchoredBy.equals(wallet.publicKey)) throw new Error(`This scan is already anchored by another wallet (${short(anchoredBy.toBase58())}). It cannot be anchored twice.`);
-        if (anchoredBy) {
-          sig = await creatingSignature(connection, scanProof, { programId: programId(), instruction: "record_scan", signer: wallet.publicKey });
-          if (!sig) throw new Error("This scan is anchored on chain, but its transaction was not found yet. Try again in a moment.");
-        } else {
-          sig = await sendAsV0(wallet, connection, tx);
-        }
-        setTxSig(sig);
-      }
-      await api.events({ eventId: verify.eventId, txSig: sig, actor: wallet.publicKey.toBase58(), serial: verify.serial, type: 2 });
-      setStep("done");
-    } catch (e) {
-      // the server saw it fail on chain, or the signature does not belong to this scan: look again / send again next time
-      if (e instanceof ApiError && (e.code === "tx_failed" || e.code === "tx_mismatch")) setTxSig(null);
-      setError(friendly(e));
-    }
+      const pid = programId();
+      const r = await anchorScan({
+        verify, wallet: me, programId: pid, landedSig: txSig, resumed: resumedScan, ownScanConfirmed: ownScan,
+        build: () => buildRecordScanTx(flaconProgram(connection, anchorWallet), me, verify, { tier: txTier, role: txRole, siteId }),
+        accountInfo: async (a) => { const info = await connection.getAccountInfo(a, "confirmed"); return info ? { owner: info.owner, data: info.data } : null; },
+        findCreating: (a, expect) => creatingSignature(connection, a, expect),
+        send: (tx) => sendAsV0(wallet, connection, tx),
+        confirm: (sig) => api.events({ eventId: verify.eventId, txSig: sig, actor: me.toBase58(), serial: verify.serial, type: 2 }),
+      });
+      if (r.ok) { setTxSig(r.sig); setStep("done"); }
+      else { setTxSig(r.landedSig); setError(r.error instanceof AnchorRefused ? r.error.message : friendly(r.error)); }
+    } catch (e) { setError(friendly(e)); }
     finally { setBusy(null); }
   };
   const airdrop = async () => {
@@ -617,6 +620,35 @@ export function ScanFlow() {
       {step === "tx" && verify && (
         <div>
           <StepHeader n={6} title="Server signed — now anchor it" hint={`Server verdict ${verify.verdict} · counter ${verify.counter} · Grade ${gradeLetter(verify.grade)} preliminary. The transaction contains the Ed25519 check of the server signature and record_scan.`} />
+          {summary && (
+            <div className="card mt-6 p-4 text-sm">
+              <p className="font-medium">You are anchoring this scan</p>
+              <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
+                <dt className="text-muted">Passport</dt>
+                <dd className="break-words"><span className="mono">{summary.serial ?? "unknown"}</span>{passportName && <span className="text-muted"> · {passportName}</span>}</dd>
+                <dt className="text-muted">Seal tap</dt><dd className="tabular">counter {summary.counter}</dd>
+                <dt className="text-muted">Indicators</dt>
+                <dd>{([["heat", summary.heat], ["humidity", summary.humidity], ["uv", summary.uv]] as const).map(([k, c]) => { const t = indicatorText(k, c); return <span key={k} className="block">{t.label}: {t.detail}</span>; })}</dd>
+                <dt className="text-muted">Fill level</dt><dd className="tabular">{summary.fill} %</dd>
+                <dt className="text-muted">Photos</dt><dd>{summary.photos ? "card photos attached" : "none"}</dd>
+                {summary.place && <><dt className="text-muted">Place</dt><dd className="break-words">{summary.place}</dd></>}
+              </dl>
+            </div>
+          )}
+          {ownScanNeeded && (
+            <div className="card mt-4 border-warn/50 p-4 text-sm" role="note">
+              <p className="font-medium text-warn">Anchor only a scan you made yourself</p>
+              <p className="mt-1 text-muted">
+                This scan was opened from a link and was signed without a wallet, so the wallet that anchors it becomes its
+                witness on the passport&apos;s public history. Continue only if you tapped this bottle yourself a moment ago,
+                on your other device. If someone sent you this link, do not sign.
+              </p>
+              <label className="mt-3 flex items-start gap-2">
+                <input type="checkbox" checked={ownScan} onChange={(e) => setOwnScan(e.target.checked)} className="mt-1" />
+                <span>This is my own scan of this bottle.</span>
+              </label>
+            </div>
+          )}
           {!wallet.connected && isIOS() && noInjectedWallet(wallet.wallets.map((w) => ({ name: w.adapter.name, installed: w.readyState === WalletReadyState.Installed }))) && (
             <div className="card mt-6 p-4 text-sm">
               <p className="font-medium">Sign with your wallet app</p>
@@ -637,7 +669,7 @@ export function ScanFlow() {
           <div className="mt-6 flex flex-wrap items-center gap-3">
             {!wallet.connected ? <WalletButton /> : (
               <>
-                <button onClick={sendTx} disabled={busy !== null || !PROGRAM_ID} className="btn">{busy === "tx" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} {txSig ? "Retry confirmation with the server" : `Sign and send with ${wallet.wallet?.adapter.name ?? "wallet"}`}</button>
+                <button onClick={sendTx} disabled={busy !== null || !PROGRAM_ID || (ownScanNeeded && !ownScan)} className="btn">{busy === "tx" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} {txSig ? "Retry confirmation with the server" : `Sign and send with ${wallet.wallet?.adapter.name ?? "wallet"}`}</button>
                 {txSig && <a href={txUrl(txSig)} target="_blank" rel="noreferrer" className="link text-xs text-muted">Transaction landed · explorer</a>}
                 {demo && <button onClick={airdrop} disabled={busy !== null} className="btn-outline btn-sm">1 SOL airdrop (test)</button>}
               </>

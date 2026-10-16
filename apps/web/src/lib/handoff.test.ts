@@ -1,6 +1,6 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { ADOPT_WINDOW_S, adoptDeadline, safeScanUrl, scanSession, scanUrlFor, secondsLeft, sessionClock, tapHandoff } from "./handoff";
+import { ADOPT_WINDOW_S, adoptDeadline, safeScanUrl, scanSession, scanUrlFor, secondsLeft, sessionClock, tapGateAction, tapHandoff } from "./handoff";
 
 class MemStorage implements Storage {
   private m = new Map<string, string>();
@@ -67,6 +67,21 @@ test("an active session needs a local deadline in the future; the starting tab o
   // a flag from an older version without a local deadline is not trusted
   g.localStorage.setItem("fv.scanSession", JSON.stringify({ nonce: "0x1", expiresAt: now + 90 }));
   assert.equal(scanSession.active(), null);
+});
+
+test("TapGate: only the tab that started the scan goes back to it, with its tier/role/site (S4)", () => {
+  const now = Date.now() / 1000;
+  const tag = { uid: "04A1B2C3D4E5F6", ctr: "00002A", cmac: "0011223344556677" };
+  const session = { nonce: "0xabc", expiresAt: now + 90, ttl: 90, deadline: now + 60, offset: 0, scanUrl: "/scan?tier=4&role=4&site=2" };
+  assert.deepEqual(tapGateAction(tag, session, true, "https://v.example"), { kind: "handoff", back: "/scan?tier=4&role=4&site=2" });
+  // Android opens the sticker link in a new tab: it hands the tap over and stays, no second /scan on the same nonce
+  assert.deepEqual(tapGateAction(tag, session, false, "https://v.example"), { kind: "handoff", back: null });
+  // a stored scan URL that is not this origin's /scan is never followed
+  assert.deepEqual(tapGateAction(tag, { ...session, scanUrl: "https://evil.example/scan" }, true, "https://v.example"), { kind: "handoff", back: "/scan" });
+  // no session: the verifier consumes the tap
+  assert.deepEqual(tapGateAction(tag, null, false, "https://v.example"), { kind: "verify", url: "https://v.example/t?uid=04A1B2C3D4E5F6&ctr=00002A&cmac=0011223344556677" });
+  assert.deepEqual(tapGateAction({ uid: "", ctr: "", cmac: "AB", piccData: "CD", enc: "E F" }, null, true, "https://v.example"),
+    { kind: "verify", url: "https://v.example/t?picc_data=CD&cmac=AB&enc=E%20F" });
 });
 
 test("tap handoff with Web Locks is taken exactly once", async () => {

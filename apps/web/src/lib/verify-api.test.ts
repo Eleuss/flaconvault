@@ -1,6 +1,7 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { api, attesterMismatch, signedAttester, verifyBody, type VerifyInput } from "./verify-api";
+import { ZERO32, buildScanMessage, bytesToHex, serialHash } from "@flaconvault/proof";
+import { api, attesterMismatch, signedAttester, signedScanSummary, verifyBody, type VerifyInput } from "./verify-api";
 
 const realFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = realFetch; });
@@ -60,4 +61,20 @@ test("resume fetches the pending scan by id + token", async () => {
   assert.match(url, /\/api\/verify\/42\?token=tok_en-1$/);
   globalThis.fetch = (async () => new Response(JSON.stringify({ detail: "resume_not_found" }), { status: 404 })) as typeof fetch;
   await assert.rejects(api.resume(42, "x"), (e: { code?: string }) => e.code === "resume_not_found");
+});
+
+test("the anchor step shows what the signed message commits to (resume link, M3)", () => {
+  const msg = (o: { serial: string; media?: Uint8Array }) => bytesToHex(buildScanMessage({
+    serialHash: serialHash(o.serial), uidHash: new Uint8Array(32).fill(2), counter: 41, tamper: 3, uv: 3, hum: 0, heat: 1, fill: 87,
+    mediaHash: o.media ?? new Uint8Array(32).fill(9), nonce: new Uint8Array(32).fill(4), ts: 1_800_000_000,
+  }));
+  const v = { msgHex: msg({ serial: "SN-2026-000007" }), serial: "SN-2026-000007", bundle: { heatLevels: [], location: { country: "DE", city: " Berlin " } } };
+  assert.deepEqual(signedScanSummary(v), { serial: "SN-2026-000007", counter: 41, heat: 1, humidity: 0, uv: 3, fill: 87, photos: true, place: "Berlin, DE" });
+  // a serial the message does not commit to is not shown as the scanned passport
+  assert.equal(signedScanSummary({ ...v, serial: "SN-2026-000008" })?.serial, null);
+  const tier1 = signedScanSummary({ msgHex: msg({ serial: "SN-1", media: ZERO32 }), serial: "SN-1", bundle: { heatLevels: [], location: { country: null, city: null } } })!;
+  assert.equal(tier1.photos, false);
+  assert.equal(tier1.place, null);
+  assert.equal(signedScanSummary({ msgHex: "00", serial: "SN-1", bundle: null }), null);
+  assert.equal(signedScanSummary(null), null);
 });

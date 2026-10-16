@@ -54,6 +54,22 @@ export function scanUrlFor(params: { get(k: string): string | null }): string {
   return q ? `/scan?${q}` : "/scan";
 }
 
+/** What /t does with raw tag parameters (TapGate). */
+export type TapGateAction = { kind: "handoff"; back: string | null } | { kind: "verify"; url: string };
+/**
+ * /t received raw tag parameters. With a scan session running in this browser the tap is handed over to it: only the
+ * tab that started the session goes back to its own scan page (`back`, keeping tier/role/site); any other tab stays
+ * (`back` null) and asks the user to return to the scan tab, because a second /scan on the same session would only
+ * fail with "session expired". Without a session the verifier consumes the tap (`url`).
+ */
+export function tapGateAction(params: TagParams, session: ScanSessionFlag | null, ownedHere: boolean, verifyUrl: string): TapGateAction {
+  if (session) return { kind: "handoff", back: ownedHere ? safeScanUrl(session.scanUrl) : null };
+  const q = params.piccData
+    ? `picc_data=${encodeURIComponent(params.piccData)}&cmac=${encodeURIComponent(params.cmac)}${params.enc ? `&enc=${encodeURIComponent(params.enc)}` : ""}`
+    : `uid=${encodeURIComponent(params.uid)}&ctr=${encodeURIComponent(params.ctr)}&cmac=${encodeURIComponent(params.cmac)}`;
+  return { kind: "verify", url: `${verifyUrl}/t?${q}` };
+}
+
 export interface ScanSessionFlag extends SessionClock { nonce: string; expiresAt: number; ttl?: number; issuedAt?: number; scanUrl?: string }
 export interface TapHandoff extends TagParams { ts: number; id?: string }
 /** `uid` can be null: the verifier only reveals the chip UID for UNREGISTERED taps. */

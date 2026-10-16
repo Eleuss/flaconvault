@@ -4,7 +4,7 @@ import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { getHealth, getTap } from "@/lib/api";
 import { DEV_SIMULATOR } from "@/lib/config";
-import { effectiveVerdict, passportHref, verdictText } from "@/lib/format";
+import { passportHref, tapLanding, verdictText } from "@/lib/format";
 import { Lamp, Unavailable } from "@/components/badges";
 import { RememberTap, TapGate } from "@/components/tap-gate";
 
@@ -48,7 +48,7 @@ export default async function TagLanding({ searchParams }: { searchParams: Searc
   }
   const t = res.data;
   // a VALID tap on a seal that is recorded as dead is "not responding": no green verdict, no condition check
-  const verdict = effectiveVerdict(t);
+  const { verdict, conditionHref } = tapLanding(t, tap, k);
   const v = verdictText(verdict, t.counter);
   const remember = <RememberTap uid={t.uid ?? null} serial={t.serial} counter={t.counter} />;
   const toneClass = { ok: "text-ok", warn: "text-warn", bad: "text-bad", none: "text-muted" }[v.tone];
@@ -69,7 +69,7 @@ export default async function TagLanding({ searchParams }: { searchParams: Searc
       )}
       <div className="mt-8 flex flex-wrap gap-3">
         {t.serial && <Link href={passportHref(t.serial)} className="btn">View passport with history <ArrowRight className="h-4 w-4" aria-hidden /></Link>}
-        {verdict === "VALID" && <Link href={k ? `/scan?adopt=${encodeURIComponent(tap ?? "")}&k=${encodeURIComponent(k)}` : "/scan"} className="btn-outline">Check condition · Photograph the card</Link>}
+        {conditionHref && <Link href={conditionHref} className="btn-outline">Check condition · Photograph the card</Link>}
         {!t.serial && <Link href="/" className="btn-outline">Back to home</Link>}
       </div>
     </div>

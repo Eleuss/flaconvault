@@ -1,21 +1,41 @@
 # apps/verify (FastAPI + SQLite) with the Irys sidecar (Node). Build context = repo root:
 #   docker build -f Dockerfile.verify -t flaconvault-verify .
-FROM python:3.12-slim
-ENV PYTHONUNBUFFERED=1 UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy NODE_VERSION=22.12.0
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates xz-utils && rm -rf /var/lib/apt/lists/*
-# Node for apps/verify/irys (Arweave uploads)
-RUN ARCH=$(uname -m) && case "$ARCH" in x86_64) NARCH=x64 ;; aarch64|arm64) NARCH=arm64 ;; *) echo "unsupported arch $ARCH" && exit 1 ;; esac \
- && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NARCH}.tar.xz" | tar -xJ -C /usr/local --strip-components=1 \
- && node --version && npm --version
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+#
+# Toolchain pinned to exact versions (bump them deliberately, together):
+#   Python 3.12.11 on Debian bookworm slim · Node 22.18.0 LTS (bookworm slim, same glibc) · uv 0.12.18 (reads uv.lock)
+# Node comes from the official node image (no unverified download); npm runs no install scripts.
+# The verifier and its sidecar run as the unprivileged user `fv` (uid 10001): the entrypoint starts as root only to hand
+# the root-owned /data volume to `fv` (apps/verify/docker-entrypoint.sh).
+
+# ---- Irys sidecar dependencies ----
+FROM node:22.18.0-bookworm-slim AS irys
+WORKDIR /irys
+COPY apps/verify/irys/package.json apps/verify/irys/package-lock.json ./
+# --ignore-scripts: no install script of the ~245 dependencies runs at build time (the native addons they try to build
+# all fall back to pure JS, and the slim image has no compiler anyway)
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+
+FROM ghcr.io/astral-sh/uv:0.12.18 AS uv
+
+# ---- runtime ----
+FROM python:3.12.11-slim-bookworm
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_NO_CACHE=1 \
+    UV_PYTHON_DOWNLOADS=never UV_PYTHON=/usr/local/bin/python3
+COPY --from=uv /uv /usr/local/bin/uv
+COPY --from=irys /usr/local/bin/node /usr/local/bin/node
+RUN groupadd --system --gid 10001 fv \
+ && useradd --system --uid 10001 --gid fv --home-dir /home/fv --create-home --shell /usr/sbin/nologin fv \
+ && node --version
 WORKDIR /app/apps/verify
 # python deps first (cache), then the app
 COPY apps/verify/pyproject.toml apps/verify/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY apps/verify/ ./
+COPY --from=irys /irys/node_modules ./irys/node_modules
 COPY docs/seed /app/docs/seed
 COPY docs/enums.json docs/vectors.json /app/docs/
-RUN uv sync --frozen --no-dev && cd irys && npm ci --omit=dev --no-audit --no-fund
+RUN uv sync --frozen --no-dev && chmod 0755 docker-entrypoint.sh
 ENV FV_DB_PATH=/data/flaconvault.db FV_MEDIA_DIR=/data/media FV_NODE_BIN=/usr/local/bin/node PORT=8787
 EXPOSE 8787
-CMD ["sh", "-c", "mkdir -p /data/media && uv run --no-sync uvicorn fv.main:app --host 0.0.0.0 --port ${PORT:-8787}"]
+ENTRYPOINT ["/app/apps/verify/docker-entrypoint.sh"]
+CMD ["sh", "-c", "exec /app/apps/verify/.venv/bin/uvicorn fv.main:app --host 0.0.0.0 --port ${PORT:-8787}"]

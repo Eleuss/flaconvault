@@ -122,4 +122,4 @@ The seal is a **handling and provenance record, not a damage record**. Say "Seal
 | Escrow seller protection, key revocation, partner removal (programs in this repo) | done; devnet upgrade pending |
 | Attester binding in the signed message, multisig authorities | next |
 
-More: devnet addresses [`docs/devnet.md`](docs/devnet.md) · hardware runbook [`docs/hardware-day.md`](docs/hardware-day.md) · hosting [`docs/deploy.md`](docs/deploy.md) · demo video script [`docs/demo-script.md`](docs/demo-script.md) · original briefing (German) [`docs/Dev-Briefing_v2.md`](docs/Dev-Briefing_v2.md).
+More: what is stored where: https://app.flaconvault.com/privacy (`apps/web/src/app/privacy/page.tsx`) · devnet addresses [`docs/devnet.md`](docs/devnet.md) · hardware runbook [`docs/hardware-day.md`](docs/hardware-day.md) · hosting [`docs/deploy.md`](docs/deploy.md) · demo video script [`docs/demo-script.md`](docs/demo-script.md) · original briefing (German) [`docs/Dev-Briefing_v2.md`](docs/Dev-Briefing_v2.md).

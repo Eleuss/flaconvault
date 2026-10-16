@@ -2,6 +2,7 @@
 node_modules/
 dist/
 .next/
+.next-build/
 out/
 *.tsbuildinfo
 # python
@@ -11,18 +12,19 @@ __pycache__/
 .pytest_cache/
 apps/verify/data/*.db
 apps/verify/data/media/
-# anchor / rust
-target/
+# anchor / rust (no trailing slash: also matches a symlinked target)
+target
 .anchor/
 test-ledger/
-# env / keys
-.env
-.env.local
+# keys
 *.keypair.json
 keys/
+# env files: every .env* is ignored, templates named *.example stay tracked.
+# Keep the negation AFTER the ignore rule, otherwise it has no effect.
+.env*
 !*.example
-# os
+# os / local tooling
 .DS_Store
 .vercel/
 .vercel
-.env*
+.claude/

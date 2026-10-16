@@ -15,11 +15,13 @@
     "vectors:check": "npm run vectors && git diff --exit-code -- docs/vectors.json docs/enums.json",
     "vision:build": "npm run build -w @flaconvault/vision",
     "build:packages": "npm run proof:build && npm run vision:build",
+    "prepare": "npm run build:packages",
     "vision:test": "npm run test -w @flaconvault/vision",
     "test": "npm run proof:test && npm run vision:test",
     "web:dev": "npm run dev -w @flaconvault/web",
     "web:build": "npm run build -w @flaconvault/web",
     "web:lint": "npm run lint -w @flaconvault/web",
+    "web:test": "npm run test -w @flaconvault/web",
     "web:typecheck": "tsc --noEmit -p apps/web/tsconfig.json"
   },
   "engines": {

@@ -19,8 +19,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node --test src/*.test.ts",
-    "vectors": "node scripts/gen-vectors.ts",
-    "prepare": "npm run build"
+    "vectors": "node scripts/gen-vectors.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
   },
   "dependencies": {
     "@noble/ed25519": "^2.3.0",

@@ -46,8 +46,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      # --ignore-scripts: npm runs the workspaces' `prepare` scripts in parallel, and vision's build needs proof's
-      # type declarations, so a plain `npm ci` fails at random on a clean checkout. Build the packages in order.
+      # --ignore-scripts keeps third-party install scripts out of CI; the packages are then built in order (proof, then
+      # vision) by `npm run build:packages`, which the root `prepare` script also runs on a plain `npm ci`.
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run build:packages
       - name: proof tests (incl. parity with docs/vectors.json and docs/enums.json)
@@ -58,7 +58,7 @@ jobs:
         run: npm run vision:test
 
   web:
-    name: web (typecheck, lint, build)
+    name: web (typecheck, lint, unit tests, build)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -71,6 +71,7 @@ jobs:
       - run: npm run build:packages
       - run: npm run web:typecheck
       - run: npm run web:lint
+      - run: npm run web:test
       - run: npm run web:build
       # Informational until the Next.js upgrade lands (next 14.x has advisories without a 14.x fix).
       - name: npm audit (production dependencies)
@@ -95,7 +96,7 @@ jobs:
       - run: uv run pytest -q
 
   rust:
-    name: flacon unit tests (cargo)
+    name: program unit tests (cargo)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -104,6 +105,7 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p flacon --locked
+      - run: cargo test -p escrow --locked
 
   anchor:
     name: anchor test (local validator)

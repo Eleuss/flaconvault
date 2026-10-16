@@ -44,12 +44,12 @@ Sticker on the back of the card (carrier-label position), card in the holder, me
 
 The Rev C card has no ArUco marker and no reference patches, so `readCard` uses **frame mode** (the `frame` section of `docs/heat_fields.json`): the holder's window (62.5 × 30.5 mm) gives the coarse homography, the blue heat label seen through its 11 × 25.5 mm window refines it on the card plane (the card sits about 1.8 mm below the holder face, so the window alone is parallax-shifted at oblique angles), white is the card, black is the ring around the humidity dot.
 
-Calibrate from phone photos: scale a photo to about 1600 px wide (for example `sips -s format png --resampleWidth 1600 IMG.jpg --out a.png` on macOS), then `node packages/vision/scripts/calibrate.ts a.png`, which prints the reading and writes `a.warped.png` with the regions drawn. Verified on 2026-10-11 on three photos (daylight, room light, oblique): heat levels `[1,1,1,0,0,0]`, 40 °C field intact, confidence about 1.
+Calibrate from phone photos: `node packages/vision/scripts/calibrate.ts photo.jpg` (JPEG or PNG; scale very large photos to about 1600 px wide first, for example with `sips --resampleWidth 1600` on macOS) prints the reading and writes `photo.warped.png` with the regions of the layout the reader used; it never overwrites the input. Frame mode fails closed: without the heat label, with a failed white balance or with inconsistent heat fields every indicator reads UNREADABLE with a reason, and the scan combines its five frames by majority. Verified on 2026-10-11 on three photos (daylight, room light, oblique): heat levels `[1,1,1,0,0,0]`, 40 °C field intact, confidence about 1.
 
 ### Heat strip and humidity dot
 
-- Photograph the strip on the card in daylight and artificial light → `/dev/vision` → upload → compare the six regions in the rectified card with the real fields → adjust `docs/heat_fields.json` (`fields[i].roi_mm`, `reference_colors`) → `node apps/web/scripts/copy-vendor.mjs` (or restart the dev server). A series of 10 photos must agree 10/10. Only field index 4 (40 °C) decides; the 29 °C field may already be dark.
-- Humidity dot: punch Ø 9 mm, stick it into the circle and compare blue/pink against the printed patches in `/dev/vision` (the ΔE values are shown). The humidity colour is not yet calibrated against the indicator datasheet.
+- Photograph the strip on the card in daylight and artificial light → `/dev/vision` → upload → compare the six regions in the rectified card with the real fields → adjust `docs/heat_fields.json` (`frame.fields[i].roi_mm`, `frame.reference_colors`; the delivered card has no marker or printed patches, so the top-level marker-mode values do not apply) → `node apps/web/scripts/copy-vendor.mjs` (or restart the dev server). A series of 10 photos must agree 10/10. Only field index 4 (40 °C) decides; the 29 °C field may already be dark.
+- Humidity dot: punch Ø 9 mm, stick it into the circle and compare blue/pink in `/dev/vision` (the ΔE values against `frame.reference_colors` are shown). The humidity colour is not yet calibrated against the indicator datasheet.
 
 ## 7. Phones
 

@@ -46,8 +46,11 @@ A buyer needs no app and no wallet: tapping the sticker with an iPhone opens the
 
 - The server proves that the genuine chip was tapped, once: within a 90-second scan session, or, on the one-tap iPhone path, at most 180 seconds before the scan adopts that tap. It does not prove what is inside the bottle, and a genuine sticker moved to another bottle is not detected by the chip alone.
 - Indicator and fill readings are currently reported by the scanning phone and signed as sent. Binding them to the server or a partner, and binding attester/tier into the signed message, are the next protocol steps.
-- The verifier only accepts history entries that are backed by a verified on-chain transaction signed by the actor; unverified seal reports are shown as "reported · unverified". The simulator is off in production.
-- Before mainnet: escrow arbitration with seller protection, revocable server keys, a multisig for upgrade and registry authority, and an external audit.
+- The verifier only accepts history entries that are backed by a verified on-chain transaction signed by the actor, and it takes the facts (price, seal kind, counters, match, attester, tier, role) from the decoded instruction and the program's accounts and events, never from the client. A minted passport is never renamed. Unverified seal reports are shown as "reported · unverified" (one per seal and day) and never void a passport. The simulator is off in production, and the verifier refuses to start with forgeable key settings.
+- A pending signed scan is never published (no message, signature or nonce in public views); the wallet-app resume link carries only an event id and a single-use token. Certified tiers and the vault/partner roles are signed only for wallets in the on-chain partner registry.
+- Grades only get worse: a heat-triggered C or an opened (VOID) passport stays so on chain and on the server.
+- The programs in this repository add server-key revocation with a freshness window (10 minutes against the cluster clock), partner removal, issuer-only seal administration, owner-only escrow listing, a price-bound reserve, a buyer refund when the seller does not ship, a seller payout when the buyer never scans, and an admin `resolve` for disagreeing scans. The devnet deployment is upgraded to them separately (operator step, see [`programs/README.md`](programs/README.md)).
+- Before mainnet: a multisig for upgrade, registry and escrow authority, binding attester/tier into the signed message, indicator readings that do not rely on the scanning phone, and an external audit.
 
 ## Repo
 
@@ -60,7 +63,7 @@ A buyer needs no app and no wallet: tapping the sticker with an iPhone opens the
 | `programs/escrow` | Anchor program: USDC escrow that compares seller and buyer ScanProofs. |
 | `apps/web` | Next.js 14: landing, tap result, scan flow, public passport, certification console, market. |
 | `docs/` | Briefing, card layout, `heat_fields.json` (card geometry, change the file, not the code), shared fixtures `vectors.json` and `enums.json`, devnet addresses, hardware runbook, deploy runbook, demo script. |
-| `scripts/` | Devnet seeding, `add-partner`, `bind-chip`, `fund-dev-wallet`, `list-order`. |
+| `scripts/` | Devnet seeding, `partner` / `server-key` registry admin, `bind-chip`, `fund-dev-wallet`, `list-order`. |
 | `.github/` | CI (GitHub Actions: every test suite below except `anchor test`, which runs on manual dispatch) and Dependabot. |
 
 ## Run it locally
@@ -68,9 +71,9 @@ A buyer needs no app and no wallet: tapping the sticker with an iPhone opens the
 Needs Node 22.18 or newer (24 recommended) and [uv](https://docs.astral.sh/uv/) (it provides Python 3.12 if your system has none). The programs additionally need Rust (pinned in `rust-toolchain.toml`), the Solana CLI 4.1 and Anchor 1.2.
 
 ```bash
-# 1. install the npm workspaces, then build packages/proof and packages/vision in order
-#    (--ignore-scripts: the workspaces' parallel `prepare` builds can race on a clean checkout)
-npm ci --ignore-scripts && npm run build:packages
+# 1. install the npm workspaces and build packages/proof, then packages/vision (the root `prepare` script runs
+#    `npm run build:packages`; with --ignore-scripts run `npm run build:packages` yourself)
+npm ci
 
 # 2. verification server on http://localhost:8787, local development config:
 #    simulator on, factory keys, and a throwaway signing seed that exists only on your machine
@@ -93,9 +96,9 @@ On first start the verifier fills its empty local database with the sample passp
 npm run proof:test                          # byte layout, grade rule, bundle hash, ed25519, parity with docs/vectors.json + docs/enums.json
 npm run vectors:check                       # the committed docs/vectors.json and docs/enums.json equal the generator output
 npm run vision:test                         # card reading under tilt, light, blur, noise
-npm run web:typecheck && npm run web:lint && npm run web:build
+npm run web:typecheck && npm run web:lint && npm run web:test && npm run web:build
 cd apps/verify && uv run pytest -q          # SUN vectors, signatures, tap adoption, authenticated events, limits, reconcile
-cargo test -p flacon                        # message reconstruction, grade constants
+cargo test -p flacon && cargo test -p escrow   # message reconstruction, grade rule, escrow state rules
 anchor test --validator legacy              # record_scan with/without Ed25519 ix, replay, tier gating, dead seal, escrow flows
 bash .github/scripts/hygiene.sh             # no tracked env files, keys, local tool config or absolute home paths
 ```
@@ -106,7 +109,7 @@ CI (`.github/workflows/ci.yml`) runs all of these on every push to `main` and ev
 
 The seal is a **handling and provenance record, not a damage record**. Say "Seal genuine · tap 14" and "Heat: above 40 °C recorded". Never "damaged", "NFT", or "tamper-proof through blockchain". A grade describes the recorded handling, not the condition of the contents.
 
-## Status (2026-10-12)
+## Status (2026-10-16)
 
 | Area | State |
 |---|---|
@@ -116,6 +119,7 @@ The seal is a **handling and provenance record, not a damage record**. Say "Seal
 | Web: tap result, scan flow, passport, certification, market, Blink | done, live at app.flaconvault.com |
 | Real stickers (NTAG 424 DNA, encrypted SUN) | done on iPhone; this batch is not readable on the tested Android phone |
 | Camera indicator reading of the physical card | done (frame mode); humidity colour to be confirmed against the indicator datasheet |
-| Escrow economics for mainnet, attester binding, key revocation | next |
+| Escrow seller protection, key revocation, partner removal (programs in this repo) | done; devnet upgrade pending |
+| Attester binding in the signed message, multisig authorities | next |
 
 More: devnet addresses [`docs/devnet.md`](docs/devnet.md) · hardware runbook [`docs/hardware-day.md`](docs/hardware-day.md) · hosting [`docs/deploy.md`](docs/deploy.md) · demo video script [`docs/demo-script.md`](docs/demo-script.md) · original briefing (German) [`docs/Dev-Briefing_v2.md`](docs/Dev-Briefing_v2.md).

@@ -1,6 +1,6 @@
 # Programs on devnet
 
-Two Anchor programs: `programs/flacon` (registry, passports, seals, scan proofs) and `programs/escrow` (USDC escrow). Both are deployed on Solana devnet.
+Two Anchor programs: `programs/flacon` (registry, passports, seals, scan proofs) and `programs/escrow` (USDC escrow). Both are deployed on Solana devnet. The source in this repository is ahead of the devnet deployment (server-key revocation, partner removal, issuer-only seal administration, sticky grades, owner-only listing, price-bound reserve, escrow timeouts and admin resolve): see [Upgrading devnet](#upgrading-devnet). [`programs/README.md`](../programs/README.md) lists every instruction with its signer rules.
 
 Toolchain: Anchor CLI 1.2.0 (via `avm`), Solana CLI 4.1.x (Agave), Rust from `rust-toolchain.toml` (1.89), Node 22.18 or newer, and the npm client `@anchor-lang/core` 1.2 (`@coral-xyz/anchor` 0.32 cannot read Anchor 1.x IDLs).
 
@@ -29,7 +29,7 @@ Read on 2026-10-16 from the registry account (`solana account 4JPPCBA7DpbmfDsq1o
 | site 1 | `Parfümerie X, Düsseldorf` |
 | site 2 | `FlaconVault Vault, Wickede` |
 
-A partner can mint passports and certify scans, so a partner key held in a browser is a demo shortcut, not a production setup.
+A partner can mint passports and certify scans, so a partner key held in a browser is a demo shortcut, not a production setup. With the current programs it can be removed (`npx tsx scripts/partner.ts remove <pubkey>`), see [Upgrading devnet](#upgrading-devnet).
 
 ## Commands
 
@@ -37,8 +37,8 @@ A partner can mint passports and certify scans, so a partner key held in a brows
 # build (also regenerates target/idl/*.json and target/types/*.ts)
 anchor build
 
-# unit tests (message reconstruction vs docs/vectors.json, grade table, ed25519 parser)
-cargo test -p flacon
+# unit tests (message reconstruction vs docs/vectors.json, grade table, ed25519 parser; escrow state rules)
+cargo test -p flacon && cargo test -p escrow
 
 # integration tests on a local validator (Anchor 1.2 defaults to surfpool; use the legacy validator)
 anchor test --validator legacy            # or: ANCHOR_TEST_VALIDATOR=legacy anchor test
@@ -56,17 +56,24 @@ solana account 4JPPCBA7DpbmfDsq1oHDuiJD1zL8VhfuJSoWQyYZXZWt --url devnet
 ```bash
 solana config set --url https://api.devnet.solana.com
 solana balance                                  # deploy + rent need a few SOL; https://faucet.solana.com if airdrops are rate-limited
-anchor deploy --provider.cluster devnet
-# registry: init_registry, server key id 1, the wallet as partner, sites 1 and 2 (idempotent)
+anchor build --verifiable && anchor deploy --provider.cluster devnet     # note the commit next to the deploy signature
+# registry: init_registry (upgrade authority only), server key id 1, the wallet as partner, sites 1 and 2 (idempotent)
 npx tsx scripts/seed-devnet.ts --server-pubkey <pubkeyHex from the target verifier's GET /health>
-npx tsx scripts/add-partner.ts <partner pubkey>  # optional, authority only
-# escrow config: FV_USDC_MINT = an existing mint, otherwise a new test mint is created and printed
+npx tsx scripts/partner.ts add <partner pubkey>  # optional, authority only (scripts/add-partner.ts delegates to it)
+# escrow config: init_config (upgrade authority only); FV_USDC_MINT = an existing mint, otherwise a new test mint is created
 ANCHOR_PROVIDER_URL=https://api.devnet.solana.com npx tsx scripts/seed-escrow.ts
 ```
 
-Always pass the server key explicitly. Without a flag `seed-devnet.ts` registers the test key from `docs/vectors.json`, whose seed is public in this repo, and server keys cannot be removed from the registry: use the default only on a local validator. `--server-pubkey-from-env` derives the key from `FV_SERVER_ED25519_SEED` in `apps/verify/.env` and is meant for a local validator with a local, throwaway seed. `seed-devnet.ts` registers key id 1; a further key on an existing registry needs an `add_server_key` call from the authority wallet.
+`seed-devnet.ts` has no default key: it needs `--server-pubkey <hex32>`, `--server-pubkey-from-env` (derived from `FV_SERVER_ED25519_SEED` in `apps/verify/.env`; a local validator with a local, throwaway seed) or `--test-key` (the public key of the `docs/vectors.json` seed, refused anywhere but a local validator), and it exits with an error when key id 1 is already registered with another key. It registers key id 1 only; further keys and revocations go through `scripts/server-key.ts`:
 
-The scripts honour `ANCHOR_PROVIDER_URL` and `ANCHOR_WALLET` (default `~/.config/solana/id.json`); for example `ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 npx tsx scripts/seed-devnet.ts` after `anchor localnet --validator legacy`. Other helpers: `scripts/bind-chip.ts` (mint a passport and attach a real chip from the CLI), `scripts/list-order.ts` (list a passport on the escrow), `scripts/fund-dev-wallet.ts <pubkey> [sol] [usdc]` (SOL and test USDC for a demo wallet).
+```bash
+npx tsx scripts/server-key.ts list
+npx tsx scripts/server-key.ts add <pubkeyHex> <keyId> [--valid-from <unix>] [--valid-to <unix>]
+npx tsx scripts/server-key.ts revoke <keyId>        # valid_to = now − 1; the key id stays reserved
+npx tsx scripts/partner.ts add|remove <pubkey>      # registry partners; partner.ts list shows them
+```
+
+The scripts honour `ANCHOR_PROVIDER_URL` and `ANCHOR_WALLET` (default `~/.config/solana/id.json`); for example `ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 npx tsx scripts/seed-devnet.ts --test-key` after `anchor localnet --validator legacy`. Other helpers: `scripts/bind-chip.ts <serial> <uid14hex> <brand> <name> <batch> <coreAsset|new> [kind] [verifyUrl]` (mint a passport with a Metaplex Core asset and attach a real chip from the CLI; when the passport or seal already exists it re-posts the MINT/SEAL_ATTACH event for the transaction that created it), `scripts/list-order.ts <serial> <priceUsdc> [--no-deposit] [--no-event] [verifyUrl]` (list a passport on the escrow, deposit its Core asset and post the LIST event), `scripts/seed-passports.ts`, `scripts/fund-dev-wallet.ts <pubkey> [sol] [usdc]` (SOL and test USDC for a demo wallet).
 
 ## flacon: program surface
 
@@ -80,9 +87,9 @@ PDAs (seeds from `docs/vectors.json` → `constants.PDA_SEEDS`):
 | `ScanProof` | `["scan", seal_pubkey, counter u32 LE]` |
 | `Origin` | `["origin", passport]` (reserved, not implemented) |
 
-Instructions: `init_registry`, `add_server_key`, `add_partner`, `add_site` (authority only); `mint_passport`, `attach_seal`, `mark_seal_dead` (registry partners or the authority); `record_scan(args)` (any signer for tier ≤ 2 and role OWNER, SELLER or BUYER; a partner for tier ≥ 3 or role VAULT or PARTNER). The exact signer checks live in `programs/flacon/src/instructions/`; the IDL in `packages/proof/src/idl/flacon.json` is the authoritative interface.
+Instructions: `init_registry` (the program's upgrade authority only); `add_server_key`, `revoke_server_key`, `add_partner`, `remove_partner`, `add_site`, `transfer_authority` (registry authority; `transfer_authority` needs the new authority's signature too); `mint_passport` (registry partners or the authority; the appended `core_asset` account must be the Metaplex Core asset named in the args); `attach_seal`, `mark_seal_dead` (the passport's issuer while it is a partner, or the authority; at most 2 seals, never on a void passport); `record_scan(args)` (any signer for tier ≤ 2 and role OWNER, SELLER or BUYER; a partner for tier ≥ 3 or role VAULT or PARTNER). The exact signer checks live in `programs/flacon/src/instructions/`; the IDL in `packages/proof/src/idl/flacon.json` is the authoritative interface.
 
-`record_scan` must be sent as `[Ed25519Program.createInstructionWithPublicKey({publicKey: serverPubkey, message, signature}), flacon.record_scan(args)]`. The program reads the previous instruction from the instructions sysvar, checks that it is the Ed25519 precompile, that the public key is the registry server key `args.server_key_id` valid at `args.ts`, and that the signed 152-byte message equals its reconstruction (`"FVSCAN1" ‖ serial_hash ‖ uid_hash ‖ counter ‖ tamper ‖ uv ‖ hum ‖ heat ‖ fill ‖ media_hash ‖ nonce ‖ ts`) byte for byte. Errors are typed (`MissingEd25519Instruction`, `MessageMismatch`, `CounterNotIncreasing`, `SealDead`, `NotPartner`, …). Events: `RegistryInitialized`, `ServerKeyAdded`, `PartnerAdded`, `SiteAdded`, `PassportMinted`, `SealAttached`, `SealMarkedDead`, `ScanRecorded`.
+`record_scan` must be sent as `[Ed25519Program.createInstructionWithPublicKey({publicKey: serverPubkey, message, signature}), flacon.record_scan(args)]`. The program reads the previous instruction from the instructions sysvar, checks that it is the Ed25519 precompile, that the public key is the registry server key `args.server_key_id` valid at `args.ts` and at the cluster clock, that `|args.ts − clock| ≤ 600 s` and the counter fits 24 bits, and that the signed 152-byte message equals its reconstruction (`"FVSCAN1" ‖ serial_hash ‖ uid_hash ‖ counter ‖ tamper ‖ uv ‖ hum ‖ heat ‖ fill ‖ media_hash ‖ nonce ‖ ts`) byte for byte. The passport grade only gets worse (`worst(old, scan)`); an OPENED tamper or a VOID grade voids the passport for good. Errors are typed (`MissingEd25519Instruction`, `MessageMismatch`, `CounterNotIncreasing`, `SealDead`, `NotPartner`, `StaleScanTimestamp`, `ServerKeyNotValidNow`, `NotIssuerOrAuthority`, `TooManySeals`, …). Events: `RegistryInitialized`, `ServerKeyAdded`, `ServerKeyRevoked`, `PartnerAdded`, `PartnerRemoved`, `AuthorityTransferred`, `SiteAdded`, `PassportMinted`, `SealAttached`, `SealMarkedDead`, `ScanRecorded`.
 
 All enum values (`tamper`, `indicator`, `tier`, `role`, `grade`, `seal_kind`, `event`), the seeds, `MSG_PREFIX`, `MSG_LEN` and the grade thresholds (`GRADE_FILL_A_MIN = 90`, `GRADE_FILL_B_MIN = 60`) are IDL constants (`program.rawIdl.constants`). `cargo test -p flacon` and `tests/flacon.ts` assert them against `docs/enums.json` and `docs/vectors.json`; `npm run proof:test` checks those files against `packages/proof`.
 
@@ -98,12 +105,19 @@ record_pre_ship_scan() [seller, flacon ScanProof attested by the seller] ─► 
 ship() [seller] ─► SHIPPED
 record_receipt_scan() [buyer, ScanProof attested by the buyer] ─► heat ==, hum ==, |Δfill| ≤ 5 ? RECEIPT_SCANNED : MISMATCH
 release() [anyone, from RECEIPT_SCANNED] ─► USDC → seller, asset → buyer, RELEASED
-dispute() ─► USDC → buyer, asset → seller, DISPUTE (admin, buyer on MISMATCH, buyer after the dispute window, buyer with a dead seal)
+release_after_timeout() [anyone, SHIPPED and no receipt scan within the window] ─► USDC → seller, RELEASED
+resolve(to_seller) [admin, from MISMATCH] ─► RELEASED (USDC → seller) or DISPUTE (USDC → buyer)
+dispute() ─► USDC → buyer, asset → seller, DISPUTE
+   admin: RESERVED / PRESHIP_SCANNED / SHIPPED
+   buyer: TIMEOUT from RESERVED / PRESHIP_SCANNED once reserved_at + window has passed (the seller did not ship);
+          SEAL_DEAD from RESERVED / PRESHIP_SCANNED / SHIPPED; never after a matching receipt scan (ReceiptMatched)
 ```
 
-`list` requires the seller to be the passport's issuer or the owner of its Core asset; `reserve` takes the price the buyer saw and fails unless it equals `order.price`. The program source and the IDL (`packages/proof/src/idl/escrow.json`) are authoritative for every state transition and signer rule; the devnet deployment is upgraded separately from this repository, so compare with the IDL account on devnet (`anchor idl fetch <program id> --provider.cluster devnet`) before relying on a change.
+The dispute window (`init_config` / `set_dispute_window`) is bounded to 1 h ..= 60 days. The release, dispute and resolve clients create the recipient's USDC account (`createAssociatedTokenAccountIdempotent`) in the same transaction.
 
-States (u8, IDL constants `ORDER_STATE_*`): 0 LISTED · 1 RESERVED · 2 PRESHIP_SCANNED · 3 SHIPPED · 4 RECEIPT_SCANNED · 5 RELEASED · 6 MISMATCH · 7 DISPUTE · 8 CANCELLED. Dispute reasons in the `OrderDisputed` event (`DISPUTE_REASON_*`): 0 ADMIN · 1 TIMEOUT · 2 SEAL_DEAD · 3 MISMATCH.
+`list` requires the seller to own the passport's Core asset (the issuer only when no Core asset exists; nobody while the asset is held by another order); `reserve` takes the price the buyer saw and fails unless it equals `order.price`. The program source and the IDL (`packages/proof/src/idl/escrow.json`) are authoritative for every state transition and signer rule; the devnet deployment is upgraded separately from this repository, so compare with the IDL account on devnet (`anchor idl fetch <program id> --provider.cluster devnet`) before relying on a change.
+
+States (u8, IDL constants `ORDER_STATE_*`): 0 LISTED · 1 RESERVED · 2 PRESHIP_SCANNED · 3 SHIPPED · 4 RECEIPT_SCANNED · 5 RELEASED · 6 MISMATCH · 7 DISPUTE · 8 CANCELLED. Dispute reasons in the `OrderDisputed` event (`DISPUTE_REASON_*`): 0 ADMIN · 1 TIMEOUT (not shipped within the window) · 2 SEAL_DEAD · 3 MISMATCH; `resolve` emits `OrderResolved`.
 
 Vault: SPL token account PDA `["vault", order]`, authority = the Order PDA, created at `reserve` (rent paid by the buyer) and closed at `release`/`dispute` (rent back to the buyer). flacon accounts are typed through the `flacon` crate (`Account<'info, flacon::Passport|Seal|ScanProof>`: owner and discriminator enforced). Core asset custody: `deposit_asset` (LISTED only) moves the asset to the Order PDA with an mpl-core `TransferV1` CPI; `release`, `dispute` and `cancel` then take the optional `asset` and `mpl_core_program` accounts (pass `null` when nothing was deposited). Metaplex Core must be on the validator for that path (`Anchor.toml` clones it from devnet for `anchor test` and `anchor localnet`).
 
@@ -122,6 +136,17 @@ anchor localnet --validator legacy                                            # 
 ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 npx tsx scripts/seed-devnet.ts --server-pubkey-from-env
 ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 npx tsx scripts/seed-escrow.ts      # test mint (printed), init_config(7 d), 1000 test USDC to the wallet
 ```
+
+## Upgrading devnet
+
+The account layouts and the signed message are unchanged, so an upgrade keeps every devnet account readable
+([`programs/README.md`](../programs/README.md#upgrade-compatibility) lists the behaviour that changes for existing
+accounts). Operator steps, from the upgrade/registry authority wallet:
+
+1. `anchor build --verifiable`, then `anchor upgrade target/deploy/flacon.so --program-id 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL --provider.cluster devnet` and the same for escrow (`9vabBySt…`); copy the IDLs (see Commands) and record the commit next to the upgrade signatures here.
+2. Register a production-only server key under a new key id (`scripts/server-key.ts add <pubkeyHex> <keyId>`), switch the verifier to it (`FV_SERVER_ED25519_SEED`, `FV_SERVER_KEY_ID`), then revoke key id 1 (`scripts/server-key.ts revoke 1`): its seed is also in local development environments, and demo scans signed with it were published.
+3. Remove the browser-held demo partner Dev wallet A (`scripts/partner.ts remove AciBj4mKqxhPDF7KRYqvpGt8EZm75b582dumVmTv2LJ1`) and review the other test partners.
+4. Retire the seed-only seals whose published demo signatures could be replayed: `mark_seal_dead` (issuer or authority wallet) for the seals of SN-2026-000002 and SN-2026-000003 (`scripts/seed-passports.ts` does it for the seals the seed marks dead, i.e. SN-2026-000003). After step 2 those old signatures cannot be anchored anyway (key revoked, older than 10 minutes). Then run the verifier's `POST /api/admin/purge-seed` (see [`deploy.md`](deploy.md)).
 
 `scripts/seed-escrow.ts` env: `ANCHOR_PROVIDER_URL` (default localnet), `ANCHOR_WALLET`, `FV_USDC_MINT` (use an existing mint instead of creating one), `FV_DISPUTE_AFTER_S` (default 604800; an existing config is updated to it when the wallet is the admin). Mint more test USDC with the helpers in `scripts/lib/spl.ts` (`mintTo`, mint authority = the CLI wallet).
 

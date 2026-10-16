@@ -46,9 +46,17 @@ pub const DISPUTE_REASON_MISMATCH: u8 = 3;
 
 // ---- Rule parameters ----------------------------------------------------------
 
-/// Default dispute window after `ship()` without a receipt scan: 7 days.
+/// Default dispute window: 7 days. The same window applies twice: after `reserve` for the seller to
+/// ship (else the buyer may take the USDC back) and after `ship` for the buyer to record the receipt
+/// scan (else anyone may release the USDC to the seller).
 #[constant]
 pub const DEFAULT_DISPUTE_AFTER_S: i64 = 7 * 24 * 60 * 60;
+/// Lower bound of the dispute window: 1 hour.
+#[constant]
+pub const MIN_DISPUTE_AFTER_S: i64 = 60 * 60;
+/// Upper bound of the dispute window: 60 days.
+#[constant]
+pub const MAX_DISPUTE_AFTER_S: i64 = 60 * 24 * 60 * 60;
 /// `release` requires |fill_buyer − fill_seller| ≤ FILL_TOLERANCE (briefing §11).
 #[constant]
 pub const FILL_TOLERANCE: u8 = 5;
@@ -56,3 +64,5 @@ pub const FILL_TOLERANCE: u8 = 5;
 /// Metaplex Core program (asset custody CPI).
 #[constant]
 pub const MPL_CORE_PROGRAM_ID: Pubkey = pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
+/// First byte (`Key`) of a Metaplex Core `AssetV1` account; the owner follows at bytes 1..33.
+pub const MPL_CORE_KEY_ASSET_V1: u8 = 1;

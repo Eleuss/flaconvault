@@ -44,15 +44,27 @@ pub struct Reserve<'info> {
     pub vault: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
+    /// flacon `Passport` of the order (a passport voided after listing cannot be bought).
+    /// Appended last so the indices of the accounts above stay unchanged.
+    #[account(address = order.passport @ EscrowError::SealPassportMismatch)]
+    pub passport: Account<'info, flacon::Passport>,
 }
 
-pub fn handle_reserve(ctx: Context<Reserve>) -> Result<()> {
+/// `expected_price` is the price the buyer saw; a seller who re-listed at another price in the
+/// meantime makes the reservation fail instead of charging the new price.
+pub fn handle_reserve(ctx: Context<Reserve>, expected_price: u64) -> Result<()> {
     let order = &ctx.accounts.order;
     require!(order.state == ORDER_STATE_LISTED, EscrowError::InvalidState);
     require_keys_neq!(
         ctx.accounts.buyer.key(),
         order.seller,
         EscrowError::SellerCannotBuy
+    );
+    require_eq!(order.price, expected_price, EscrowError::PriceChanged);
+    let passport = &ctx.accounts.passport;
+    require!(
+        !passport.void && passport.grade != flacon::GRADE_VOID,
+        EscrowError::PassportVoid
     );
 
     token::transfer(

@@ -2,10 +2,13 @@
 //!
 //! ```text
 //! LISTED → RESERVED → PRESHIP_SCANNED → SHIPPED → RECEIPT_SCANNED → RELEASED
-//!                                                 └─────────────→ MISMATCH ──→ DISPUTE
-//! RESERVED / PRESHIP_SCANNED / SHIPPED ──(admin, timeout, dead seal)──→ DISPUTE
+//!                                          │      └─────────────→ MISMATCH ──(admin resolve)──→ RELEASED | DISPUTE
+//!                                          └──(no receipt scan within the window: release_after_timeout)──→ RELEASED
+//! RESERVED / PRESHIP_SCANNED ──(buyer, not shipped within the window after reserve)──→ DISPUTE
+//! RESERVED / PRESHIP_SCANNED / SHIPPED ──(admin, or buyer with a dead seal)──→ DISPUTE
 //! LISTED ──(seller)──→ CANCELLED
 //! ```
+//! The rules live in `rules.rs` (pure, unit-tested).
 //! USDC vault: SPL token account `["vault", order]` with the Order PDA as authority
 //! (created at `reserve`, rent paid by and returned to the buyer). Core asset
 //! custody is optional (`deposit_asset`) and uses a hand-rolled mpl-core `TransferV1` CPI.
@@ -17,6 +20,7 @@ pub mod error;
 pub mod events;
 pub mod instructions;
 pub mod mpl_core;
+pub mod rules;
 pub mod state;
 
 use anchor_lang::prelude::*;
@@ -32,17 +36,19 @@ declare_id!("9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL");
 pub mod escrow {
     use super::*;
 
-    /// Singleton config; payer becomes admin. `usdc_mint` is passed as an account.
+    /// Singleton config; payer becomes admin and must be the program's upgrade authority.
+    /// `usdc_mint` is passed as an account; `dispute_after_s` in 1 h ..= 60 days.
     pub fn init_config(ctx: Context<InitConfig>, dispute_after_s: i64) -> Result<()> {
         instructions::admin::handle_init_config(ctx, dispute_after_s)
     }
 
-    /// Admin only: default dispute window for future orders.
+    /// Admin only: default dispute window for future orders (1 h ..= 60 days).
     pub fn set_dispute_window(ctx: Context<AdminConfig>, dispute_after_s: i64) -> Result<()> {
         instructions::admin::handle_set_dispute_window(ctx, dispute_after_s)
     }
 
-    /// Seller lists a (non-void) flacon passport for `price` USDC base units.
+    /// Seller lists a (non-void) flacon passport for `price` USDC base units. The seller must own the
+    /// passport's Core asset (or be the issuer when there is no Core asset behind `passport.asset`).
     pub fn list(ctx: Context<List>, price: u64) -> Result<()> {
         instructions::list::handle_list(ctx, price)
     }
@@ -62,9 +68,9 @@ pub mod escrow {
         instructions::list::handle_close_order(ctx)
     }
 
-    /// Buyer funds the vault with `price` USDC.
-    pub fn reserve(ctx: Context<Reserve>) -> Result<()> {
-        instructions::reserve::handle_reserve(ctx)
+    /// Buyer funds the vault with `price` USDC; `expected_price` must equal `order.price`.
+    pub fn reserve(ctx: Context<Reserve>, expected_price: u64) -> Result<()> {
+        instructions::reserve::handle_reserve(ctx, expected_price)
     }
 
     /// Seller links their flacon pre-ship ScanProof.
@@ -87,8 +93,21 @@ pub mod escrow {
         instructions::settle::handle_release(ctx)
     }
 
-    /// Refund path (admin / buyer on mismatch, timeout or dead seal).
+    /// Permissionless: SHIPPED and no receipt scan within `dispute_after_s` after `ship` → USDC to the
+    /// seller (the buyer had the window to scan). Same accounts as `release`.
+    pub fn release_after_timeout(ctx: Context<Release>) -> Result<()> {
+        instructions::settle::handle_release_after_timeout(ctx)
+    }
+
+    /// Refund path: admin (RESERVED / PRESHIP_SCANNED / SHIPPED), or the buyer when the seller did not
+    /// ship within the window after `reserve`, or with a dead seal before a matching receipt scan.
     pub fn dispute(ctx: Context<Dispute>) -> Result<()> {
         instructions::settle::handle_dispute(ctx)
+    }
+
+    /// Escrow admin only: settles a MISMATCH order. `to_seller` → USDC to the seller (RELEASED),
+    /// else → USDC back to the buyer (DISPUTE).
+    pub fn resolve(ctx: Context<Resolve>, to_seller: bool) -> Result<()> {
+        instructions::settle::handle_resolve(ctx, to_seller)
     }
 }

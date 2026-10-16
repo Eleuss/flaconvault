@@ -104,3 +104,15 @@ pub struct OrderDisputed {
     pub asset_returned: bool,
     pub ts: i64,
 }
+
+/// `resolve`: the escrow admin settled a MISMATCH order.
+#[event]
+pub struct OrderResolved {
+    pub order: Pubkey,
+    pub admin: Pubkey,
+    /// true: USDC → seller (state RELEASED); false: USDC → buyer (state DISPUTE).
+    pub to_seller: bool,
+    pub amount: u64,
+    pub asset_transferred: bool,
+    pub ts: i64,
+}

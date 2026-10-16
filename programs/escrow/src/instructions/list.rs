@@ -7,6 +7,7 @@ use crate::{
     error::EscrowError,
     events::{AssetDeposited, OrderCancelled, OrderClosed, OrderListed},
     mpl_core::{transfer_v1, CoreTransfer},
+    rules::{check_seller, core_asset_owner, effective_window},
     state::{EscrowConfig, Order},
 };
 
@@ -27,11 +28,23 @@ pub struct List<'info> {
     #[account(mut)]
     pub seller: Signer<'info>,
     pub system_program: Program<'info, System>,
+    /// CHECK: the account at `passport.asset` (address checked). When it is a Metaplex Core asset the
+    /// seller must own it; otherwise (no Core asset behind the passport) the seller must be the issuer.
+    /// Appended last so the indices of the accounts above stay unchanged.
+    #[account(address = passport.asset @ EscrowError::AssetMismatch)]
+    pub asset: UncheckedAccount<'info>,
 }
 
 pub fn handle_list(ctx: Context<List>, price: u64) -> Result<()> {
     require!(price > 0, EscrowError::InvalidPrice);
-    require!(!ctx.accounts.passport.void, EscrowError::PassportVoid);
+    let passport = &ctx.accounts.passport;
+    require!(
+        !passport.void && passport.grade != flacon::GRADE_VOID,
+        EscrowError::PassportVoid
+    );
+    let asset = &ctx.accounts.asset;
+    let asset_owner = core_asset_owner(asset.owner, &asset.try_borrow_data()?);
+    check_seller(&ctx.accounts.seller.key(), &passport.issuer, asset_owner)?;
     let now = Clock::get()?.unix_timestamp;
 
     let order = &mut ctx.accounts.order;
@@ -46,7 +59,7 @@ pub fn handle_list(ctx: Context<List>, price: u64) -> Result<()> {
     order.shipped_at = 0;
     order.seller_scan = Pubkey::default();
     order.buyer_scan = Pubkey::default();
-    order.dispute_after_s = ctx.accounts.config.dispute_after_s;
+    order.dispute_after_s = effective_window(ctx.accounts.config.dispute_after_s);
     order.asset_deposited = false;
     order.bump = ctx.bumps.order;
     order.vault_bump = 0;

@@ -1,4 +1,5 @@
-//! `release` · `dispute` (the latter also covers the briefing's `refund_mismatch`)
+//! `release` · `release_after_timeout` · `dispute` · `resolve` (admin settlement of MISMATCH, which
+//! replaces the briefing's automatic `refund_mismatch`). Decision rules: `crate::rules`.
 
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, CloseAccount, Token, TokenAccount, Transfer};
@@ -6,8 +7,9 @@ use anchor_spl::token::{self, CloseAccount, Token, TokenAccount, Transfer};
 use crate::{
     constants::*,
     error::EscrowError,
-    events::{OrderDisputed, OrderReleased},
+    events::{OrderDisputed, OrderReleased, OrderResolved},
     mpl_core::{transfer_v1, CoreTransfer},
+    rules::{admin_may_refund, buyer_dispute_reason, check_release_after_timeout, BuyerDispute},
     state::{EscrowConfig, Order},
 };
 
@@ -130,12 +132,24 @@ pub struct Release<'info> {
 }
 
 pub fn handle_release(ctx: Context<Release>) -> Result<()> {
-    let order = &ctx.accounts.order;
     require!(
-        order.state == ORDER_STATE_RECEIPT_SCANNED,
+        ctx.accounts.order.state == ORDER_STATE_RECEIPT_SCANNED,
         EscrowError::InvalidState
     );
+    settle_to_seller(ctx)
+}
 
+/// SHIPPED and the buyer let the window after shipping pass without a receipt scan: the seller is paid.
+pub fn handle_release_after_timeout(ctx: Context<Release>) -> Result<()> {
+    let order = &ctx.accounts.order;
+    let now = Clock::get()?.unix_timestamp;
+    check_release_after_timeout(order.state, order.shipped_at, order.dispute_after_s, now)?;
+    settle_to_seller(ctx)
+}
+
+/// USDC → seller, vault rent → buyer, Core asset (if deposited) → buyer, state RELEASED.
+fn settle_to_seller(ctx: Context<Release>) -> Result<()> {
+    let order = &ctx.accounts.order;
     let amount = drain_vault(
         order,
         &ctx.accounts.vault,
@@ -168,10 +182,11 @@ pub fn handle_release(ctx: Context<Release>) -> Result<()> {
 }
 
 /// USDC → buyer, Core asset → seller (if deposited), state DISPUTE. Allowed for:
-/// - the admin from RESERVED / PRESHIP_SCANNED / SHIPPED / MISMATCH;
-/// - the buyer from MISMATCH (this is the briefing's `refund_mismatch`);
-/// - the buyer from SHIPPED once `clock > shipped_at + dispute_after_s` (no receipt scan);
-/// - the buyer from any funded state when the passed flacon `Seal` is dead.
+/// - the admin from RESERVED / PRESHIP_SCANNED / SHIPPED (MISMATCH is settled with `resolve`);
+/// - the buyer from RESERVED / PRESHIP_SCANNED once `clock > reserved_at + dispute_after_s` (the
+///   seller did not ship in time);
+/// - the buyer from RESERVED / PRESHIP_SCANNED / SHIPPED when the passed flacon `Seal` of the order's
+///   passport is dead — never after a matching receipt scan (RECEIPT_SCANNED: release instead).
 #[derive(Accounts)]
 pub struct Dispute<'info> {
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
@@ -219,31 +234,25 @@ pub fn handle_dispute(ctx: Context<Dispute>) -> Result<()> {
     let order = &ctx.accounts.order;
     let signer = ctx.accounts.signer.key();
     let now = Clock::get()?.unix_timestamp;
-    let admin_states = matches!(
-        order.state,
-        ORDER_STATE_RESERVED | ORDER_STATE_PRESHIP_SCANNED | ORDER_STATE_SHIPPED | ORDER_STATE_MISMATCH
-    );
 
     let reason = if signer == ctx.accounts.config.admin {
-        require!(admin_states, EscrowError::InvalidState);
+        require!(admin_may_refund(order.state), EscrowError::InvalidState);
         DISPUTE_REASON_ADMIN
     } else if signer == order.buyer {
-        if order.state == ORDER_STATE_MISMATCH {
-            DISPUTE_REASON_MISMATCH
-        } else if let Some(seal) = &ctx.accounts.seal {
-            require_keys_eq!(seal.passport, order.passport, EscrowError::SealPassportMismatch);
-            require!(seal.dead, EscrowError::SealNotDead);
-            require!(order.is_funded(), EscrowError::InvalidState);
-            DISPUTE_REASON_SEAL_DEAD
-        } else {
-            require!(order.state == ORDER_STATE_SHIPPED, EscrowError::InvalidState);
-            let deadline = order
-                .shipped_at
-                .checked_add(order.dispute_after_s)
-                .ok_or(EscrowError::MathOverflow)?;
-            require!(now > deadline, EscrowError::DisputeWindowNotElapsed);
-            DISPUTE_REASON_TIMEOUT
-        }
+        let seal_dead = match &ctx.accounts.seal {
+            Some(seal) => {
+                require_keys_eq!(seal.passport, order.passport, EscrowError::SealPassportMismatch);
+                Some(seal.dead)
+            }
+            None => None,
+        };
+        buyer_dispute_reason(&BuyerDispute {
+            state: order.state,
+            seal_dead,
+            reserved_at: order.reserved_at,
+            dispute_after_s: order.dispute_after_s,
+            now,
+        })?
     } else {
         return err!(EscrowError::Unauthorized);
     };
@@ -275,6 +284,100 @@ pub fn handle_dispute(ctx: Context<Dispute>) -> Result<()> {
         previous_state,
         refunded,
         asset_returned,
+        ts: now,
+    });
+    Ok(())
+}
+
+/// The escrow admin settles a MISMATCH order (the scans disagreed): `to_seller` → USDC to the seller and
+/// the deposited asset to the buyer (RELEASED); otherwise USDC back to the buyer and the asset back to
+/// the seller (DISPUTE). The vault rent goes to the buyer, who paid it.
+#[derive(Accounts)]
+pub struct Resolve<'info> {
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+        has_one = admin @ EscrowError::Unauthorized
+    )]
+    pub config: Account<'info, EscrowConfig>,
+    #[account(
+        mut,
+        seeds = [ORDER_SEED, order.passport.as_ref(), order.seller.as_ref()],
+        bump = order.bump
+    )]
+    pub order: Account<'info, Order>,
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, order.key().as_ref()],
+        bump = order.vault_bump
+    )]
+    pub vault: Account<'info, TokenAccount>,
+    /// USDC account of the seller (`to_seller`) or of the buyer (otherwise).
+    #[account(mut, token::mint = config.usdc_mint)]
+    pub recipient_token: Account<'info, TokenAccount>,
+    /// CHECK: the order's buyer — receives the vault rent (and the asset when `to_seller`).
+    #[account(mut, address = order.buyer @ EscrowError::NotBuyer)]
+    pub buyer: UncheckedAccount<'info>,
+    /// CHECK: the order's seller — gets the asset back when the buyer is refunded.
+    #[account(address = order.seller @ EscrowError::NotSeller)]
+    pub seller: UncheckedAccount<'info>,
+    /// The escrow admin; pays the Core CPI fee if the asset moves.
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    /// CHECK: required only when the asset was deposited.
+    #[account(mut)]
+    pub asset: Option<UncheckedAccount<'info>>,
+    /// CHECK: required only when the asset was deposited.
+    pub mpl_core_program: Option<UncheckedAccount<'info>>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+pub fn handle_resolve(ctx: Context<Resolve>, to_seller: bool) -> Result<()> {
+    let order = &ctx.accounts.order;
+    require!(order.state == ORDER_STATE_MISMATCH, EscrowError::InvalidState);
+    let recipient = if to_seller { order.seller } else { order.buyer };
+    require_keys_eq!(
+        ctx.accounts.recipient_token.owner,
+        recipient,
+        EscrowError::WrongTokenOwner
+    );
+
+    let amount = drain_vault(
+        order,
+        &ctx.accounts.vault,
+        ctx.accounts.recipient_token.to_account_info(),
+        ctx.accounts.buyer.to_account_info(),
+        &ctx.accounts.token_program,
+    )?;
+    let asset_to = if to_seller {
+        ctx.accounts.buyer.to_account_info()
+    } else {
+        ctx.accounts.seller.to_account_info()
+    };
+    let asset_transferred = return_asset(
+        order,
+        &ctx.accounts.asset,
+        &ctx.accounts.mpl_core_program,
+        ctx.accounts.admin.to_account_info(),
+        asset_to,
+        ctx.accounts.system_program.to_account_info(),
+    )?;
+
+    let now = Clock::get()?.unix_timestamp;
+    let order = &mut ctx.accounts.order;
+    order.state = if to_seller {
+        ORDER_STATE_RELEASED
+    } else {
+        ORDER_STATE_DISPUTE
+    };
+    order.asset_deposited = false;
+    emit!(OrderResolved {
+        order: order.key(),
+        admin: ctx.accounts.admin.key(),
+        to_seller,
+        amount,
+        asset_transferred,
         ts: now,
     });
     Ok(())

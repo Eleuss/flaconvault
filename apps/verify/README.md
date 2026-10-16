@@ -382,6 +382,12 @@ download) and uv 0.12.18; npm installs the sidecar with `--ignore-scripts`. The 
 the root-owned `/data` volume to the unprivileged user `fv` (uid 10001, `docker-entrypoint.sh`); uvicorn and the Irys
 sidecar run as `fv`. Required production settings: `FV_KEY_MODE=sdmbackend`, `FV_SDM_DERIVE=legacy`, the secret
 `FV_MASTER_KEY`, a production-only `FV_SERVER_ED25519_SEED`, `FV_DEV_SIMULATOR=false`, `FV_ADMIN_TOKEN`, `FV_PROGRAM_ID`.
+The image also carries `docs/seed` (never loaded with the simulator and `FV_SEED_DEMO` off): the startup warning about
+leftover seed rows and `POST /api/admin/purge-seed` recognise demo rows by it.
+
+Railway is not connected to GitHub: a push deploys nothing. The verifier is deployed by hand with `railway up` from a
+clean checkout of a commit that passed CI, after setting `FV_BUILD_SHA` to that commit
+([`docs/deploy.md`](../../docs/deploy.md#deploying)).
 
 ### Removing seed data from a deployed database
 

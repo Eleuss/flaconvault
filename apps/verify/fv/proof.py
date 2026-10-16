@@ -141,6 +141,40 @@ def compute_grade(*, verdict: str, tamper: int, heat: int, hum: int, fill: int, 
     return Grade.D, review
 
 
+def passport_after_scan(old_grade: int, old_void: bool, scan_grade: int, *, latest: bool = True) -> tuple[int, bool]:
+    """
+    Passport (grade, void) after a confirmed scan graded `scan_grade` — the verifier's mirror of record_scan
+    (programs/flacon/src/grade.rs passport_after_scan; a scan grades VOID exactly when its tamper code says opened, and C
+    exactly when heat or humidity triggered):
+      VOID   if the passport is void or VOID already, or the scan grades VOID (sets void for good);
+      C      else if the passport is C already, or the scan grades C (sticky);
+      A/B/D  else the scan's own grade — but only from the newest confirmed scan (`latest`): an older scan whose
+             confirmation arrives late may still make the passport C or VOID, never overwrite a newer fill reading.
+    """
+    old_grade, scan_grade = int(old_grade), int(scan_grade)
+    if old_void or old_grade == Grade.VOID or scan_grade == Grade.VOID:
+        return Grade.VOID, True
+    if old_grade == Grade.C or scan_grade == Grade.C:
+        return Grade.C, False
+    return (scan_grade if latest else old_grade), False
+
+
+def passport_from_chain(db_grade: int, db_void: bool, chain_grade: int, chain_void: bool, *,
+                        chain_current: bool = True) -> tuple[int, bool]:
+    """
+    Passport (grade, void) after the reconcile job read the Passport account. VOID and C are sticky on both sides
+    (whichever side has them wins); otherwise the chain's A/B/D wins, because record_scan applied the newest anchored
+    scan. `chain_current` False (the account read shows fewer scans than the database has confirmed on chain: a lagging
+    RPC node) keeps the database's A/B/D, so a stale read never flips a grade back and forth.
+    """
+    db_grade, chain_grade = int(db_grade), int(chain_grade)
+    if db_void or chain_void or db_grade == Grade.VOID or chain_grade == Grade.VOID:
+        return Grade.VOID, True
+    if db_grade == Grade.C or chain_grade == Grade.C:
+        return Grade.C, False
+    return (chain_grade if chain_current else db_grade), False
+
+
 def heat_levels_to_mask(levels: list[int]) -> int:
     if len(levels) != 6:
         raise ValueError("heatLevels must have 6 entries")

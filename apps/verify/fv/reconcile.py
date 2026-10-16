@@ -12,8 +12,10 @@ Reconcile job (briefing §10). One cycle:
   2. Other pending events (no ScanProof can confirm them) → failed after FV_RECONCILE_TIMEOUT_S, so they never block
      the chain refresh of their passport.
   3. Passport/Seal PDAs refresh grade/void and last_counter/dead (once nothing is pending for that passport and the chain
-     has recorded a scan or a void). Nothing sticky is ever lowered: void and dead are OR-ed, the grade is the worse of DB
-     and chain, counters only rise (the simulator tag follows a raised seal counter).
+     has recorded a scan or a void). The grade follows record_scan's rule (proof.passport_from_chain): VOID and C are
+     sticky on either side, otherwise the chain's A/B/D wins — unless the account shows fewer scans than the database
+     has confirmed on chain (a lagging RPC read), which keeps the database's A/B/D. Void and dead are OR-ed, counters
+     only rise (the simulator tag follows a raised seal counter).
   4. Registry partners → attesters.is_partner (the decoded registry is cached in chain_state); escrow Order accounts →
      escrow_orders → attesters.escrows_ok / escrows_disputed.
   5. Arweave: the archiving queue (arweave.backfill) — confirmed scans whose bundle or media is not archived yet, a
@@ -32,10 +34,9 @@ from fv import arweave, proof
 from fv.chain import (ORDER_LEN, DecodeError, Rpc, RpcError, decode_order, decode_passport, decode_registry, decode_scan_proof,
                       decode_seal, pda_passport, pda_registry, pda_scan, pda_seal, program_pubkey)
 from fv.config import Settings
-from fv.db import (Database, all_passports, all_seals, get_event, has_pending_events, scan_events_to_reconcile, set_chain_state,
-                   stale_pending_events, sync_escrow_counters, sync_registry_partners, transaction, update_event_payload,
-                   upsert_escrow_order)
-from fv.enums import Grade
+from fv.db import (Database, all_passports, all_seals, get_event, has_pending_events, onchain_scan_count, scan_events_to_reconcile,
+                   set_chain_state, stale_pending_events, sync_escrow_counters, sync_registry_partners, transaction,
+                   update_event_payload, upsert_escrow_order)
 from fv.service import apply_confirmed_scan
 from fv.txverify import IX_ACCOUNTS, TxRejected, anchor_discriminator, parse_transaction
 
@@ -266,9 +267,11 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
                 cur = conn.execute("SELECT grade, void FROM passports WHERE serial=?", (p["serial"],)).fetchone()
                 if not cur:
                     continue
-                # void is sticky: MAX(db, chain); a VOID grade on chain counts as void (record_scan: Passport::is_voided)
-                new_void = bool(cur["void"]) or bool(c["void"]) or int(c["grade"]) >= Grade.VOID
-                new_grade = Grade.VOID if new_void else max(int(cur["grade"]), int(c["grade"]))   # the worse grade wins
+                # VOID and C are sticky on either side (a VOID grade on chain counts as void: Passport::is_voided);
+                # otherwise the chain's A/B/D wins unless this read lags behind the scans the DB has confirmed on chain
+                current = int(c["scanCount"]) >= onchain_scan_count(conn, p["serial"])
+                new_grade, new_void = proof.passport_from_chain(int(cur["grade"]), bool(cur["void"]), int(c["grade"]),
+                                                                bool(c["void"]), chain_current=current)
                 if new_grade != int(cur["grade"]) or new_void != bool(cur["void"]):
                     conn.execute("UPDATE passports SET grade=?, void=? WHERE serial=?", (new_grade, int(new_void), p["serial"]))
                     summary["refreshed"]["passports"] += 1

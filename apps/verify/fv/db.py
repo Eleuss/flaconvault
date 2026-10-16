@@ -13,10 +13,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from fv.proof import passport_after_scan
+
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 TABLES = ("passports", "seals", "events", "attesters", "nonces", "taps", "sim_tags", "media", "escrow_orders", "chain_state",
           "arweave_queue")
-GRADE_VOID = 4          # enums.json grade.VOID
 ORDER_RELEASED, ORDER_DISPUTE = 5, 7   # escrow ORDER_STATE_*
 
 
@@ -134,14 +135,19 @@ def upsert_passport(conn, *, serial: str, serial_hash: str, brand: str, name: st
     return get_passport(conn, serial)  # type: ignore[return-value]
 
 
-def set_passport_grade(conn, serial: str, grade: int) -> None:
+def set_passport_grade(conn, serial: str, grade: int, *, latest: bool = True) -> None:
     """
-    Apply a confirmed scan's grade. The off-chain grade only ever gets worse (A=0 … D=3, VOID=4): a heat-triggered C or
-    an opened (VOID) bottle is never reset by a later, better-looking scan. A VOID grade also sets the sticky void flag.
+    Apply a confirmed scan's grade with record_scan's rule (proof.passport_after_scan): VOID is sticky (void passport,
+    or a scan graded VOID — which also sets the void flag), C is sticky once any scan graded C, otherwise A/B/D follow
+    the scan — only when it is the newest confirmed one (`latest`), so a late confirmation of an older scan can still
+    make the passport C or VOID but never overwrites a newer fill reading. Runs inside the caller's write transaction.
     """
-    grade = int(grade)
-    conn.execute("UPDATE passports SET grade=MAX(grade, ?), void=MAX(void, ?) WHERE serial=?",
-                 (grade, 1 if grade >= GRADE_VOID else 0, serial))
+    row = conn.execute("SELECT grade, void FROM passports WHERE serial=?", (serial,)).fetchone()
+    if row is None:
+        return
+    new_grade, new_void = passport_after_scan(int(row["grade"]), bool(row["void"]), int(grade), latest=latest)
+    if new_grade != int(row["grade"]) or new_void != bool(row["void"]):
+        conn.execute("UPDATE passports SET grade=?, void=? WHERE serial=?", (new_grade, int(new_void), serial))
 
 
 def void_passport(conn, serial: str, grade_void: int) -> None:
@@ -244,6 +250,32 @@ def previous_scan_before(conn, serial: str, before_id: int) -> dict | None:
         if "indicators" in payload:
             return dict(r)
     return None
+
+
+def newer_confirmed_scan_exists(conn, event: dict) -> bool:
+    """
+    True if record_scan applied another confirmed, bundle-carrying SCAN of the same passport after `event`: on the same
+    seal one with a higher counter (the program only accepts rising counters per seal), on another seal one signed later
+    (ts, then id). Tier-0 /t sightings carry no grade and never count.
+    """
+    payload = json.loads(event.get("payload_json") or "{}")
+    counter, seal = payload.get("counter"), event.get("seal_uid_hash")
+    for r in conn.execute("""SELECT id, ts, seal_uid_hash, json_extract(payload_json, '$.counter') AS ctr FROM events
+                             WHERE serial=? AND type=2 AND status='confirmed' AND id!=?
+                               AND json_extract(payload_json, '$.indicators') IS NOT NULL""",
+                          (event["serial"], event["id"])).fetchall():
+        if seal and r["seal_uid_hash"] == seal and counter is not None and r["ctr"] is not None:
+            if int(r["ctr"]) > int(counter):
+                return True
+        elif (int(r["ts"]), int(r["id"])) > (int(event["ts"]), int(event["id"])):
+            return True
+    return False
+
+
+def onchain_scan_count(conn, serial: str) -> int:
+    """Confirmed SCANs the program counted in passport.scan_count (passport_stats onChainScanCount)."""
+    return int(conn.execute(f"SELECT COUNT(*) FROM events WHERE serial=? AND type=2 AND status='confirmed' AND {_ON_CHAIN_SCAN}",
+                            (serial,)).fetchone()[0])
 
 
 # Tier of a confirmed SCAN: the on-chain ScanProof tier written by reconcile (payload.chain) wins, then the verified tier

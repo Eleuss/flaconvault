@@ -129,13 +129,14 @@ def test_chain_refresh_of_passport_and_seal(chain_client, monkeypatch):
     assert c.post("/api/reconcile", headers=ADMIN).json()["refreshed"]["passports"] == 1
     assert c.get("/api/passport/SN-2026-000002").json()["void"] is True
 
-    # a passport with something pending is not refreshed from chain ...
-    rpc.accounts[str(p_pda)] = passport_bytes(serial_hash=proof.serial_hash(SERIAL), grade=3, scan_count=15)
+    # a passport with something pending is not refreshed from chain (C is sticky, so the chain's later VOID shows it) ...
+    rpc.accounts[str(p_pda)] = passport_bytes(serial_hash=proof.serial_hash(SERIAL), grade=4, void=True, scan_count=15)
     with c.app.state.db.connect() as conn:   # e.g. an old-style pending LIST (clients cannot create pending events any more)
         stale_id = conn.execute("INSERT INTO events(serial, type, ts, status, payload_json) VALUES(?,?,?,?,?)",
                                 (SERIAL, 3, rc.now(), "pending", '{"priceUsdc": 480}')).lastrowid
     assert c.post("/api/reconcile", headers=ADMIN).json()["refreshed"]["passports"] == 0
-    assert c.get(f"/api/passport/{SERIAL}").json()["grade"] == 2
+    p = c.get(f"/api/passport/{SERIAL}").json()
+    assert p["grade"] == 2 and p["void"] is False
     # ... but a pending event that no ScanProof can confirm times out like a scan and stops blocking the refresh
     real_now = rc.now
     monkeypatch.setattr(rc, "now", lambda: real_now() + 601)
@@ -143,7 +144,8 @@ def test_chain_refresh_of_passport_and_seal(chain_client, monkeypatch):
     assert s["failed"] == 1 and s["refreshed"]["passports"] == 1
     ev = next(e for e in c.get(f"/api/passport/{SERIAL}").json()["events"] if e["id"] == stale_id)
     assert ev["status"] == "failed" and "no on-chain confirmation" in ev["payload"]["reconcile"]["reason"]
-    assert c.get(f"/api/passport/{SERIAL}").json()["grade"] == 3
+    p = c.get(f"/api/passport/{SERIAL}").json()
+    assert p["grade"] == 4 and p["void"] is True
 
 
 def test_reconcile_disabled_without_program_id(client):

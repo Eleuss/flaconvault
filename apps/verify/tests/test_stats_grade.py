@@ -1,4 +1,5 @@
-"""Passport statistics count confirmed scans only (C2, onChainScanCount) and the off-chain grade only gets worse (M6)."""
+"""Passport statistics count confirmed scans only (C2, onChainScanCount); the off-chain grade keeps VOID and C (M6,
+the full rule is in test_grade_mirror.py)."""
 import json
 
 from fv.db import passport_stats, set_passport_grade
@@ -78,7 +79,7 @@ def test_certified_count_uses_the_on_chain_tier(client):
         assert passport_stats(conn, SERIAL)["certifiedCount"] == before - 1
 
 
-def test_set_passport_grade_only_worsens_and_void_is_sticky(client):
+def test_set_passport_grade_keeps_c_and_void(client):
     with client.app.state.db.connect() as conn:
         grade = lambda: tuple(conn.execute("SELECT grade, void FROM passports WHERE serial=?", (SERIAL,)).fetchone())  # noqa: E731
         conn.execute("UPDATE passports SET grade=0, void=0 WHERE serial=?", (SERIAL,))
@@ -107,7 +108,7 @@ def test_heat_c_then_missing_scan_keeps_c_on_server_and_after_reconcile(chain_cl
     _confirm(c, plain, sig("c"))
     p = c.get(f"/api/passport/{SERIAL}").json()
     assert p["grade"] == 2 and p["void"] is False                            # ... but the passport stays C
-    # the chain (non-sticky before the program fix) reports A after the second scan: reconcile keeps the worse grade
+    # a chain that reports A after the second scan (the program before the sticky-grade upgrade): reconcile keeps C
     c.rpc.accounts[passport_pda(SERIAL)] = passport_bytes(grade=0, scan_count=2, void=False)
     c.post("/api/reconcile", headers=ADMIN)
     assert c.get(f"/api/passport/{SERIAL}").json()["grade"] == 2

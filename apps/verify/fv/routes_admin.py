@@ -35,7 +35,7 @@ from fv import arweave, proof
 from fv.chain import (DEFAULT_PUBKEY, DecodeError, RpcError, decode_passport, decode_registry, decode_seal, is_account,
                       pda_passport, pda_registry, pda_scan, pda_seal, program_pubkey)
 from fv.config import Settings
-from fv.db import insert_event, transaction
+from fv.db import insert_event, onchain_scan_count, transaction
 from fv.deps import get_db, get_rpc, get_settings, require_admin
 from fv.enums import EventType, Grade
 from fv.ratelimit import rate_limit
@@ -163,16 +163,21 @@ def _rebuild_mint(conn, serial: str, chain: dict, plan_item: dict, ts: int) -> d
 
 
 def _recompute_passport(conn, serial: str, chain: dict | None) -> dict:
-    """grade/void from the remaining confirmed events (and the chain); the off-chain 'only worse' rule starts over."""
-    void = bool(chain and chain["void"]) or conn.execute(
-        "SELECT 1 FROM events WHERE serial=? AND type=? AND status='confirmed' LIMIT 1", (serial, EventType.SEAL_DEAD)).fetchone() is not None
-    grade = int(chain["grade"]) if chain and chain["scanCount"] > 0 else Grade.A
+    """
+    grade/void from the remaining confirmed events (and the chain), with record_scan's rule started over: the remaining
+    confirmed scans in signing order (proof.passport_after_scan: VOID and C sticky, A/B/D from the newest), a remaining
+    SEAL_DEAD voids, then the Passport account (proof.passport_from_chain: its A/B/D wins once it has recorded scans).
+    """
+    void = conn.execute("SELECT 1 FROM events WHERE serial=? AND type=? AND status='confirmed' LIMIT 1",
+                        (serial, EventType.SEAL_DEAD)).fetchone() is not None
+    grade = Grade.VOID if void else Grade.A
     for (g,) in conn.execute("""SELECT json_extract(payload_json, '$.grade') FROM events WHERE serial=? AND type=2
-                                AND status='confirmed' AND json_extract(payload_json, '$.grade') IS NOT NULL""", (serial,)).fetchall():
-        grade = max(grade, int(g))
-    if grade >= Grade.VOID:
-        void = True
-    grade = Grade.VOID if void else grade
+                                AND status='confirmed' AND json_extract(payload_json, '$.indicators') IS NOT NULL
+                                AND json_extract(payload_json, '$.grade') IS NOT NULL ORDER BY ts, id""", (serial,)).fetchall():
+        grade, void = proof.passport_after_scan(grade, void, int(g))
+    if chain and (chain["scanCount"] > 0 or chain["void"]):
+        grade, void = proof.passport_from_chain(grade, void, int(chain["grade"]), bool(chain["void"]),
+                                                chain_current=int(chain["scanCount"]) >= onchain_scan_count(conn, serial))
     conn.execute("UPDATE passports SET grade=?, void=? WHERE serial=?", (grade, int(void), serial))
     return {"grade": grade, "void": void}
 

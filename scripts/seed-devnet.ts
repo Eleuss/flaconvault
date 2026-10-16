@@ -1,7 +1,7 @@
 /**
  * Idempotent registry seed for programs/flacon (briefing §6 DoD):
  *   init_registry (skip if exists; only the program's upgrade authority may create it)
- *   · add_server_key(key_id 1, open-ended) · add_partner(wallet)
+ *   · add_server_key(key_id 1 or --key-id, open-ended) · add_partner(wallet)
  *   · add_site(1, "Parfümerie X, Düsseldorf") · add_site(2, "FlaconVault Vault, Wickede")
  *
  * Usage (the verifier key must be chosen explicitly — there is no default):
@@ -9,19 +9,22 @@
  *   npx tsx scripts/seed-devnet.ts --server-pubkey-from-env          # derive from FV_SERVER_ED25519_SEED in apps/verify/.env
  *   ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 npx tsx scripts/seed-devnet.ts --test-key   # public vectors key, local only
  *
+ *   add --key-id <0-255> to ask for another key_id than 1
+ *
  * Env: ANCHOR_PROVIDER_URL (default https://api.devnet.solana.com), ANCHOR_WALLET (default ~/.config/solana/id.json)
  *
- * If key_id 1 already exists with a DIFFERENT pubkey the script fails (exit 1) instead of silently keeping it; rotate with
- * `scripts/server-key.ts revoke 1` + `scripts/server-key.ts add <hex> <newId>`.
+ * Server key (scripts/lib/cli.ts planServerKey): a key that is already registered and valid under any key_id is kept
+ * (so the script can be re-run after a rotation: key 1 revoked, the new key added as 2). A new key goes to the asked
+ * key_id, or to the next free one when that id holds a revoked or expired key. When the asked key_id holds a DIFFERENT
+ * key that is still valid, the script fails (exit 1) and prints the rotation steps instead of silently keeping it.
  */
 import { BN } from "@anchor-lang/core";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 import * as fs from "fs";
 import * as path from "path";
 import nacl from "tweetnacl";
-import { ROOT, chooseServerKey, loadWallet, programDataOf, programFor, providerFor, rpcUrl } from "./lib/cli";
+import { ROOT, chooseServerKey, keyStatus, loadWallet, parseKeyIdFlag, planServerKey, programDataOf, programFor, providerFor, rpcUrl, type RegistryKey } from "./lib/cli";
 
-const SERVER_KEY_ID = 1;
 const PARTNER_SITES: { siteId: number; label: string }[] = [
   { siteId: 1, label: "Parfümerie X, Düsseldorf" },
   { siteId: 2, label: "FlaconVault Vault, Wickede" },
@@ -33,6 +36,10 @@ function envSeed(): string | null {
   const line = fs.readFileSync(envPath, "utf8").split(/\r?\n/).find((l) => l.trim().startsWith("FV_SERVER_ED25519_SEED="));
   return line?.split("=")[1]?.split("#")[0]?.trim() ?? null;
 }
+
+const toRegistryKey = (k: any): RegistryKey => ({
+  keyId: k.keyId, pubkeyHex: Buffer.from(k.pubkey).toString("hex"), validFrom: Number(k.validFrom), validTo: Number(k.validTo),
+});
 
 function label32(s: string): number[] {
   const b = Buffer.alloc(32);
@@ -54,6 +61,7 @@ async function main() {
     derive: (seedHex) => Buffer.from(nacl.sign.keyPair.fromSeed(Buffer.from(seedHex, "hex")).publicKey).toString("hex"),
   });
   const serverPubkey = Array.from(Buffer.from(serverHex, "hex"));
+  const wantedKeyId = parseKeyIdFlag(process.argv.slice(2));
 
   const keypair = loadWallet();
   const provider = providerFor(keypair, url);
@@ -67,7 +75,7 @@ async function main() {
   console.log(`rpc        ${url}`);
   console.log(`wallet     ${wallet.toBase58()}  (${(await connection.getBalance(wallet)) / 1e9} SOL)`);
   console.log(`program    ${programId.toBase58()}  ${explorer("address", programId.toBase58())}`);
-  console.log(`server key id ${SERVER_KEY_ID} = ${serverHex}  [${source}]`);
+  console.log(`server key ${serverHex}  [${source}], asked for key_id ${wantedKeyId}`);
 
   const [registryPda] = PublicKey.findProgramAddressSync([Buffer.from("registry")], programId);
   console.log(`registry   ${registryPda.toBase58()}  ${explorer("address", registryPda.toBase58())}`);
@@ -89,19 +97,14 @@ async function main() {
   }
   const admin = { registry: registryPda, authority: wallet };
 
-  const existing = reg.serverKeys.find((k: any) => k.keyId === SERVER_KEY_ID);
-  if (!existing) {
-    const sig = await program.methods.addServerKey(SERVER_KEY_ID, serverPubkey, new BN(0), new BN(0)).accountsStrict(admin).rpc();
-    console.log(`add_server_key(${SERVER_KEY_ID}) ${sig}`);
+  const now = Math.floor(Date.now() / 1000);
+  const keys: RegistryKey[] = reg.serverKeys.map(toRegistryKey);
+  const plan = planServerKey(keys, serverHex, wantedKeyId, now);
+  if (plan.action === "add") {
+    const sig = await program.methods.addServerKey(plan.keyId, serverPubkey, new BN(0), new BN(0)).accountsStrict(admin).rpc();
+    console.log(`add_server_key(${plan.keyId}) ${sig}  (${plan.note})`);
   } else {
-    const onchain = Buffer.from(existing.pubkey).toString("hex");
-    if (onchain !== serverHex) {
-      throw new Error(
-        `key_id ${SERVER_KEY_ID} on chain is ${onchain}, not ${serverHex}. Revoke and add instead:\n` +
-          `  npx tsx scripts/server-key.ts revoke ${SERVER_KEY_ID}\n  npx tsx scripts/server-key.ts add ${serverHex} <newKeyId>`
-      );
-    }
-    console.log(`add_server_key(${SERVER_KEY_ID}) skipped (exists, same pubkey)`);
+    console.log(`add_server_key        skipped (${plan.note})`);
   }
 
   if (!reg.partners.some((p: PublicKey) => p.equals(wallet))) {
@@ -123,8 +126,8 @@ async function main() {
   reg = await registryAccount.fetch(registryPda);
   console.log("\nregistry state:");
   console.log(`  authority   ${reg.authority.toBase58()}`);
-  for (const k of reg.serverKeys)
-    console.log(`  server_key  id=${k.keyId} ${Buffer.from(k.pubkey).toString("hex")} valid ${k.validFrom}..${k.validTo.toString() === "0" ? "open" : k.validTo}`);
+  for (const k of reg.serverKeys.map(toRegistryKey))
+    console.log(`  server_key  id=${k.keyId} ${k.pubkeyHex} valid ${k.validFrom}..${k.validTo === 0 ? "open" : k.validTo} [${keyStatus(k, now)}]${k.pubkeyHex === serverHex ? "  ← this verifier key" : ""}`);
   for (const p of reg.partners) console.log(`  partner     ${p.toBase58()}`);
   for (const s of reg.sites)
     console.log(`  site        ${s.siteId} "${Buffer.from(s.label).toString("utf8").replace(/\0+$/, "")}"`);

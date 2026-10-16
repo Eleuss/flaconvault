@@ -3,18 +3,21 @@
  * mint_passport + attach_seal on chain, then MINT/SEAL_ATTACH events on the verifier.
  *
  * Usage: npx tsx scripts/bind-chip.ts <serial> <uid14hex> "<brand>" "<name>" "<batch>" <coreAssetPubkey|new> [kind=1] [verifyUrl]
- *   coreAsset  an existing Metaplex Core asset (mint_passport only accepts Core assets), or `new` to mint one owned by
- *              this wallet, named after the serial.
+ *   coreAsset  an existing Metaplex Core asset owned by this wallet and not bound to another passport (mint_passport only
+ *              accepts a Core asset owned by the issuer), or `new` to mint one owned by this wallet, named after the
+ *              serial, whose uri is the verifier's metadata JSON (<verifyUrl>/api/passport/<serial>/metadata.json).
  *   verifyUrl  default FV_VERIFY_URL or https://verify.flaconvault.com
  *
  * Every argument is checked before anything is sent. Re-running is safe: when the passport or seal already exists on
- * chain, the script looks up the transaction that created it and posts the event again (the verifier treats a repeated
- * MINT / SEAL_ATTACH for the same transaction as a no-op), so a failed post can always be recovered.
+ * chain, the script looks up the transaction that created it (a mint_passport / attach_seal instruction on that account,
+ * signed by this wallet) and posts the event again (the verifier treats a repeated MINT / SEAL_ATTACH for the same
+ * transaction as a no-op), so a failed post can always be recovered.
  */
 import { Keypair, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
 import { createHash } from "crypto";
 import { createCoreAssetIx, fetchCoreAsset } from "./lib/core";
-import { creatingSignature, loadWallet, parseBindChipArgs, postEvent, programFor, providerFor } from "./lib/cli";
+import { creatingSignature, existingAssetProblem, expectationFromIdl, loadIdl, loadWallet, parseBindChipArgs, passportsUsingAsset, postEvent, programFor, providerFor } from "./lib/cli";
+import { coreAssetUri } from "../apps/web/src/lib/escrow-rules";
 
 const sha = (b: Buffer) => createHash("sha256").update(b).digest();
 const APP_URL = (process.env.FV_APP_URL ?? "https://app.flaconvault.com").replace(/\/$/, "");
@@ -32,6 +35,7 @@ async function main() {
   const [seal] = PublicKey.findProgramAddressSync([Buffer.from("seal"), uidHash], pid);
   const bindingHash = sha(Buffer.concat([Buffer.from(a.serial, "utf8"), Buffer.from(a.batch, "utf8"), uidHash]));
   const acct: any = program.account;
+  const idl = loadIdl("flacon");
 
   const reg: any = await acct.registry.fetch(registry);
   const isPartner = reg.partners.some((p: PublicKey) => p.equals(wallet)) || reg.authority.equals(wallet);
@@ -43,14 +47,15 @@ async function main() {
   if (!existingPassport) {
     if (a.asset === "new") {
       const assetKp = Keypair.generate();
-      const ix = createCoreAssetIx({ asset: assetKp.publicKey, payer: wallet, name: `${a.brand} ${a.name} · ${a.serial}`.slice(0, 64), uri: `${a.verify}/api/passport/${encodeURIComponent(a.serial)}` });
+      const ix = createCoreAssetIx({ asset: assetKp.publicKey, payer: wallet, name: `${a.brand} ${a.name} · ${a.serial}`.slice(0, 64), uri: coreAssetUri(a.verify, a.serial) });
       const sig = await sendAndConfirmTransaction(connection, new Transaction().add(ix), [kp, assetKp], { commitment: "confirmed" });
       asset = assetKp.publicKey;
       console.log(`core asset ${asset.toBase58()} ${sig}`);
     } else {
       asset = a.asset;
       const core = await fetchCoreAsset(connection, asset);
-      if (!core) throw new Error(`${asset.toBase58()} is not a Metaplex Core asset (mint_passport would refuse it); pass "new" to mint one`);
+      const problem = existingAssetProblem({ asset, core, wallet, usedBy: core ? await passportsUsingAsset(connection, pid, idl, asset) : [] });
+      if (problem) throw new Error(problem);
     }
     mintSig = await program.methods
       .mintPassport(Array.from(serialHash), Array.from(bindingHash), asset)
@@ -60,8 +65,8 @@ async function main() {
   } else {
     if (!existingPassport.issuer.equals(wallet)) throw new Error(`passport ${a.serial} exists and was issued by ${existingPassport.issuer.toBase58()}`);
     asset = existingPassport.asset;
-    const found = await creatingSignature(connection, passport, pid);
-    if (!found) throw new Error(`passport ${a.serial} exists, but its mint transaction was not found; cannot post MINT`);
+    const found = await creatingSignature(connection, passport, expectationFromIdl(idl, pid, "mint_passport", "passport", wallet));
+    if (!found) throw new Error(`passport ${a.serial} exists, but no mint_passport transaction for it signed by this wallet was found; cannot post MINT`);
     mintSig = found;
     console.log(`passport ${a.serial} exists · re-posting MINT for ${mintSig}`);
   }
@@ -80,8 +85,8 @@ async function main() {
     console.log(`attach_seal ${a.uid} kind ${a.kind} ${sealSig}`);
   } else {
     if (!existingSeal.passport.equals(passport)) throw new Error(`seal ${a.uid} is attached to another passport (${existingSeal.passport.toBase58()})`);
-    const found = await creatingSignature(connection, seal, pid);
-    if (!found) throw new Error(`seal ${a.uid} exists, but its attach transaction was not found; cannot post SEAL_ATTACH`);
+    const found = await creatingSignature(connection, seal, expectationFromIdl(idl, pid, "attach_seal", "seal", wallet));
+    if (!found) throw new Error(`seal ${a.uid} exists, but no attach_seal transaction for it signed by this wallet was found; cannot post SEAL_ATTACH`);
     sealSig = found;
     console.log(`seal ${a.uid} exists · re-posting SEAL_ATTACH for ${sealSig}`);
   }

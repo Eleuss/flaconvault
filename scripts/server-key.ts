@@ -10,7 +10,7 @@
  */
 import { BN } from "@anchor-lang/core";
 import { PublicKey } from "@solana/web3.js";
-import { loadWallet, parseServerKeyArgs, programFor, providerFor } from "./lib/cli";
+import { keyStatus, loadWallet, parseServerKeyArgs, programFor, providerFor } from "./lib/cli";
 
 async function main() {
   const cmd = parseServerKeyArgs(process.argv.slice(2));
@@ -18,7 +18,10 @@ async function main() {
   const program = programFor("flacon", providerFor(keypair));
   const [registry] = PublicKey.findProgramAddressSync([Buffer.from("registry")], program.programId);
   const reg: any = await (program.account as any).registry.fetch(registry);
-  const show = (k: any) => `id=${k.keyId} ${Buffer.from(k.pubkey).toString("hex")} valid ${k.validFrom}..${k.validTo.toString() === "0" ? "open" : k.validTo}`;
+  const now = Math.floor(Date.now() / 1000);
+  const show = (k: any) =>
+    `id=${k.keyId} ${Buffer.from(k.pubkey).toString("hex")} valid ${k.validFrom}..${k.validTo.toString() === "0" ? "open" : k.validTo}` +
+    ` [${keyStatus({ keyId: k.keyId, pubkeyHex: "", validFrom: Number(k.validFrom), validTo: Number(k.validTo) }, now)}]`;
   if (cmd.cmd === "list") { for (const k of reg.serverKeys) console.log(show(k)); return; }
   if (!reg.authority.equals(keypair.publicKey)) throw new Error(`registry authority is ${reg.authority.toBase58()}, not this wallet`);
   const admin = { registry, authority: keypair.publicKey };

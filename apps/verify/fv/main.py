@@ -32,10 +32,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def reconcile_loop(app: FastAPI) -> None:
         interval = settings.reconcile_interval_s
         await asyncio.sleep(min(5, interval))
-        last_probe = 0.0
+        last_probe: float | None = None
         while True:
-            if arweave.enabled(settings) and asyncio.get_running_loop().time() - last_probe >= ARWEAVE_PROBE_S:
-                last_probe = asyncio.get_running_loop().time()
+            t = asyncio.get_running_loop().time()
+            if arweave.enabled(settings) and (last_probe is None or t - last_probe >= ARWEAVE_PROBE_S):
+                last_probe = t
                 try:   # Irys balance (read-only) → /health, so an unfunded or drained wallet is visible before uploads fail
                     await asyncio.to_thread(arweave.probe, settings)
                 except Exception:  # noqa: BLE001

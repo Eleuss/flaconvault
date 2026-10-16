@@ -133,7 +133,10 @@ describe("runbooks match the code", () => {
         for (const span of text.matchAll(/`([^`\n]+)`/g)) {
           for (const m of span[1].matchAll(repoPath)) {
             if (m[2] && "<*{$…".includes(m[2])) continue;
-            const rel = m[1].replace(/[.,:;)]+$/, "");
+            let rel = m[1].replace(/[.,:;)]+$/, "");
+            // `apps/verify/.env` and the like are local files (.gitignore: every .env* but *.example), absent from a clean
+            // checkout such as CI: what must exist is the tracked template they are copied from.
+            if (/(^|\/)\.env(\.[A-Za-z0-9_-]+)?$/.test(rel) && !rel.endsWith(".example")) rel = path.join(path.dirname(rel), ".env.example");
             checked++;
             if (![ROOT, path.join(ROOT, path.dirname(f))].some((base) => fs.existsSync(path.join(base, rel)))) dead.push(`${f}:${i + 1}: ${rel}`);
           }

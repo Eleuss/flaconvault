@@ -2,7 +2,8 @@
  * Combining the five captured frames into the one reading that is signed. Each indicator is decided by a majority of
  * ALL captured frames (3 of 5): a frame where the card was not found, or (frame mode) where the heat label did not
  * anchor the strip, does not vote. Without a majority the indicator is UNREADABLE, never the single most "confident"
- * frame — confidences saturate near 1.0, so that pick would be noise (one specular highlight could decide it).
+ * frame — confidences saturate near 1.0, so that pick would be noise (one specular highlight could decide it). An
+ * indicator every voter reports as MISSING (not fitted on this card) stays MISSING.
  */
 import { Indicator } from "@flaconvault/proof";
 import type { CardReading } from "@flaconvault/vision";
@@ -13,8 +14,13 @@ export function frameCounts(r: CardReading): boolean {
   return r.quality?.mode !== "frame" || (r.quality.anchors ?? []).includes("heat-label");
 }
 
-/** The value at least `quorum` voters agree on, else UNREADABLE. */
+/**
+ * The value at least `quorum` voters agree on, else UNREADABLE. An indicator that no voter read at all (every vote
+ * MISSING, e.g. a card without a UV field) stays MISSING whatever the quorum: too few frames make it "not read", not
+ * "unreadable — review recommended".
+ */
 export function majority(values: number[], quorum: number): number {
+  if (values.length > 0 && values.every((v) => v === Indicator.MISSING)) return Indicator.MISSING;
   const tally = new Map<number, number>();
   for (const v of values) tally.set(v, (tally.get(v) ?? 0) + 1);
   let winner: number = Indicator.UNREADABLE;

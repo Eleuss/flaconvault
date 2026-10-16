@@ -71,3 +71,16 @@ test("a split vote says why and how many frames agreed", () => {
   assert.equal(ok.reason, undefined);
   assert.equal(ok.votes?.heat, 5);
 });
+
+test("an indicator no frame read stays MISSING even below the quorum (uv not fitted, S16)", () => {
+  // two found frames + three not found: heat/humidity have no 3-of-5 majority, but uv was never read by anyone
+  const nf = frame({ found: false, reason: "no card" });
+  const r = combineReadings([frame(), frame(), nf, nf, nf], 5)!;
+  assert.equal(r.heat, UNREADABLE);
+  assert.equal(r.humidity, UNREADABLE);
+  assert.equal(r.uv, MISSING, "Light: not fitted, never 'unreadable — review recommended'");
+  assert.equal(majority([MISSING, MISSING], 3), MISSING);
+  // a split between a reading and MISSING is still decided by the quorum
+  assert.equal(majority([INTACT, MISSING], 3), UNREADABLE);
+  assert.equal(majority([], 3), UNREADABLE);
+});

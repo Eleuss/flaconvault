@@ -33,8 +33,15 @@ export function resolveKeyPath(p) {
 }
 
 export function loadKeypair(keyPath) {
-  const raw = JSON.parse(fs.readFileSync(resolveKeyPath(keyPath), 'utf8'));
-  if (!Array.isArray(raw) || raw.length !== 64) throw new Error(`keypair json must be a 64-number array: ${keyPath}`);
+  const file = resolveKeyPath(keyPath);
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (e) {
+    // never echo the file content: JSON.parse messages quote the input, and this input is a secret key
+    throw new Error(e?.code === 'ENOENT' ? `keypair file not found: ${file}` : `keypair file is not valid JSON: ${file}`);
+  }
+  if (!Array.isArray(raw) || raw.length !== 64) throw new Error(`keypair json must be a 64-number array: ${file}`);
   return raw;
 }
 

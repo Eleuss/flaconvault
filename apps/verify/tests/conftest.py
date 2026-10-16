@@ -183,6 +183,17 @@ class FakeRpc:
         self.calls.append("getSignaturesForAddress")
         return self.signatures.get(str(pubkey), [])[:limit]
 
+    def get_program_accounts(self, program_id, *, data_size=None):
+        """Accounts planted in `rpc.program_accounts` ({pubkey: data}, e.g. escrow Orders)."""
+        self.calls.append("getProgramAccounts")
+        planted = getattr(self, "program_accounts", {})
+        return [(pk, d) for pk, d in planted.items() if data_size is None or len(d) == data_size]
+
+    def get_signature_statuses(self, signatures):
+        """A signature exists on chain iff a transaction was planted for it (rpc.txs)."""
+        self.calls.append("getSignatureStatuses")
+        return [{"slot": 4242, "err": None, "confirmationStatus": "finalized"} if s in self.txs else None for s in signatures]
+
 
 @pytest.fixture()
 def chain_client(settings):
@@ -195,3 +206,14 @@ def chain_client(settings):
     with TestClient(app) as c:
         c.rpc = app.state.rpc
         yield c
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """Tests never reach a real RPC (devnet!): fv.chain.Rpc posts through httpx.post, which fails loudly here unless a
+    test patches it itself."""
+    import httpx
+
+    def blocked(url, *a, **k):
+        raise AssertionError(f"network access in a test: POST {url}")
+    monkeypatch.setattr(httpx, "post", blocked)

@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Any, Iterator
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-TABLES = ("passports", "seals", "events", "attesters", "nonces", "taps", "sim_tags", "media")
+TABLES = ("passports", "seals", "events", "attesters", "nonces", "taps", "sim_tags", "media", "escrow_orders", "chain_state")
+GRADE_VOID = 4          # enums.json grade.VOID
+ORDER_RELEASED, ORDER_DISPUTE = 5, 7   # escrow ORDER_STATE_*
 
 
 def now() -> int:
@@ -126,7 +128,13 @@ def upsert_passport(conn, *, serial: str, serial_hash: str, brand: str, name: st
 
 
 def set_passport_grade(conn, serial: str, grade: int) -> None:
-    conn.execute("UPDATE passports SET grade=? WHERE serial=? AND void=0", (grade, serial))
+    """
+    Apply a confirmed scan's grade. The off-chain grade only ever gets worse (A=0 … D=3, VOID=4): a heat-triggered C or
+    an opened (VOID) bottle is never reset by a later, better-looking scan. A VOID grade also sets the sticky void flag.
+    """
+    grade = int(grade)
+    conn.execute("UPDATE passports SET grade=MAX(grade, ?), void=MAX(void, ?) WHERE serial=?",
+                 (grade, 1 if grade >= GRADE_VOID else 0, serial))
 
 
 def void_passport(conn, serial: str, grade_void: int) -> None:
@@ -136,7 +144,7 @@ def void_passport(conn, serial: str, grade_void: int) -> None:
 def list_passports(conn) -> list[dict]:
     return _rows(conn.execute(
         """SELECT p.serial, p.brand, p.name, p.grade, p.void,
-                  (SELECT COUNT(*) FROM events e WHERE e.serial=p.serial AND e.type=2 AND e.status!='failed') AS scan_count,
+                  (SELECT COUNT(*) FROM events e WHERE e.serial=p.serial AND e.type=2 AND e.status='confirmed') AS scan_count,
                   (SELECT MAX(ts) FROM events e WHERE e.serial=p.serial) AS last_event_ts
            FROM passports p ORDER BY p.serial""").fetchall())
 
@@ -248,15 +256,28 @@ def newer_confirmed_scan_exists(conn, serial: str, event_id: int, ts: int) -> bo
     return False
 
 
+# tier of a confirmed SCAN: the on-chain ScanProof tier (payload.chain, written on confirmation) wins over the claim
+_SCAN_TIER = ("COALESCE(json_extract(payload_json, '$.chain.tier'), json_extract(payload_json, '$.attester.tier'), "
+              "json_extract(payload_json, '$.tier'), 0)")
+# a SCAN the program counted in passport.scan_count: a bundle scan (Tier-0 /t sightings never go on chain) backed by
+# its record_scan tx or by the ScanProof PDA the reconcile job found; seeded demo rows are never on chain
+_ON_CHAIN_SCAN = ("json_extract(payload_json, '$.indicators') IS NOT NULL AND COALESCE(json_extract(payload_json, '$.seed'), 0) = 0 "
+                  "AND (tx_sig IS NOT NULL OR json_extract(payload_json, '$.reconcile.scanPda') IS NOT NULL)")
+
+
 def passport_stats(conn, serial: str) -> dict:
+    """
+    Scan statistics from *confirmed* SCAN events only (pending scans and their claimed attesters never count).
+    onChainScanCount is the number the program's passport.scan_count should equal ('Check live on-chain').
+    """
     r = conn.execute(
-        """SELECT COUNT(*) AS scan_count,
+        f"""SELECT COUNT(*) AS scan_count,
                   COUNT(DISTINCT actor_pubkey) AS attester_count,
-                  SUM(CASE WHEN json_extract(payload_json, '$.attester.tier') >= 3
-                            OR json_extract(payload_json, '$.tier') >= 3 THEN 1 ELSE 0 END) AS certified_count
-           FROM events WHERE serial=? AND type=2 AND status!='failed'""", (serial,)).fetchone()
+                  SUM(CASE WHEN {_SCAN_TIER} >= 3 THEN 1 ELSE 0 END) AS certified_count,
+                  SUM(CASE WHEN {_ON_CHAIN_SCAN} THEN 1 ELSE 0 END) AS on_chain_count
+           FROM events WHERE serial=? AND type=2 AND status='confirmed'""", (serial,)).fetchone()
     return {"scanCount": int(r["scan_count"] or 0), "attesterCount": int(r["attester_count"] or 0),
-            "certifiedCount": int(r["certified_count"] or 0)}
+            "certifiedCount": int(r["certified_count"] or 0), "onChainScanCount": int(r["on_chain_count"] or 0)}
 
 
 def has_event_type(conn, serial: str, type: int, *, status: str | None = None) -> bool:
@@ -406,6 +427,74 @@ def find_event(conn, serial: str, type: int, seal_uid_hash: str | None = None) -
 
 def partner_pubkeys(conn) -> list[str]:
     return [r[0] for r in conn.execute("SELECT pubkey FROM attesters WHERE is_partner=1 ORDER BY first_seen").fetchall()]
+
+
+def scan_events_to_reconcile(conn, failed_since: int) -> list[dict]:
+    """
+    SCAN events the reconcile job checks against their ScanProof PDA: every pending one, plus failed ones newer than
+    `failed_since` — a signed scan stays anchorable in the web app, so a ScanProof may still appear after the timeout.
+    """
+    return _rows(conn.execute(
+        """SELECT * FROM events WHERE type=2 AND seal_uid_hash IS NOT NULL AND json_extract(payload_json, '$.counter') IS NOT NULL
+             AND (status='pending' OR (status='failed' AND ts>=?)) ORDER BY id""", (failed_since,)).fetchall())
+
+
+def stale_pending_events(conn, before: int) -> list[dict]:
+    """Pending events that no ScanProof can ever confirm (other types, or a SCAN without seal/counter), older than `before`."""
+    return _rows(conn.execute(
+        """SELECT * FROM events WHERE status='pending' AND ts<?
+             AND NOT (type=2 AND seal_uid_hash IS NOT NULL AND json_extract(payload_json, '$.counter') IS NOT NULL)
+           ORDER BY id""", (before,)).fetchall())
+
+
+def sync_registry_partners(conn, partners: list[str], ts: int) -> int:
+    """is_partner follows the on-chain registry: partners get a row (if new) and the flag, everybody else loses it."""
+    for pk in partners:
+        conn.execute("INSERT INTO attesters(pubkey, first_seen) VALUES(?,?) ON CONFLICT(pubkey) DO NOTHING", (pk, ts))
+    marks = ",".join("?" * len(partners)) or "NULL"
+    cur = conn.execute(f"UPDATE attesters SET is_partner=CASE WHEN pubkey IN ({marks}) THEN 1 ELSE 0 END "
+                       f"WHERE is_partner != CASE WHEN pubkey IN ({marks}) THEN 1 ELSE 0 END", (*partners, *partners))
+    return cur.rowcount
+
+
+def upsert_escrow_order(conn, order_pda: str, o: dict, ts: int) -> None:
+    conn.execute(
+        """INSERT INTO escrow_orders(order_pda, listed_at, passport, seller, buyer, price, state, updated_at) VALUES(?,?,?,?,?,?,?,?)
+           ON CONFLICT(order_pda, listed_at) DO UPDATE SET buyer=excluded.buyer, price=excluded.price, state=excluded.state,
+             updated_at=excluded.updated_at
+           WHERE escrow_orders.state != excluded.state OR COALESCE(escrow_orders.buyer, '') != COALESCE(excluded.buyer, '')
+             OR escrow_orders.price != excluded.price""",
+        (order_pda, int(o["listedAt"]), o["passport"], o["seller"], o["buyer"], int(o["price"]), int(o["state"]), ts))
+
+
+def sync_escrow_counters(conn, ts: int) -> int:
+    """
+    attesters.escrows_ok / escrows_disputed from the on-chain orders: RELEASED counts as an escrow without dispute and
+    DISPUTE as a disputed one, for seller and buyer alike. Every order participant gets an attester row.
+    """
+    conn.execute("""INSERT INTO attesters(pubkey, first_seen)
+                    SELECT pk, MIN(t) FROM (SELECT seller AS pk, listed_at AS t FROM escrow_orders
+                                            UNION ALL SELECT buyer, listed_at FROM escrow_orders WHERE buyer IS NOT NULL)
+                    GROUP BY pk ON CONFLICT(pubkey) DO NOTHING""")
+    cur = conn.execute(
+        """UPDATE attesters SET
+             escrows_ok=(SELECT COUNT(*) FROM escrow_orders o WHERE o.state=? AND (o.seller=attesters.pubkey OR o.buyer=attesters.pubkey)),
+             escrows_disputed=(SELECT COUNT(*) FROM escrow_orders o WHERE o.state=? AND (o.seller=attesters.pubkey OR o.buyer=attesters.pubkey))
+           WHERE escrows_ok != (SELECT COUNT(*) FROM escrow_orders o WHERE o.state=? AND (o.seller=attesters.pubkey OR o.buyer=attesters.pubkey))
+              OR escrows_disputed != (SELECT COUNT(*) FROM escrow_orders o WHERE o.state=? AND (o.seller=attesters.pubkey OR o.buyer=attesters.pubkey))""",
+        (ORDER_RELEASED, ORDER_DISPUTE, ORDER_RELEASED, ORDER_DISPUTE))
+    return cur.rowcount
+
+
+def get_chain_state(conn, key: str) -> dict | None:
+    r = conn.execute("SELECT value_json, updated_at FROM chain_state WHERE key=?", (key,)).fetchone()
+    return {"value": json.loads(r["value_json"]), "updatedAt": r["updated_at"]} if r else None
+
+
+def set_chain_state(conn, key: str, value: Any, ts: int) -> None:
+    conn.execute("""INSERT INTO chain_state(key, value_json, updated_at) VALUES(?,?,?)
+                    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at""",
+                 (key, json.dumps(value, ensure_ascii=False, sort_keys=True), ts))
 
 
 # ---------- media / arweave ----------

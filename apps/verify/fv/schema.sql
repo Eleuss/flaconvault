@@ -104,3 +104,26 @@ CREATE TABLE IF NOT EXISTS media (
   ar_preview    TEXT,                 -- https gateway url of a viewable image (first frame) or NULL
   created_at    INTEGER NOT NULL
 );
+
+-- Escrow Order accounts as last seen on chain by the reconcile job. One row per listing: a re-list on the same Order
+-- PDA (after close_order) has a new listed_at, so finished orders keep counting for the escrow statistics.
+CREATE TABLE IF NOT EXISTS escrow_orders (
+  order_pda     TEXT NOT NULL,        -- escrow Order PDA (base58)
+  listed_at     INTEGER NOT NULL,
+  passport      TEXT NOT NULL,        -- flacon Passport PDA (base58)
+  seller        TEXT NOT NULL,
+  buyer         TEXT,                 -- NULL until reserved
+  price         INTEGER NOT NULL,     -- USDC base units (6 dp)
+  state         INTEGER NOT NULL,     -- ORDER_STATE_* (5 RELEASED, 7 DISPUTE, …)
+  updated_at    INTEGER NOT NULL,
+  PRIMARY KEY (order_pda, listed_at)
+);
+CREATE INDEX IF NOT EXISTS escrow_orders_seller ON escrow_orders(seller);
+CREATE INDEX IF NOT EXISTS escrow_orders_buyer ON escrow_orders(buyer);
+
+-- Decoded chain state cached by the reconcile job (key 'registry': authority, server keys, partners, sites).
+CREATE TABLE IF NOT EXISTS chain_state (
+  key           TEXT PRIMARY KEY,
+  value_json    TEXT NOT NULL,
+  updated_at    INTEGER NOT NULL
+);

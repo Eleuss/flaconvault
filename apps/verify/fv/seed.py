@@ -2,14 +2,18 @@
 Seed the database from docs/seed/passports.json.
 
   uv run python -m fv.seed            # wipe + seed using apps/verify/.env
-The app also seeds automatically on startup when the passports table is empty.
+The app also seeds automatically on startup when the passports table is empty — but only on simulator or explicit demo
+deployments (FV_DEV_SIMULATOR=true or FV_SEED_DEMO=true, see Settings.seed_enabled).
 
-SCAN events with a `scan` block get a full §4.4 bundle signed by the configured server key
-(deterministic nonce/media hashes derived from serial+counter). `sighting` blocks are Tier-0 taps.
+SCAN events with a `scan` block get a full §4.4 bundle (deterministic nonce/media hashes derived from serial+counter).
+The bundles are signed with a THROWAWAY key generated for this seeding run (bundle server.keyId 0) — never with
+FV_SERVER_ED25519_SEED, so a published seed signature can never be anchored on chain with record_scan. `sighting`
+blocks are Tier-0 taps. Every seeded event carries payload.seed = true; POST /api/admin/purge-seed removes seed rows.
 """
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +27,14 @@ from fv.enums import EventType, Grade, Indicator, Tamper, VALID
 from fv.sdm import key_for_uid
 
 
+SEED_KEY_ID = 0          # never a registered server key id (the registry starts at 1)
+
+
+def seed_nonce(serial: str, counter: int) -> bytes:
+    """Session nonce of a seeded scan — deterministic, so purge-seed can recognise seed payloads later."""
+    return proof.sha256(f"seed:nonce:{serial}:{counter}".encode())
+
+
 def _ts(v: str | int) -> int:
     if isinstance(v, int):
         return v
@@ -33,7 +45,7 @@ def _event_type(v: str | int) -> int:
     return v if isinstance(v, int) else getattr(EventType, v)
 
 
-def _scan_bundle(settings: Settings, serial: str, seal: dict, ts: int, actor: str | None, loc: dict | None,
+def _scan_bundle(signing_seed: bytes, serial: str, seal: dict, ts: int, actor: str | None, loc: dict | None,
                  sc: dict) -> tuple[dict, int, bool]:
     uid = bytes.fromhex(sc["uid"])
     sh, uh = proof.serial_hash(serial), proof.uid_hash(uid)
@@ -43,10 +55,10 @@ def _scan_bundle(settings: Settings, serial: str, seal: dict, ts: int, actor: st
     tier, role, fill, counter = sc["tier"], sc["role"], sc["fill"], sc["counter"]
     media_seed = sc.get("media")
     media_hash = proof.sha256(f"seed:{media_seed}".encode()) if (media_seed and tier >= 2) else proof.ZERO32
-    nonce = proof.sha256(f"seed:nonce:{serial}:{counter}".encode())
+    nonce = seed_nonce(serial, counter)
     msg = proof.build_message(serial_hash=sh, uid_hash=uh, counter=counter, tamper=tamper, uv=uv, hum=hum, heat=heat,
                               fill=fill, media_hash=media_hash, nonce=nonce, ts=ts)
-    sig = proof.sign(settings.server_seed, msg)
+    sig = proof.sign(signing_seed, msg)
     grade, review = proof.compute_grade(verdict=VALID, tamper=tamper, heat=heat, hum=hum, fill=fill)
     bundle = proof.build_bundle(
         serial=serial, serial_hash_b=sh, uid_hash_b=uh, counter=counter, seal_kind=seal["kind"], tamper=tamper,
@@ -54,7 +66,7 @@ def _scan_bundle(settings: Settings, serial: str, seal: dict, ts: int, actor: st
         country=(loc or {}).get("country"), city=(loc or {}).get("city"),
         media_hash_b=media_hash if media_hash != proof.ZERO32 else None, media_ar=None,
         nonce_b=nonce, issued_at=ts - 12, platform=sc.get("platform", "SIMULATOR"), role=role, tier=tier,
-        attester=actor, key_id=settings.server_key_id, verdict=VALID, server_ts=ts, sig_b=sig, bundle_ts=ts + 3)
+        attester=actor, key_id=SEED_KEY_ID, verdict=VALID, server_ts=ts, sig_b=sig, bundle_ts=ts + 3)
     bundle["grade"] = grade
     bundle["reviewRecommended"] = review
     bundle["msgHex"] = msg.hex()
@@ -65,14 +77,23 @@ def _scan_bundle(settings: Settings, serial: str, seal: dict, ts: int, actor: st
     return bundle, grade, review
 
 
-def run_seed(db: Database, settings: Settings, path: Path | None = None, *, wipe: bool = False) -> dict:
+def run_seed(db: Database, settings: Settings, path: Path | None = None, *, wipe: bool = False,
+             signing_seed: bytes | None = None) -> dict:
+    """
+    Load the demo seed. `signing_seed` (tests only) fixes the throwaway scan-signing key; by default a fresh random key
+    is used and discarded. Virtual tags (sim_tags) are only written when the simulator is on.
+    """
     path = path or settings.seed_path
     data = json.loads(Path(path).read_text(encoding="utf-8"))
+    signing_seed = signing_seed or os.urandom(32)
+    if signing_seed == settings.server_seed:
+        raise ValueError("the demo seed must never be signed with FV_SERVER_ED25519_SEED")
     if wipe:
         db.wipe()
     else:
         db.init()
-    counts = {"passports": 0, "seals": 0, "events": 0, "attesters": 0, "simTags": 0}
+    counts = {"passports": 0, "seals": 0, "events": 0, "attesters": 0, "simTags": 0,
+              "signingPubkeyHex": proof.public_key(signing_seed).hex()}
     labels = {a["pubkey"]: a.get("label") for a in data.get("attesters", [])}
 
     with db.connect() as conn, transaction(conn):
@@ -112,7 +133,7 @@ def run_seed(db: Database, settings: Settings, path: Path | None = None, *, wipe
                 if "scan" in ev:
                     sc = ev["scan"]
                     seal = seals_by_uid[sc["uid"].upper()]
-                    payload, grade, _ = _scan_bundle(settings, serial, seal, ts, actor, loc, sc)
+                    payload, grade, _ = _scan_bundle(signing_seed, serial, seal, ts, actor, loc, sc)
                     seal_uid_hash = seal["uid_hash"]
                     conn.execute("UPDATE seals SET last_counter=MAX(last_counter, ?) WHERE uid_hash=?", (sc["counter"], seal_uid_hash))
                 elif "sighting" in ev:
@@ -141,6 +162,7 @@ def run_seed(db: Database, settings: Settings, path: Path | None = None, *, wipe
                         grade_after, _ = proof.compute_grade(verdict=VALID, tamper=Tamper.UNKNOWN,
                                                              heat=sc.get("heat", sc["heatLevels"][4]),
                                                              hum=sc.get("hum", 0), fill=sc["fill"])
+                payload["seed"] = True      # demo data: purge-seed and the web can tell it apart
                 insert_event(conn, serial=serial, type=etype, ts=ts, actor_pubkey=actor, actor_label=actor_label,
                              tx_sig=ev.get("txSig"), status=status, seal_uid_hash=seal_uid_hash, payload=payload,
                              grade_after=grade_after, country=loc.get("country"), city=loc.get("city"))
@@ -153,7 +175,7 @@ def run_seed(db: Database, settings: Settings, path: Path | None = None, *, wipe
             else:
                 conn.execute("UPDATE passports SET grade=? WHERE serial=?", (grade, serial))
 
-        for t in data.get("simTags", []):
+        for t in (data.get("simTags", []) if settings.dev_simulator else []):   # virtual tags exist only with the simulator
             uid = bytes.fromhex(t["uid"])
             key = key_for_uid(settings.key_mode, settings.master_key, uid, settings.sdm_derive)
             upsert_sim_tag(conn, uid_hex=t["uid"].upper(), key_hex=key.hex(), counter=t.get("counter", 0),
@@ -163,9 +185,21 @@ def run_seed(db: Database, settings: Settings, path: Path | None = None, *, wipe
     return counts
 
 
+def count_seed_rows(conn, path: Path) -> int:
+    """Events that came from the demo seed: marked payload.seed, or carrying one of the seed file's (fake) txSigs."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    sigs = sorted({ev["txSig"] for p in data.get("passports", []) for ev in p.get("events", []) if ev.get("txSig")})
+    marks = ",".join("?" * len(sigs)) or "NULL"
+    return int(conn.execute(f"""SELECT COUNT(*) FROM events WHERE tx_sig IN ({marks})
+                                OR COALESCE(json_extract(payload_json, '$.seed'), 0) = 1""", sigs).fetchone()[0])
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     settings = settings_from_env()
+    if not settings.seed_enabled:
+        print("refusing to seed: demo data is only loaded with FV_DEV_SIMULATOR=true or FV_SEED_DEMO=true", file=sys.stderr)
+        return 2
     db = Database(settings.db_path)
     counts = run_seed(db, settings, wipe=("--keep" not in argv))
     print(f"seeded {settings.db_path}: {counts}")

@@ -6,12 +6,14 @@ FlaconVault is an NFC seal and a public passport on Solana for collectible perfu
 
 **The problem.** Rare, vintage and niche perfume is resold on photos and the seller's word. A buyer cannot check whether the seal is the original one, or whether the bottle spent hours in a hot delivery van.
 
-- **Seal:** an NXP NTAG 424 DNA sticker over the bottle neck. Every tap returns a fresh checksum and a counter that only goes up. Only the verification server can check them, so a copied tap link is rejected, and a torn sticker stops answering.
-- **Card:** an insert card in a small 3D-printed holder with indicators for heat (the 40 °C field turns dark for good), humidity (60 % RH) and UV, read by the phone camera.
-- **Passport:** the server signs every witnessed scan, and the scanner's wallet anchors it on Solana as its own ScanProof account. The passport lists the bottle's registration, its sealing, every anchored scan and every sale through the escrow.
-- **Escrow:** USDC waits in a program-owned vault until the seller's pre-ship scan and the buyer's receipt scan agree. Deadlines and an admin decision settle the cases where they do not.
+**What FlaconVault adds.**
 
-**Why Solana.** The record has to outlive any one shop, platform or server, and the payment has to follow the evidence. The program accepts only scans the server signed and keeps one ScanProof per tap, anyone can read a passport straight from the chain without going through our server, and the escrow settles in USDC against those same accounts.
+- **Seal:** an NXP NTAG 424 DNA sticker over the bottle neck. Every tap returns a fresh checksum and a counter that only goes up. Only the verification server can check them, so a reused tap link is rejected, and a torn sticker stops answering.
+- **Card:** an insert card in a small 3D-printed holder with indicators for heat (the 40 °C field turns dark for good), humidity (60 % RH) and UV, read by the phone camera.
+- **Passport:** the server signs every witnessed scan, and the scanner's wallet anchors it on Solana as its own ScanProof account. The passport lists the bottle's registration, its sealing, the anchored scans and the escrow sales made through the app, plus the sightings of taps made without a wallet.
+- **Escrow:** USDC waits in a program-owned vault until the seller's pre-ship scan and the buyer's receipt scan agree. If they disagree, an admin decides; deadlines refund the buyer when the seller does not ship and pay the seller when the buyer never scans.
+
+**Why Solana.** The record has to outlive any one shop, platform or server, and the payment has to follow the evidence. The program accepts only scans the server signed and keeps at most one ScanProof per tap (one per seal and counter). Anyone can read a passport straight from the chain without going through our server, and the escrow settles in USDC against those same accounts.
 
 The chip verifies the seal, not what is inside the bottle, and a grade describes the recorded handling, not the condition of the contents: see [What a passport claims](#what-a-passport-claims) and [Security model and known limits](#security-model-and-known-limits).
 
@@ -19,7 +21,7 @@ Built for the Colosseum Crypto World's Fair hackathon · Solana **devnet** (test
 
 ## Try it
 
-No sticker needed: open the real bottle, press **Check live on-chain**, then open the escrow release transaction.
+No sticker needed: open the passport of the sealed bottle (first row below), press **Check live on-chain**, then open the escrow release transaction.
 
 | | |
 |---|---|
@@ -34,7 +36,7 @@ A buyer needs no app and no wallet: tapping the sticker with an iPhone opens the
 
 ## How it works
 
-One scan, end to end: the verifier checks the tap, the browser reads the card, the verifier signs the scan, and the scanner's wallet sends it to the flacon program, which writes a ScanProof only for the server's signature.
+One scan, end to end: the verifier checks the tap, the browser reads the card, the verifier signs the scan, and the scanner's wallet sends it to the flacon program, which writes a ScanProof only if the server's signature is valid.
 
 ```
  NTAG 424 DNA ──tap (encrypted SUN URL)──▶ verifier (FastAPI)  ──Ed25519 signature──▶ programs/flacon (Anchor)
@@ -56,7 +58,7 @@ The seal is a **handling and provenance record, not a damage record**. The chip 
 
 | Grade | Recorded | After a later scan |
 |---|---|---|
-| A / B / D | the fill level of the latest scan: A 90 % or more, B 60 % or more, D below | follows the latest scan |
+| A / B / D | the fill level of the latest scan: A 90 % or more, B 60 % or more, D below 60 % | follows the latest scan |
 | C | a triggered heat (40 °C) or humidity (60 % RH) indicator | stays C |
 | VOID | the seal recorded as opened, or confirmed dead on chain | stays VOID |
 
@@ -64,20 +66,20 @@ The app and the docs say "Seal genuine · Tap 14" and "Heat: above 40 °C record
 
 ## Tested on real hardware
 
-- **iPhone** read the stickers reliably in our tests through background NFC and opens the result page in Safari. The scan continues from that tap through a single-use token, valid for 180 seconds, so one tap is enough.
-- **Android:** a Google Pixel 6 cannot read this sticker batch. TagInfo reads the full SUN URL, but Android's NDEF detection does not, so WebNFC returns an empty record. The WebNFC path is implemented for compatible tags; reprogramming the batch with the factory configuration is planned.
+- **iPhone:** in our tests it read the stickers reliably through background NFC and opened the result page in Safari. The scan continues from that tap through a single-use token, valid for 180 seconds, so one tap is enough.
+- **Android:** on a Google Pixel 6 a tap on this sticker batch opens nothing. TagInfo on the same phone reads the full SUN URL, but Android's NDEF detection finds no NDEF message, so WebNFC returns an empty record. The WebNFC path is implemented for compatible tags; reprogramming the batch with the factory configuration is planned.
 - **Wallets on iPhone:** Safari has no injected wallet, so signing goes through **WalletConnect** or the Phantom/Solflare in-app browser, where a resume link reopens the scan at the signing step. Certified (partner) scans need WalletConnect, with the partner wallet connected before "Get signature". Android signs through the Mobile Wallet Adapter (Solflare).
 - **The physical card** has no printed marker and no reference patches. Frame mode anchors on the holder's window and the blue heat label and corrects the parallax of the recessed card. Verified on 2026-10-11 on three photos (daylight, room light, oblique), each with the 40 °C field read as intact.
 
 ## Security model and known limits
 
-- The server proves that the genuine chip was tapped, once: within a 90-second scan session, or, on the one-tap iPhone path, at most 180 seconds before the scan adopts that tap. It does not prove what is inside the bottle, and a genuine sticker moved to another bottle is not detected by the chip alone.
+- The server proves that a tap URL came from the genuine chip and has not been presented before, and that it reached the server within a 90-second scan session (or, on the one-tap iPhone path, at most 180 seconds before the scan adopts it). It does not prove when the chip was read: a URL read off the sticker with an NFC app and never opened is accepted once, until a newer tap supersedes it. It does not prove what is inside the bottle, and a genuine sticker moved to another bottle is not detected by the chip alone.
 - Indicator and fill readings are currently reported by the scanning phone and signed as sent. The escrow program compares the readings of the two scans but does not itself require a card reading; the web order page offers only scans with heat and humidity read.
-- History comes from the chain, not from the client: the verifier records an entry only after decoding a confirmed transaction signed by the actor, and it takes the facts (price, seal kind, counters, match, attester, tier, role) from the instruction and the program's accounts and events. Unverified seal reports appear as "reported · unverified" and never void a passport.
+- Transaction entries in the history (registration, sealing, anchored scans, sales) come from the chain, not from the client: the verifier records one only after decoding a confirmed transaction signed by the actor, and it takes the facts (price, seal kind, counters, match, attester, tier, role) from the instruction and the program's accounts and events. Sightings (taps the server verified without a wallet) and unverified seal reports are off chain and labelled as such: a seal report appears as "reported · unverified" and never voids a passport.
 - The verifier's simulator is off in production (`/health` reports it), and the verifier refuses to start with forgeable key settings.
 - Pending scans stay private: no message, signature or nonce of an unanchored scan appears in public views, and the wallet-app resume link works only while its scan is pending. Certified tiers and the vault/partner roles are signed only for wallets in the on-chain partner registry.
-- VOID and C are sticky; A/B/D follow the latest scan. A C from a triggered heat or humidity indicator, or a VOID passport, stays that way, while the next scan corrects a single low fill reading. The verifier applies this rule on every confirmation and in its reconcile job, and both programs enforce it on chain since the devnet upgrade of 2026-10-16 (before it, a later scan could still overwrite C or VOID on chain).
-- The programs also add server-key revocation with a freshness window (10 minutes against the cluster clock), partner removal, issuer-only seal administration, owner-only escrow listing, a price-bound reserve, a buyer refund when the seller does not ship, a seller payout when the buyer never scans, and an admin `resolve` for disagreeing scans. Devnet runs them since the same upgrade; [`programs/README.md`](programs/README.md) lists every instruction with its signer rules.
+- VOID and C are sticky; A/B/D follow the latest scan. A C from a triggered heat or humidity indicator, or a VOID passport, stays that way, while the next scan corrects a single low fill reading. The verifier applies this rule on every confirmation and in its reconcile job, and the flacon program has enforced it on chain since the devnet upgrade of 2026-10-16 (before it, a later scan could still overwrite C or VOID on chain).
+- The programs also add server-key revocation with a freshness window (10 minutes against the cluster clock), partner removal, issuer-only seal administration, owner-only escrow listing, a price-bound reserve, a buyer refund when the seller does not ship, a seller payout when the buyer never scans, and an admin `resolve` for disagreeing scans. Devnet has run them since that upgrade; [`programs/README.md`](programs/README.md) lists every instruction with its signer rules.
 - Before mainnet: a multisig for upgrade, registry and escrow authority, binding attester/tier into the signed message, indicator readings that do not rely on the scanning phone, and an external audit.
 
 ## Repo
@@ -145,7 +147,7 @@ CI (`.github/workflows/ci.yml`) runs all of these on every push to `main` and ev
 | Verifier: encrypted SUN, replay, nonce, signatures, authenticated history | done, live at verify.flaconvault.com |
 | Anchor programs flacon + escrow | done, on devnet (upgraded 2026-10-16) |
 | Web: tap result, scan flow, passport, certification, market, Solana Action (Blink) to reserve a listing | done, live at app.flaconvault.com |
-| Real stickers (NTAG 424 DNA, encrypted SUN) | done on iPhone; a Google Pixel 6 cannot read this batch |
+| Real stickers (NTAG 424 DNA, encrypted SUN) | done on iPhone; a Google Pixel 6 does not open this batch's tap link |
 | Camera indicator reading of the physical card | done (frame mode); humidity colour to be confirmed against the indicator datasheet |
 | Escrow seller protection, key revocation, partner removal | done, live on devnet since 2026-10-16 |
 | Arweave archiving of photos and scan bundles via Irys | built and tested on Irys devnet (2026-09-24); the live verifier's Irys wallet is empty, so current scans are not archived |

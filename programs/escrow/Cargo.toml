@@ -25,5 +25,13 @@ anchor-spl = { version = "1.2.0", features = ["token"] }
 # flacon account types (Passport / Seal / ScanProof) with their owner + discriminator checks
 flacon = { path = "../flacon", features = ["no-entrypoint"] }
 
+[dev-dependencies]
+# tests/time_travel.rs: the window branches under a Clock override (needs target/deploy/escrow.so from `anchor build`)
+litesvm = "0.10"
+solana-account = "3"
+solana-keypair = "3"
+solana-signer = "3"
+solana-transaction = { version = "3", features = ["bincode"] }
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

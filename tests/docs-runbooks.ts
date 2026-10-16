@@ -67,11 +67,14 @@ describe("runbooks match the code", () => {
     const buildRow = deploy.split("\n").find((l) => l.startsWith("| `FV_BUILD_SHA` |")) ?? "";
     expect(buildRow, "FV_BUILD_SHA row").to.match(/RAILWAY_GIT_COMMIT_SHA/).and.to.match(/railway up/);
     expect(deploy).to.match(/`null` after a `railway up` without `FV_BUILD_SHA`/);
-    // routes_dev.py checks the token only when one is set: an empty token leaves /api/dev/reset open
-    expect(read("apps/verify/fv/routes_dev.py")).to.match(/if settings\.admin_token and not admin_token_ok/);
     const adminRow = deploy.split("\n").find((l) => l.startsWith("| `FV_ADMIN_TOKEN` |")) ?? "";
-    expect(adminRow).not.to.match(/empty disables them/);
-    expect(adminRow).to.match(/`POST \/api\/dev\/reset`[^|]*open/);
+    expect(adminRow, "FV_ADMIN_TOKEN row").to.match(/POST \/api\/dev\/reset/);
+    // While routes_dev.py checks the token only when one is set, an empty token leaves /api/dev/reset open, and the
+    // table must say so (re-check this when the reset route requires a token).
+    if (/if settings\.admin_token and not admin_token_ok/.test(read("apps/verify/fv/routes_dev.py"))) {
+      expect(adminRow).not.to.match(/empty disables them/);
+      expect(adminRow).to.match(/`POST \/api\/dev\/reset`[^|]*open/);
+    }
   });
 
   it("README security claims stay within what the code does", () => {

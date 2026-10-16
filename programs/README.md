@@ -12,13 +12,13 @@ Toolchain (pinned in `Anchor.toml` `[toolchain]` and `rust-toolchain.toml`): Anc
 ## Build, test, IDLs
 
 ```bash
-export PATH="$HOME/.local/node/bin:$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$HOME/.avm/bin:$PATH"
+# needs on PATH: Anchor CLI (via avm), the Solana CLI (Agave installer), Rust (rustup), Node 22.18 or newer
 anchor build                         # target/deploy/*.so, target/idl/*.json, target/types/*.ts
 cargo test -p flacon -p escrow       # unit tests: message layout vs docs/vectors.json, grade rule, freshness, escrow rules
 anchor test --validator legacy       # integration tests in tests/ on a local validator (clones Metaplex Core from devnet)
 scripts/test-escrow-time-travel.sh   # escrow window branches in LiteSVM with a Clock override (see below)
 
-# the web app and the scripts read the committed IDLs:
+# the web app and the scripts read the committed IDLs; .github/scripts/idl-check.sh (CI: programs.yml) compares them:
 cp target/idl/flacon.json packages/proof/src/idl/flacon.json && cp target/types/flacon.ts packages/proof/src/idl/flacon.ts
 cp target/idl/escrow.json packages/proof/src/idl/escrow.json && cp target/types/escrow.ts packages/proof/src/idl/escrow.ts
 ```
@@ -47,8 +47,10 @@ anchor build --verifiable                      # deterministic build in the sola
     --repo-url https://github.com/Eleuss/flaconvault --commit-hash <commit>)
 ```
 
-Deploy (and upgrade) only binaries from `anchor build --verifiable`, and note the commit next to the deploy signature in
-`docs/devnet.md`; a plain `anchor build` is not byte-reproducible across machines.
+Deploy (and upgrade) only binaries from `anchor build --verifiable`, which writes them to `target/verifiable/*.so`:
+`anchor deploy --verifiable`, or `anchor upgrade target/verifiable/<program>.so` (`target/deploy/` holds the last plain
+build). Note the commit next to the deploy signature in `docs/devnet.md`; a plain `anchor build` is not
+byte-reproducible across machines.
 
 ## Upgrade compatibility
 

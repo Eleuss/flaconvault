@@ -1,9 +1,11 @@
 name: CI
 
 # Every push to main and every pull request: repo hygiene, proof + vision tests (incl. parity with the committed
-# vectors), web typecheck + lint + production build, verifier pytest, and the flacon unit tests.
+# vectors), web typecheck + lint + unit tests + production build, the validator-free mocha suites (web escrow rules,
+# ops-script helpers), verifier pytest, the verifier Docker image (build + start + /health), and the program unit tests.
 # The Anchor integration tests need a local validator and take long: run them by hand
-# (Actions -> CI -> Run workflow, "anchor" ticked).
+# (Actions -> CI -> Run workflow, "anchor" ticked). The IDL drift check runs in programs.yml whenever programs/ or the
+# committed IDLs change.
 on:
   push:
     branches: [main]
@@ -72,6 +74,11 @@ jobs:
       - run: npm run web:typecheck
       - run: npm run web:lint
       - run: npm run web:test
+      # tests/web-escrow-rules.ts (the web's escrow action matrix, mirroring programs/escrow/src/rules.rs, and the price
+      # parser behind reserve(expectedPrice)) and tests/scripts-cli.ts (bind-chip arguments, the refusal to register the
+      # public test key on devnet): plain mocha, no validator. `anchor test` runs them too.
+      - name: escrow rules and ops-script helpers (mocha, no validator)
+        run: npm run mocha:unit
       - run: npm run web:build
       # Informational until the Next.js upgrade lands (next 14.x has advisories without a 14.x fix).
       - name: npm audit (production dependencies)
@@ -94,6 +101,16 @@ jobs:
           cache-dependency-glob: apps/verify/uv.lock
       - run: uv sync --locked
       - run: uv run pytest -q
+
+  docker:
+    name: verifier image (Dockerfile.verify)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # The image Railway deploys (Dependabot bumps its base images): build it, start it with a throwaway local
+      # configuration and check that /health reports this commit and that the verifier does not run as root.
+      - run: bash .github/scripts/docker-smoke.sh
 
   rust:
     name: program unit tests (cargo)
@@ -136,10 +153,12 @@ jobs:
           avm use "${ANCHOR_VERSION}"
       # A throwaway wallet for the local validator, and fresh program keypairs: the real program keypairs are not in
       # the repo, so `anchor keys sync` points declare_id! and Anchor.toml at the generated ones (CI checkout only).
-      - name: Throwaway wallet and program keys
+      # The IDL check runs before that, while the generated IDLs still carry the committed program ids.
+      - name: Throwaway wallet, IDL drift check, program keys
         run: |
           solana-keygen new --no-bip39-passphrase --silent --force --outfile "$HOME/.config/solana/id.json"
           anchor build
+          bash .github/scripts/idl-check.sh
           anchor keys sync
       # Anchor.toml clones Metaplex Core from devnet into the local validator (read-only, needs network).
       - run: anchor test --validator legacy

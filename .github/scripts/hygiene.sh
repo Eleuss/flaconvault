@@ -4,6 +4,7 @@
 #  2. real env files are ignored, *.example templates are not
 #  3. no key material or real env files are tracked
 #  4. no machine-specific absolute home-directory paths are tracked
+#  5. no PATH exports for one machine's custom tool locations (e.g. $HOME/.local/node/bin) in docs or scripts
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -39,6 +40,12 @@ fi
 if git grep -n -I -E -e '/Users/[A-Za-z]|/home/[a-z][a-z0-9_-]*/|[A-Za-z]:\\Users\\' -- . \
     ':(exclude)package-lock.json' ':(exclude)**/package-lock.json' ':(exclude)**/uv.lock' ':(exclude)Cargo.lock' ":(exclude)$self"; then
   err "machine-specific absolute paths are tracked (see the lines above); use \$HOME, ~ or relative paths"
+fi
+
+# 5. machine-specific toolchain PATH lines ($HOME-relative, so check 4 does not see them). Docs name the tools instead
+#    ("Node 22.18 or newer, the Solana CLI and Anchor via avm on PATH"); CI adds its own install paths via $GITHUB_PATH.
+if git grep -n -I -E -e 'PATH=.*\.local/node/bin' -- '*.md' '*.sh' '*.toml' '*.json' '*.example' ":(exclude)$self"; then
+  err "machine-specific PATH export is tracked (see the lines above); say which tools must be on PATH instead"
 fi
 
 if [ "$fail" -eq 0 ]; then echo "hygiene: ok"; fi

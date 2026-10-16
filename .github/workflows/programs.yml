@@ -1,0 +1,66 @@
+name: Programs
+
+# `anchor build` and the IDL drift check: the web clients and the scripts load the committed IDLs and types in
+# packages/proof/src/idl/ at runtime, so they must equal what `anchor build` generates from programs/. Runs on pushes to
+# main and on pull requests that touch the programs, the committed IDLs or the toolchain pins (the full Anchor
+# integration tests stay on manual dispatch in ci.yml).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "programs/**"
+      - "packages/proof/src/idl/**"
+      - "Anchor.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/programs.yml"
+      - ".github/scripts/idl-check.sh"
+  pull_request:
+    paths:
+      - "programs/**"
+      - "packages/proof/src/idl/**"
+      - "Anchor.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/programs.yml"
+      - ".github/scripts/idl-check.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: programs-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # the versions Anchor.toml [toolchain] pins
+  SOLANA_VERSION: "4.1.2"
+  ANCHOR_VERSION: "1.2.0"
+
+jobs:
+  idl:
+    name: anchor build + IDL drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      # Installs the toolchain pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Solana CLI (Agave)
+        run: |
+          sh -c "$(curl -sSfL "https://release.anza.xyz/v${SOLANA_VERSION}/install")"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Install Anchor CLI
+        run: |
+          cargo install --git https://github.com/solana-foundation/anchor --tag "v${ANCHOR_VERSION}" avm --locked
+          avm install "${ANCHOR_VERSION}"
+          avm use "${ANCHOR_VERSION}"
+      # No deploy and no program keypairs (--ignore-keys: the fresh target/deploy keypairs never match declare_id!):
+      # the generated IDLs carry the program ids of declare_id!, as the committed ones do.
+      - run: anchor build --ignore-keys
+      - run: bash .github/scripts/idl-check.sh

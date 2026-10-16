@@ -2,14 +2,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { Keypair, PublicKey, SystemProgram, type Transaction } from "@solana/web3.js";
+import { PublicKey, SystemProgram, type Transaction } from "@solana/web3.js";
 import { creatingSignature, describeTxError, sendAsV0 } from "@/lib/send-tx";
 import { TxFailedError, friendly } from "@/lib/errors";
 import { ArrowRight, Loader2, Printer, ShieldCheck } from "lucide-react";
 import { bindingHash, bytesToHex, serialHash, uidHash } from "@flaconvault/proof";
-import { flaconProgram, passportPda, registryPda, sealPda } from "@/lib/flacon";
+import { MAX_SEALS_PER_PASSPORT, fetchCoreAsset, fetchPassportChain, flaconProgram, passportPda, registryPda, sealPda } from "@/lib/flacon";
+import { isValidSerial, normalizeSerial, passportPath } from "@/lib/escrow-rules";
 import { api, type SimTag } from "@/lib/verify-api";
 import { DEV_SIMULATOR, PROGRAM_ID, PUBLIC_VERIFY_URL, SOLANA_RPC } from "@/lib/config";
+import { demoMode } from "@/lib/demo";
 import { txUrl } from "@/lib/format";
 import { cardSvgForSerial } from "@/lib/card";
 import { lastTap } from "@/lib/handoff";
@@ -34,7 +36,11 @@ export function CertifyConsole() {
   // the verifier only reveals the UID for UNREGISTERED taps; a VALID tap leaves it null
   useEffect(() => { const t = lastTap.get(); if (t?.uid) setRecent({ uid: t.uid, counter: t.counter }); }, []);
   const [simulator, setSimulator] = useState(false); // DEV_SIMULATOR and the verifier's /health says simulator: true
-  const [asset, setAsset] = useState<string | null>(null);
+  // demo tools (airdrop, virtual tags) only in demo mode; read after mount so server and client render the same
+  const [demo, setDemo] = useState(false);
+  useEffect(() => { setDemo(demoMode()); }, []);
+  /** The Core asset minted in this page, together with the serial it was minted (and named) for. */
+  const [asset, setAsset] = useState<{ pubkey: string; serial: string } | null>(null);
   const [txs, setTxs] = useState<{ core?: string; mint?: string; seal?: string }>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setErrorState] = useState<{ at: ErrAt; msg: string } | null>(null);
@@ -58,7 +64,7 @@ export function CertifyConsole() {
   }, [connection, anchorWallet]);
   useEffect(() => { loadRegistry(); }, [loadRegistry]);
   useEffect(() => {
-    if (!DEV_SIMULATOR) return;
+    if (!DEV_SIMULATOR || !demo) return;
     let live = true;
     api.health().then((h) => {
       if (!live || !h.simulator) return;
@@ -66,8 +72,10 @@ export function CertifyConsole() {
       api.simTags().then((t) => { if (live) setSimTags(t); }).catch(() => {});
     }).catch(() => {});
     return () => { live = false; };
-  }, []);
-  const simOn = DEV_SIMULATOR && simulator;
+  }, [demo]);
+  const simOn = DEV_SIMULATOR && demo && simulator;
+  const serial = normalizeSerial(form.serial);
+  const serialOk = isValidSerial(serial);
 
   const isPartner = !!(registry && wallet.publicKey && (registry.partners.includes(wallet.publicKey.toBase58()) || registry.authority === wallet.publicKey.toBase58()));
   const site = registry?.sites.find((s) => s.siteId === form.siteId);
@@ -75,20 +83,29 @@ export function CertifyConsole() {
   const mintCore = async () => {
     if (!wallet.connected) return;
     setBusy("core"); setError(null);
+    let assetKey: string | null = null;
     try {
+      if (!serialOk) throw new Error("Enter a valid serial number first (3–64 characters: letters, digits, '.', '_', '-'); the asset is named after it.");
       const [{ createUmi }, { walletAdapterIdentity }, { mplCore, create }, { generateSigner }] = await Promise.all([
         import("@metaplex-foundation/umi-bundle-defaults"), import("@metaplex-foundation/umi-signer-wallet-adapters"),
         import("@metaplex-foundation/mpl-core"), import("@metaplex-foundation/umi"),
       ]);
       const umi = createUmi(SOLANA_RPC).use(mplCore()).use(walletAdapterIdentity(wallet));
       const signer = generateSigner(umi);
-      const res = await create(umi, { asset: signer, name: `${form.brand} ${form.name} · ${form.serial}`.trim(), uri: `${PUBLIC_VERIFY_URL}/api/passport/${form.serial}` }).sendAndConfirm(umi);
+      assetKey = signer.publicKey.toString();
+      const res = await create(umi, { asset: signer, name: `${form.brand} ${form.name} · ${serial}`.trim(), uri: `${PUBLIC_VERIFY_URL}/api/passport/${encodeURIComponent(serial)}` }).sendAndConfirm(umi);
       const { base58 } = await import("@metaplex-foundation/umi/serializers");
       const sig = base58.deserialize(res.signature)[0];
       if (res.result.value.err) throw new TxFailedError(sig, describeTxError(res.result.value.err));
-      setAsset(signer.publicKey.toString()); setTxs((t) => ({ ...t, core: sig }));
-      note(`Core asset ${signer.publicKey.toString()} minted · ${sig.slice(0, 12)}…`);
-    } catch (e) { setError(`Core mint failed: ${friendly(e)}`, "core"); }
+      setAsset({ pubkey: assetKey, serial }); setTxs((t) => ({ ...t, core: sig }));
+      note(`Core asset ${assetKey} minted for ${serial} · ${sig.slice(0, 12)}…`);
+    } catch (e) {
+      // the confirmation can fail after the asset landed (expired blockhash, dropped websocket): keep it if it exists
+      const landed = assetKey ? await fetchCoreAsset(connection, new PublicKey(assetKey)).catch(() => null) : null;
+      if (assetKey && landed) {
+        setAsset({ pubkey: assetKey, serial }); note(`Core asset ${assetKey} is on chain (the confirmation failed, the asset is kept)`);
+      } else setError(`Core mint failed: ${friendly(e)}`, "core");
+    }
     finally { setBusy(null); }
   };
   const airdrop = async () => {
@@ -97,7 +114,6 @@ export function CertifyConsole() {
     try { const s = await connection.requestAirdrop(wallet.publicKey, 1e9); await connection.confirmTransaction(s, "confirmed"); note("1 SOL airdrop"); }
     catch (e) { setError(`Airdrop: ${friendly(e)}`); } finally { setBusy(null); }
   };
-  const placeholderAsset = () => { const k = Keypair.generate().publicKey.toBase58(); setAsset(k); note(`Placeholder asset ${k.slice(0, 8)}…`); };
 
   const sendViaWallet = (tx: Transaction) => sendAsV0(wallet, connection, tx);
 
@@ -105,9 +121,10 @@ export function CertifyConsole() {
     if (!anchorWallet || !wallet.publicKey) return;
     setBusy("mint"); setError(null);
     try {
-      if (!form.serial.trim() || !form.brand.trim() || !form.name.trim()) throw new Error("Serial number, brand and name must be filled in (they appear in the passport)");
+      if (!serialOk) throw new Error("Serial number: 3–64 characters, letters, digits, '.', '_' or '-' (the passport address is derived from it and can never change)");
+      if (!form.brand.trim() || !form.name.trim()) throw new Error("Brand and name must be filled in (they appear in the passport)");
       const program = flaconProgram(connection, anchorWallet);
-      const sh = serialHash(form.serial);
+      const sh = serialHash(serial);
       const pda = passportPda(sh);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const existing = (await (program.account as any).passport.fetchNullable(pda)) as { issuer: PublicKey; asset: PublicKey; bindingHash: number[] } | null;
@@ -115,22 +132,25 @@ export function CertifyConsole() {
       if (existing) {
         // The passport is already on chain (e.g. the wallet app sent it but the answer never reached this page):
         // asset and binding hash come from the chain, no Core asset in this page's state is needed.
-        if (existing.issuer.toBase58() !== wallet.publicKey.toBase58()) throw new Error(`Passport ${form.serial} already exists and belongs to another wallet (${existing.issuer.toBase58().slice(0, 8)}…)`);
+        if (existing.issuer.toBase58() !== wallet.publicKey.toBase58()) throw new Error(`Passport ${serial} already exists and belongs to another wallet (${existing.issuer.toBase58().slice(0, 8)}…)`);
         usedAsset = existing.asset.toBase58(); bh = Uint8Array.from(existing.bindingHash);
         const found = await creatingSignature(connection, pda);
-        if (!found) throw new Error(`Passport ${form.serial} is on chain, but its mint transaction was not found. Try again in a moment.`);
-        sig = found; recovered = true; setAsset(usedAsset);
+        if (!found) throw new Error(`Passport ${serial} is on chain, but its mint transaction was not found. Try again in a moment.`);
+        sig = found; recovered = true; setAsset({ pubkey: usedAsset, serial });
       } else {
         if (!asset) throw new Error("Mint the Core asset first.");
+        if (asset.serial !== serial) throw new Error(`The Core asset in this page was minted for ${asset.serial}. Mint a new Core asset for ${serial}.`);
         if (!/^[0-9A-Fa-f]{14}$/.test(form.uid)) throw new Error("UID of the first seal (7 bytes hex) is needed for the binding_hash");
-        usedAsset = asset; bh = bindingHash(form.serial, form.batch, uidHash(form.uid));
-        const tx = await program.methods.mintPassport(Array.from(sh), Array.from(bh), new PublicKey(asset))
-          .accountsStrict({ registry: registryPda(), passport: pda, issuer: wallet.publicKey, systemProgram: SystemProgram.programId }).transaction();
+        const core = await fetchCoreAsset(connection, new PublicKey(asset.pubkey));
+        if (!core) throw new Error("The Core asset is not visible on chain yet. Wait a few seconds and try again.");
+        usedAsset = asset.pubkey; bh = bindingHash(serial, form.batch, uidHash(form.uid));
+        const tx = await program.methods.mintPassport(Array.from(sh), Array.from(bh), new PublicKey(usedAsset))
+          .accountsStrict({ registry: registryPda(), passport: pda, issuer: wallet.publicKey, systemProgram: SystemProgram.programId, coreAsset: new PublicKey(usedAsset) }).transaction();
         sig = await sendViaWallet(tx);
       }
       setTxs((t) => ({ ...t, mint: sig }));
-      await api.events({ serial: form.serial, type: 0, txSig: sig, actor: wallet.publicKey.toBase58(), payload: { brand: form.brand, name: form.name, batch: form.batch, asset: usedAsset, issuerLabel: site?.label ?? null, siteId: form.siteId, bindingHash: bytesToHex(bh, true) } });
-      note(recovered ? `Passport ${form.serial} was already on chain · log backfilled (${sig.slice(0, 12)}…)` : `mint_passport ${form.serial} · ${sig.slice(0, 12)}…`);
+      await api.events({ serial, type: 0, txSig: sig, actor: wallet.publicKey.toBase58(), payload: { brand: form.brand, name: form.name, batch: form.batch, asset: usedAsset, issuerLabel: site?.label ?? null, siteId: form.siteId, bindingHash: bytesToHex(bh, true) } });
+      note(recovered ? `Passport ${serial} was already on chain · log backfilled (${sig.slice(0, 12)}…)` : `mint_passport ${serial} · ${sig.slice(0, 12)}…`);
     } catch (e) { setError(friendly(e), "mint"); }
     finally { setBusy(null); }
   };
@@ -140,8 +160,9 @@ export function CertifyConsole() {
     setBusy("seal"); setError(null);
     try {
       if (!/^[0-9A-Fa-f]{14}$/.test(form.uid)) throw new Error("UID must be 7 bytes hex");
+      if (!serialOk) throw new Error("Enter the passport's serial number (3–64 characters: letters, digits, '.', '_', '-').");
       const program = flaconProgram(connection, anchorWallet);
-      const sh = serialHash(form.serial), uh = uidHash(form.uid);
+      const sh = serialHash(serial), uh = uidHash(form.uid);
       const pda = sealPda(uh);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const existing = (await (program.account as any).seal.fetchNullable(pda)) as { passport: PublicKey } | null;
@@ -152,12 +173,19 @@ export function CertifyConsole() {
         if (!found) throw new Error("The seal is on chain, but its attach transaction was not found. Try again in a moment.");
         sig = found; recovered = true;
       } else {
+        // the program only lets the passport's issuer (while a partner) or the registry authority attach seals
+        const chain = await fetchPassportChain(connection, passportPda(sh));
+        if (!chain) throw new Error(`Passport ${serial} is not on chain yet. Mint it first.`);
+        const me = wallet.publicKey.toBase58();
+        if (chain.issuer.toBase58() !== me && registry?.authority !== me) throw new Error(`Only the issuer of ${serial} (${chain.issuer.toBase58().slice(0, 8)}…) or the registry authority can attach seals to it.`);
+        if (chain.void || chain.grade === 4) throw new Error(`Passport ${serial} is VOID; it takes no new seals.`);
+        if (chain.sealCount >= MAX_SEALS_PER_PASSPORT) throw new Error(`Passport ${serial} already has ${MAX_SEALS_PER_PASSPORT} seals (one box, one neck).`);
         const tx = await program.methods.attachSeal(Array.from(uh), form.kind)
           .accountsStrict({ registry: registryPda(), passport: passportPda(sh), seal: pda, signer: wallet.publicKey, systemProgram: SystemProgram.programId }).transaction();
         sig = await sendViaWallet(tx);
       }
       setTxs((t) => ({ ...t, seal: sig }));
-      await api.events({ serial: form.serial, type: 1, txSig: sig, actor: wallet.publicKey.toBase58(), payload: { uid: form.uid.toUpperCase(), kind: form.kind, siteId: form.siteId } });
+      await api.events({ serial, type: 1, txSig: sig, actor: wallet.publicKey.toBase58(), payload: { uid: form.uid.toUpperCase(), kind: form.kind, siteId: form.siteId } });
       note(recovered ? `Seal was already on chain · log backfilled (${sig.slice(0, 12)}…)` : `attach_seal ${form.uid.toUpperCase()} · ${sig.slice(0, 12)}…`);
     } catch (e) { setError(friendly(e), "seal"); }
     finally { setBusy(null); }
@@ -195,9 +223,10 @@ export function CertifyConsole() {
     setBusy("print");
     try {
       const tpl = await fetch("/card-template.svg").then((r) => r.text());
-      const svg = await cardSvgForSerial(tpl, form.serial);
+      if (!serialOk) throw new Error("Enter a valid serial number first.");
+      const svg = await cardSvgForSerial(tpl, serial);
       const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
-      const a = document.createElement("a"); a.href = url; a.download = `Insert-card_${form.serial}.svg`; a.click();
+      const a = document.createElement("a"); a.href = url; a.download = `Insert-card_${serial}.svg`; a.click();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
     } catch (e) { setError(friendly(e), "scan"); } finally { setBusy(null); }
   };
@@ -221,14 +250,17 @@ export function CertifyConsole() {
         {wallet.publicKey && <span className="mono text-xs text-muted" data-wallet={wallet.publicKey.toBase58()}>{wallet.publicKey.toBase58()}</span>}
         {registry === null && wallet.connected && <Pill tone="none">Registry not found — run scripts/seed-devnet.ts</Pill>}
         {wallet.connected && <button onClick={loadRegistry} className="btn-outline btn-sm">Reload registry</button>}
-        {wallet.connected && DEV_SIMULATOR && <button onClick={airdrop} disabled={busy !== null} className="btn-outline btn-sm">1 SOL airdrop (test)</button>}
+        {wallet.connected && demo && <button onClick={airdrop} disabled={busy !== null} className="btn-outline btn-sm">1 SOL airdrop (test)</button>}
       </div>
       {errorAt("top")}
 
       <div className="mt-8 grid gap-8 lg:grid-cols-[1fr_360px]">
         <div className="space-y-6">
           <section className="card grid gap-4 p-5 sm:grid-cols-2">
-            {field("serial", "Serial number", { placeholder: "SN-2026-000004" })}
+            <div>
+              {field("serial", "Serial number", { placeholder: "SN-2026-000004", "aria-invalid": !serialOk })}
+              {!serialOk && <p className="mt-1 text-xs text-bad">3–64 characters: letters, digits, “.”, “_”, “-” (no spaces or “/”).</p>}
+            </div>
             <label className="block text-sm"><span className="text-muted">Site (site_id)</span>
               <select value={form.siteId} onChange={(e) => setForm({ ...form, siteId: +e.target.value })} className="mt-1 w-full rounded-xl border border-line bg-surface px-3 py-2 text-sm">
                 {(registry?.sites ?? [{ siteId: 1, label: "Parfümerie X, Düsseldorf" }, { siteId: 2, label: "FlaconVault Vault, Wickede" }]).map((s) => <option key={s.siteId} value={s.siteId}>{s.siteId} · {s.label}</option>)}
@@ -256,10 +288,10 @@ export function CertifyConsole() {
             <p className="text-sm font-medium">1 · Core asset</p>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <button onClick={mintCore} disabled={busy !== null || !wallet.connected} className="btn btn-sm">{busy === "core" ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null} Mint Metaplex Core</button>
-              {DEV_SIMULATOR && <button onClick={placeholderAsset} className="btn-outline btn-sm">Placeholder (localnet)</button>}
-              {asset && <span className="mono text-xs text-muted">Asset {asset.slice(0, 10)}…</span>}
+              {asset && <span className="mono text-xs text-muted">Asset {asset.pubkey.slice(0, 10)}… · for {asset.serial}{asset.serial !== serial ? " (serial changed: mint a new asset)" : ""}</span>}
             </div>
             {!wallet.connected && <p className="mt-2 text-xs text-muted">Connect the wallet above first; the button then becomes active.</p>}
+            <p className="mt-2 text-xs text-muted">The passport only accepts a Metaplex Core asset; it is minted to this wallet and named after the serial number.</p>
             {busy === "core" && <p className="mt-2 text-xs text-muted">Waiting for confirmation in the wallet app … If Phantom does not open by itself: open the app, confirm the request, return to Chrome.</p>}
             {errorAt("core")}
           </section>
@@ -286,7 +318,7 @@ export function CertifyConsole() {
             <div className="mt-3 flex flex-wrap items-center gap-3">
               <Link href={`/scan?role=4&tier=4&site=${form.siteId}`} className="btn btn-sm"><ShieldCheck className="h-3.5 w-3.5" aria-hidden /> Go to scan <ArrowRight className="h-3.5 w-3.5" aria-hidden /></Link>
               <button onClick={printCard} disabled={busy !== null} className="btn-outline btn-sm"><Printer className="h-3.5 w-3.5" aria-hidden /> Print card with QR (SVG)</button>
-              {txs.mint && <Link href={`/p/${form.serial}`} className="link text-sm">View passport</Link>}
+              {txs.mint && serialOk && <Link href={passportPath(serial)} className="link text-sm">View passport</Link>}
             </div>
             {errorAt("scan")}
           </section>

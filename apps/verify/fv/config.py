@@ -81,6 +81,7 @@ class Settings:
     trusted_proxy_hops: int = 1                            # FV_TRUSTED_PROXY_HOPS — proxies in front of the app (X-Forwarded-For)
     max_json_body: int = 64 * 1024                         # FV_MAX_JSON_BODY — request body limit in bytes (not /api/media)
     build_sha: str = ""                                    # FV_BUILD_SHA (or RAILWAY_GIT_COMMIT_SHA) — commit shown by GET /health
+    media_retention_s: int = 7 * 86400                     # FV_MEDIA_RETENTION_S — kept media no scan references is deleted after this (0 = never)
 
     def __post_init__(self) -> None:
         self.key_mode = self.key_mode.strip().lower()
@@ -117,6 +118,8 @@ class Settings:
             if int(getattr(self, name)) < 1:
                 raise ValueError(f"FV_{name.upper()} must be a positive integer")
         self.build_sha = (self.build_sha or "").strip()[:40]
+        if int(self.media_retention_s) < 0:
+            raise ValueError("FV_MEDIA_RETENTION_S must be 0 (keep forever) or a positive number of seconds")
 
     @property
     def solana_rpc_public(self) -> str:
@@ -244,4 +247,5 @@ def settings_from_env() -> Settings:
         trusted_proxy_hops=int(e("FV_TRUSTED_PROXY_HOPS") or 1),
         max_json_body=int(e("FV_MAX_JSON_BODY") or 64 * 1024),
         build_sha=e("FV_BUILD_SHA") or e("RAILWAY_GIT_COMMIT_SHA") or "",
+        media_retention_s=int(e("FV_MEDIA_RETENTION_S") or 7 * 86400),
     )

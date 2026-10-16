@@ -356,7 +356,8 @@ async def media(request: Request, conn=Depends(get_conn), settings: Settings = D
     Content-Length before anything is read, together with the free space and the byte budgets (fv.media_store: 507
     storage_full · 429 media_limited · 503 media_busy). The upload is only *staged* under its nonce: it is kept when a
     VALID /api/verify consumes that nonce with this mediaHash, and deleted otherwise once the nonce has expired. Nothing
-    is archived to Arweave here (that happens when the scan is confirmed).
+    is archived to Arweave here: the reconcile job's archiving queue does that once the scan is confirmed, and its media
+    retention deletes kept frames no scan references any more (FV_MEDIA_RETENTION_S).
     """
     cl = request.headers.get("content-length")
     if cl is None or not cl.isdigit():
@@ -748,6 +749,10 @@ def events(body: EventBody, request: Request, conn=Depends(get_conn), settings: 
                                        asset=payload.get("asset"), issuer=actor,
                                        issuer_label=payload.get("issuerLabel") or actor_label, grade=Grade.A, void=False,
                                        created_at=ts)
+            # the event shows the names the passport keeps: for an existing passport (e.g. one a purge left without a
+            # MINT) never the poster's brand/name/batch, which upsert_passport did not apply either
+            payload = {k: v for k, v in payload.items() if k not in ("brand", "name", "batch")}
+            payload.update({k: passport[k] for k in ("brand", "name", "batch") if passport.get(k)})
             if existing:
                 return event_view(_settle_existing(conn, existing, payload, tx_sig, actor))
         if not passport:

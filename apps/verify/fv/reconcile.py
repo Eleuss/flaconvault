@@ -12,13 +12,19 @@ Reconcile job (briefing §10). One cycle:
   2. Other pending events (no ScanProof can confirm them) → failed after FV_RECONCILE_TIMEOUT_S, so they never block
      the chain refresh of their passport.
   3. Passport/Seal PDAs refresh grade/void and last_counter/dead (once nothing is pending for that passport and the chain
-     has recorded a scan or a void). Nothing sticky is ever lowered: void and dead are OR-ed, the grade is the worse of DB
-     and chain, counters only rise (the simulator tag follows a raised seal counter).
+     has recorded a scan or a void). The grade follows record_scan's rule (proof.passport_from_chain): VOID and C are
+     sticky on either side, otherwise the chain's A/B/D wins — unless the account shows fewer scans than the database
+     has confirmed on chain (a lagging RPC read), which keeps the database's A/B/D. Void and dead are OR-ed, counters
+     only rise (the simulator tag follows a raised seal counter).
   4. Registry partners → attesters.is_partner (the decoded registry is cached in chain_state); escrow Order accounts →
      escrow_orders → attesters.escrows_ok / escrows_disputed.
   5. Arweave: the archiving queue (arweave.backfill) — confirmed scans whose bundle or media is not archived yet, a
      bounded number per cycle, a failing row retried later without blocking the others, nothing while in backoff.
-     This is the only place uploads happen; a confirm request never waits for the Irys sidecar.
+     This is the only place uploads happen; a confirm request never waits for the Irys sidecar. Per scan the media
+     is archived first (arweave.archive_scan), then its link is copied to ar_media, then the bundle is uploaded.
+  6. Media retention (media_store.retention, also without FV_PROGRAM_ID): staged uploads of expired / consumed session
+     nonces, and — after FV_MEDIA_RETENTION_S (default 7 days, 0 = never) — kept blobs that no pending, confirmed or
+     still recoverable failed scan references, plus blob files without a media row.
 
 All RPC reads happen before the write transaction (a slow RPC must never hold the SQLite write lock).
 """
@@ -28,14 +34,13 @@ import json
 import logging
 import time
 
-from fv import arweave, proof
+from fv import arweave, media_store, proof
 from fv.chain import (ORDER_LEN, DecodeError, Rpc, RpcError, decode_order, decode_passport, decode_registry, decode_scan_proof,
                       decode_seal, pda_passport, pda_registry, pda_scan, pda_seal, program_pubkey)
 from fv.config import Settings
-from fv.db import (Database, all_passports, all_seals, get_event, has_pending_events, scan_events_to_reconcile, set_chain_state,
-                   stale_pending_events, sync_escrow_counters, sync_registry_partners, transaction, update_event_payload,
-                   upsert_escrow_order)
-from fv.enums import Grade
+from fv.db import (Database, all_passports, all_seals, get_event, has_pending_events, onchain_scan_count, scan_events_to_reconcile,
+                   set_chain_state, stale_pending_events, sync_escrow_counters, sync_registry_partners, transaction,
+                   update_event_payload, upsert_escrow_order)
 from fv.service import apply_confirmed_scan
 from fv.txverify import IX_ACCOUNTS, TxRejected, anchor_discriminator, parse_transaction
 
@@ -149,7 +154,7 @@ def _confirm_scan(conn, ev: dict, payload: dict, rec: dict, acct: dict, scan_pda
     # for a recovered failed scan, the verified creating signature found on chain — or none: the client's failed tx is
     # never kept as the signature of a confirmed scan (the client may fill in the real one later, _confirm_event)
     conn.execute(
-        f"""UPDATE events SET status='confirmed', actor_pubkey=?, actor_label=?,
+        f"""UPDATE events SET status='confirmed', actor_pubkey=?, actor_label=?, resume_hash=NULL,
               tx_sig={'?' if ev['status'] == 'failed' else 'COALESCE(tx_sig, ?)'} WHERE id=?""",
         (acct["attester"], label["label"] if label else None, tx_sig, ev["id"]))
     update_event_payload(conn, ev["id"], new_payload)
@@ -166,9 +171,11 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
     """
     ts = ts if ts is not None else now()
     summary = {"checked": 0, "confirmed": 0, "recovered": 0, "failed": 0, "pending": 0, "mismatched": 0, "ignoredAccounts": 0,
-               "refreshed": {"passports": 0, "seals": 0}, "registry": None, "escrow": None, "arweave": None,
+               "refreshed": {"passports": 0, "seals": 0}, "registry": None, "escrow": None, "arweave": None, "media": None,
                "enabled": bool(settings.program_id)}
     if not settings.program_id:
+        with db.connect() as conn:
+            summary["media"] = _media_retention(conn, settings, ts)
         return summary
     pid = program_pubkey(settings.program_id)
 
@@ -266,9 +273,11 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
                 cur = conn.execute("SELECT grade, void FROM passports WHERE serial=?", (p["serial"],)).fetchone()
                 if not cur:
                     continue
-                # void is sticky: MAX(db, chain); a VOID grade on chain counts as void (record_scan: Passport::is_voided)
-                new_void = bool(cur["void"]) or bool(c["void"]) or int(c["grade"]) >= Grade.VOID
-                new_grade = Grade.VOID if new_void else max(int(cur["grade"]), int(c["grade"]))   # the worse grade wins
+                # VOID and C are sticky on either side (a VOID grade on chain counts as void: Passport::is_voided);
+                # otherwise the chain's A/B/D wins unless this read lags behind the scans the DB has confirmed on chain
+                current = int(c["scanCount"]) >= onchain_scan_count(conn, p["serial"])
+                new_grade, new_void = proof.passport_from_chain(int(cur["grade"]), bool(cur["void"]), int(c["grade"]),
+                                                                bool(c["void"]), chain_current=current)
                 if new_grade != int(cur["grade"]) or new_void != bool(cur["void"]):
                     conn.execute("UPDATE passports SET grade=?, void=? WHERE serial=?", (new_grade, int(new_void), p["serial"]))
                     summary["refreshed"]["passports"] += 1
@@ -321,4 +330,15 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
         # ---- 4. Arweave (sidecar subprocess) after the commit: the queue, newly confirmed scans included ----
         if arweave.enabled(settings):
             summary["arweave"] = arweave.backfill(conn, settings, now_ts=ts)
+        # ---- 5. media retention (after archiving: a confirmed scan's media is referenced and always kept) ----
+        summary["media"] = _media_retention(conn, settings, ts)
     return summary
+
+
+def _media_retention(conn, settings: Settings, ts: int) -> dict | None:
+    """media_store.retention; a failed scan inside FAILED_RECHECK_S still counts as a reference. Never aborts a cycle."""
+    try:
+        return media_store.retention(conn, settings, ts, failed_since=ts - FAILED_RECHECK_S)
+    except Exception:  # noqa: BLE001 — disk or DB trouble: the next cycle tries again
+        log.exception("reconcile: media retention failed")
+        return None

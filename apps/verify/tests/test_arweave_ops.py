@@ -178,3 +178,59 @@ def test_reconcile_backfills_media_and_bundles(chain_client, settings, monkeypat
     n = len(sidecar.calls)
     c.post("/api/reconcile", headers=ADMIN)
     assert len(sidecar.calls) == n                                   # nothing left to archive
+
+
+def test_archive_scan_event_archives_the_media_before_copying_ar_media(chain_client, settings, monkeypatch):
+    """A newly confirmed scan: its media is uploaded first, so ar_media is never copied from a row without a link."""
+    c = chain_client
+    frames = [b"\xff\xd8first" * 40, b"\xff\xd8second" * 40]
+    nonce = c.post("/api/session", json={}).json()["nonce"]
+    m = post_media(c, files=[("files", (f"f{i}.jpg", io.BytesIO(b), "image/jpeg")) for i, b in enumerate(frames)],
+                   nonce=nonce).json()
+    tag = c.post("/api/dev/tag", json={"serial": SERIAL, "kind": 1}).json()
+    v = _scan(c, tag["uid"], mediaHash=m["sha256"], nonce=nonce)
+    settings.arweave, settings.irys_key = True, "default"
+    sidecar = Sidecar()
+    monkeypatch.setattr(aw, "_run_sidecar", sidecar)
+    with c.app.state.db.connect() as conn:
+        conn.execute("UPDATE events SET status='confirmed' WHERE id=?", (v["eventId"],))
+        ev = dict(conn.execute("SELECT * FROM events WHERE id=?", (v["eventId"],)).fetchone())
+        assert ev["ar_media"] is None
+        ar_bundle, ar_media = aw.archive_scan_event(conn, settings, ev)
+        row = conn.execute("SELECT ar, url, ar_preview FROM media WHERE sha256=?", (m["sha256"][2:],)).fetchone()
+        stored = conn.execute("SELECT ar_bundle, ar_media FROM events WHERE id=?", (v["eventId"],)).fetchone()
+    kinds = [dict(a.split("=", 1) for i, a in enumerate(args) if i and args[i - 1] == "--tag").get("App-Type")
+             for args in sidecar.calls]
+    assert kinds == ["seal-frames", "seal-frame-preview", "scanproof-bundle"]          # media first, then the bundle
+    assert row["ar"] and ar_media == row["ar_preview"] and ar_bundle.startswith("ar://")
+    assert tuple(stored) == (ar_bundle, ar_media)
+    n = len(sidecar.calls)
+    with c.app.state.db.connect() as conn:                                            # idempotent: nothing uploaded twice
+        ev = dict(conn.execute("SELECT * FROM events WHERE id=?", (v["eventId"],)).fetchone())
+        assert aw.archive_scan_event(conn, settings, ev) == (ar_bundle, ar_media)
+    assert len(sidecar.calls) == n
+
+
+def test_health_reports_arweave_status_without_paths_or_keys(settings, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from fv.main import create_app
+    missing = tmp_path / "secret-dir" / "irys-key.json"
+    settings.arweave, settings.irys_key = True, str(missing)
+    with TestClient(create_app(settings)) as c:
+        text = c.get("/health").text
+        full = c.get("/api/admin/status", headers=ADMIN).json()["arweave"]
+    h = json.loads(text)["arweave"]
+    assert h["enabled"] is True and h["ok"] is False and h["problem"] == "key_file_missing"
+    assert str(missing) not in text and "secret-dir" not in text
+    assert "lastError" not in h and "address" not in json.dumps(h)
+    assert str(missing) in full["problem"]                                             # the operator view keeps the text
+    settings.irys_key, settings.irys_key_json = "", KEYPAIR
+    monkeypatch.setattr(aw, "UPLOAD_SCRIPT", tmp_path / "nowhere" / "upload.mjs")
+    with TestClient(create_app(settings)) as c:
+        text = c.get("/health").text
+    assert json.loads(text)["arweave"]["problem"] == "sidecar_missing"
+    assert KEYPAIR not in text and "nowhere" not in text
+    for code, setup in (("key_missing", {"irys_key": "", "irys_key_json": ""}), ("key_invalid", {"irys_key_json": "[1, 2]"})):
+        for k, val in setup.items():
+            setattr(settings, k, val)
+        assert aw.health(settings)["problem"] == code

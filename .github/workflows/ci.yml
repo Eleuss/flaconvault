@@ -4,8 +4,10 @@ name: CI
 # vectors), web typecheck + lint + unit tests + production build, the validator-free mocha suites (web escrow rules,
 # ops-script helpers), verifier pytest, the verifier Docker image (build + start + /health), and the program unit tests.
 # The Anchor integration tests need a local validator and take long: run them by hand
-# (Actions -> CI -> Run workflow, "anchor" ticked). The IDL drift check runs in programs.yml whenever programs/ or the
-# committed IDLs change.
+# (Actions -> CI -> Run workflow, "anchor" ticked); that job also runs the escrow's LiteSVM time-travel tests
+# (scripts/test-escrow-time-travel.sh), which `cargo test -p escrow` lists as ignored. The IDL drift check runs in
+# programs.yml whenever programs/ or the committed IDLs change. CI deploys nothing: Vercel and Railway are not connected
+# to GitHub, and both services are deployed by hand (docs/deploy.md, Deploying).
 on:
   push:
     branches: [main]
@@ -160,5 +162,11 @@ jobs:
           anchor build
           bash .github/scripts/idl-check.sh
           anchor keys sync
+      # The escrow's window branches (seller never ships, buyer never scans) under a Clock override: LiteSVM cannot load
+      # the SBPF v3 binary `anchor build` writes, so the script builds the same source for SBPF v2 into target/sbf-v2
+      # (cargo build-sbf from the Solana CLI installed above) and runs the ignored time_travel tests against it. The
+      # test loads the program at escrow::ID, so the keys synced above are fine.
+      - name: escrow time-travel tests (LiteSVM)
+        run: bash scripts/test-escrow-time-travel.sh
       # Anchor.toml clones Metaplex Core from devnet into the local validator (read-only, needs network).
       - run: anchor test --validator legacy

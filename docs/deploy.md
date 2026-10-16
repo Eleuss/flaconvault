@@ -7,6 +7,9 @@ Two services:
 
 Stickers point at the web domain's `/t`; the web app forwards each tap once to the verifier.
 
+Neither service is connected to GitHub: pushing to `main` runs CI and deploys nothing. Both are deployed by hand from a
+commit that passed CI (see [Deploying](#deploying)).
+
 The hackathon deployment runs at https://app.flaconvault.com (web) and https://verify.flaconvault.com (verifier), against Solana devnet. Stickers written earlier with `https://flaconvault.vercel.app/t` keep working: that host redirects permanently to `NEXT_PUBLIC_CANONICAL_ORIGIN` (`apps/web/src/middleware.ts`).
 
 ## Production rules
@@ -35,27 +38,36 @@ Read these before setting any variable.
 | `FV_MASTER_KEY` | **secret**, 16 bytes hex | the SDM master key the stickers were programmed with; never all zeros, never a key used for local development |
 | `FV_SERVER_ED25519_SEED` | **secret**, 32 bytes hex | production-only seed, e.g. `python3 -c "import secrets; print(secrets.token_hex(32))"`; `GET /health` shows its public key |
 | `FV_SERVER_KEY_ID` | the key id registered for that public key | must match the on-chain registry entry |
-| `FV_ADMIN_TOKEN` | **secret**, e.g. `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` | `x-admin-token` for `POST /api/reconcile`, `GET /api/admin/status`, `POST /api/admin/purge-seed` and `POST /api/dev/reset`. Empty disables reconcile and the admin endpoints, but leaves `POST /api/dev/reset` (simulator only: it wipes and reseeds the database) open to anyone, so set a token on every reachable simulator deployment, a tunnelled local verifier included |
-| `FV_BUILD_SHA` | unset with Git deploys; `git rev-parse HEAD` for a CLI deploy | shown as `build` by `GET /health`. Railway's Git deploys set `RAILWAY_GIT_COMMIT_SHA`, which the verifier uses when `FV_BUILD_SHA` is unset; a `railway up` from the CLI sets neither, so set `FV_BUILD_SHA` before every CLI deploy (see Deploying). It takes precedence over `RAILWAY_GIT_COMMIT_SHA`: delete it from the service variables when you switch to Git deploys |
+| `FV_ADMIN_TOKEN` | **secret**, e.g. `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` | `x-admin-token` for `POST /api/reconcile`, `GET /api/admin/status`, `POST /api/admin/purge-seed` and `POST /api/dev/reset` (simulator only: it wipes and reseeds the database). While it is empty all of them answer 403, the reset included; the background reconcile loop runs anyway |
+| `FV_BUILD_SHA` | `git rev-parse HEAD` of the deployed commit, set before every deploy | shown as `build` by `GET /health`. A `railway up` upload carries no commit, so set it right before each `railway up` (see Deploying). `RAILWAY_GIT_COMMIT_SHA` (set only by Railway's GitHub deploys, which this project does not use) counts only while `FV_BUILD_SHA` is unset |
 | `FV_NONCE_TTL_S` | `90` | scan session lifetime |
-| `FV_RATE_LIMIT_PER_MIN` | `60` (default) | per-IP request budget for the POST routes, `GET /t` and the resume `GET /api/verify/<id>` (429 `rate_limited`) |
-| `FV_REPORT_LIMIT_PER_HOUR` | `3` (default) | unverified SEAL_DEAD reports per IP and hour (429 `report_limited`) |
+| `FV_RATE_LIMIT_PER_MIN` | `60` (default) | per-client (IPv4 address, IPv6 /64) request budget for every POST route, `GET /t` and the resume `GET /api/verify/<id>` (429 `rate_limited`) |
+| `FV_REPORT_LIMIT_PER_HOUR` | `3` (default) | unverified SEAL_DEAD reports per client and hour (429 `report_limited`) |
 | `FV_TRUSTED_PROXY_HOPS` | `1` (default) | Railway's edge is one proxy; the client IP comes from `X-Forwarded-For` only behind it |
-| `FV_MAX_JSON_BODY` | `65536` (default) | request body limit for everything except `POST /api/media` |
+| `FV_MAX_JSON_BODY` | `65536` (default) | request body limit in bytes for every route and method except `POST /api/media` (413 `request_too_large`) |
+| `FV_MEDIA_MIN_FREE_BYTES` | `268435456` (default, 256 MiB) | `POST /api/media` refuses uploads that would leave less free space on the `/data` volume, which also holds the database (507 `storage_full`) |
+| `FV_MEDIA_MAX_BYTES_PER_IP_DAY` | `209715200` (default, 200 MiB) | upload bytes per client and 24 h (429 `media_limited`) |
+| `FV_MEDIA_MAX_BYTES_PER_HOUR` | `2147483648` (default, 2 GiB) | upload bytes for the whole verifier per hour (503 `media_busy`) |
+| `FV_MEDIA_RETENTION_S` | `604800` (default, 7 days) | the reconcile job deletes kept seal frames that no pending, confirmed or still recoverable failed scan references after this long; `0` keeps them forever. Staged uploads go once their session nonce has expired |
 | `FV_SOLANA_RPC` | `https://api.devnet.solana.com` | a dedicated RPC endpoint is better: the public one rate-limits |
 | `FV_PROGRAM_ID` | `7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL` | flacon program, `docs/devnet.md` |
 | `FV_ESCROW_PROGRAM_ID` | `9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL` | escrow program (this is also the default) |
 | `FV_SEED_DEMO` | `false` | default `false` (rule 5) |
 | `FV_SEED_PATH` | default | keep the default (rule 5) |
+| `FV_ALLOW_SIM_WITH_REAL_KEYS` | `false` | default `false`; only for tests against a local validator (the startup check refuses it with a program id on a shared cluster) |
+| `FV_SDM_LRP` | `false` | default `false`; the stickers are AES, 24-byte (LRP) input is refused |
 | `FV_WEB_URL` | `https://app.flaconvault.com` | redirect target of `/t` |
 | `FV_VERIFIER_HOST` | `https://verify.flaconvault.com` | the verifier's own public URL |
 | `FV_CORS_ORIGINS` | `https://app.flaconvault.com` | comma-separated web origins; no `localhost` |
 | `FV_RECONCILE_INTERVAL_S` | `60` | `0` disables the background reconcile loop |
 | `FV_RECONCILE_TIMEOUT_S` | `600` | a pending scan without its ScanProof account after this many seconds becomes `failed` |
-| `FV_ARWEAVE` | `false` | `true` only with a funded Irys key; failures are logged as errors and reported by `GET /health` (`arweave`) and `GET /api/admin/status`, and the reconcile job backfills what failed |
+| `FV_ARWEAVE` | `false` | `true` only with a funded Irys key; failures are logged as errors and reported by `GET /health` (`arweave`: status flags and short codes only) and `GET /api/admin/status` (full detail), and the reconcile job's archiving queue retries what failed (media first, then the bundle) |
 | `FV_IRYS_KEY_JSON` | **secret**, only with `FV_ARWEAVE=true` | a separate Solana keypair (64-number JSON array) used only to pay Irys, never the deploy wallet |
+| `FV_IRYS_KEY` | unset | a key file path for local runs; hosted deployments use `FV_IRYS_KEY_JSON` |
 | `FV_IRYS_NETWORK` | `devnet` | Irys devnet uploads are pruned after about 60 days |
-| `PORT` | set by Railway | the Dockerfile honours it |
+| `FV_ARWEAVE_TIMEOUT_S` | `60` (default) | Irys sidecar timeout per upload |
+| `FV_DB_PATH`, `FV_MEDIA_DIR`, `FV_NODE_BIN` | set by the image | `/data/flaconvault.db`, `/data/media`, `/usr/local/bin/node` (`Dockerfile.verify`) |
+| `PORT` | set by Railway | the Dockerfile honours it (`FV_PORT` is not used in the container) |
 
 ## Web app (Vercel)
 
@@ -72,11 +84,12 @@ Read these before setting any variable.
 | `NEXT_PUBLIC_PROGRAM_ID` | `7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL` | |
 | `NEXT_PUBLIC_ESCROW_PROGRAM_ID` | `9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL` | |
 | `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | Reown Cloud project id | optional; enables the WalletConnect entry (sign from Safari on iPhone) |
+| `NEXT_PUBLIC_ESCROW_ADMIN_CONTACT` | a `mailto:` address or an `https://` link of the escrow admin | set it in production. The order page shows it as "Contact the escrow admin" when a buyer needs the admin (non-delivery, a dead seal after shipping, disagreeing scans; see `programs/README.md`, escrow admin duties); a `mailto:` gets the order as subject. Any other value is ignored, and without it the page shows the admin wallet only |
 | `NEXT_PUBLIC_DEV_SIMULATOR` | `false` | `true` only for a demo deployment: it enables the demo tools (dev wallets, burner, airdrop, test images, simulator UI), which then still need demo mode in the browser (`apps/web/src/lib/demo.ts`; any visitor can switch it on for their own browser with `/dev?demo=1`, so only `false` removes them). The dev wallets keep their secret keys in the browser's `localStorage`: never register them as partners or fund them with anything of value. |
 
 ## After both are up
 
-1. `curl -s https://verify.flaconvault.com/health` shows `"ok": true`, `"simulator": false`, the program id, the deployed commit (`build`; `null` after a `railway up` without `FV_BUILD_SHA`, so compare it with the commit that passed CI), the Arweave status, and a `pubkeyHex` equal to the on-chain server key with the same `keyId` (`curl -s https://verify.flaconvault.com/api/registry`).
+1. `curl -s https://verify.flaconvault.com/health` shows `"ok": true`, `"simulator": false`, the program id, the deployed commit (`build`; `null` after a `railway up` without `FV_BUILD_SHA`, and the previous commit if it was not updated before the upload, so compare it with the commit you deployed), the Arweave status, and a `pubkeyHex` equal to the on-chain server key with the same `keyId` (`curl -s https://verify.flaconvault.com/api/registry`).
 2. `curl -s -o /dev/null -w '%{http_code}\n' https://verify.flaconvault.com/api/dev/tags` prints `404` (simulator off).
 3. `curl -s -D - -o /dev/null -H 'Origin: http://localhost:3000' https://verify.flaconvault.com/health | grep -i access-control-allow-origin` prints nothing (localhost is not an allowed origin).
 4. Tap a real sticker (iPhone: background NFC opens Safari): `/t` shows "Seal genuine · Tap N". For the replay check, read the sticker with an NFC reader app (NFC Tools, TagInfo), copy its tap URL (`…/t?picc_data=…&cmac=…`) and open it twice: the second time shows "Repeated tap". Reopening the result page (`/t?tap=…`) only shows the stored result again.
@@ -95,18 +108,38 @@ curl -s "$H/api/admin/status" -H "x-admin-token: $FV_ADMIN_TOKEN"               
 
 Rows with real on-chain evidence are kept; `apps/verify/README.md` describes the rules. `replayedOnChain` in the answer lists seed signatures somebody anchored: retire those seals on chain (`docs/devnet.md`, Upgrading devnet).
 
+Run it again (dry run first) after deploying a build whose purge changed, and check `mintFromChain` in the report: a kept on-chain seed passport whose MINT an older purge build removed gets its MINT rebuilt from chain there. The startup log warns while seed rows remain.
+
 ## Deploying
 
-Deploy from a clean checkout of a commit that passed CI (`.github/workflows/ci.yml`), so the running code equals a commit on GitHub. The Vercel and Railway Git integrations (deploy on push to `main`) do this automatically; the CLIs upload the local working tree, including uncommitted changes.
+Vercel and Railway are **not** connected to GitHub: a push to `main` runs CI and deploys nothing, and nothing else deploys automatically. Both services are deployed by hand, from a commit that passed CI (`.github/workflows/ci.yml`), so the running code equals a commit on GitHub. Both CLIs upload files from disk, uncommitted changes included, so deploy from a clean tree of that commit, from the repo root:
 
 ```bash
-vercel --prod                                   # web, from the repo root (project linked in .vercel/)
-vercel env add NAME production                  # change a web variable (value from stdin), then redeploy
-railway variables --service <service> --skip-deploys --set FV_BUILD_SHA=$(git rev-parse HEAD)   # CLI deploys: the commit for /health
-railway up --service <service>                  # verifier, from the repo root
-railway variables --service <service> --set K=V # change a verifier variable (triggers a redeploy)
-railway logs --service <service>                # verifier logs
+git status --short                              # must print nothing: the upload is the working tree
+SHA=$(git rev-parse HEAD)                       # a commit that passed CI
+
+# web (Vercel): deploy a git archive export of the commit
+D=$(mktemp -d)/flaconvault && mkdir -p "$D"
+git archive "$SHA" | tar -x -C "$D"
+cp -R .vercel "$D/"                             # the project link is not in git; without it `--yes` links by folder name
+vercel --cwd "$D" --prod --yes
+
+# verifier (Railway): record the commit for /health, then upload the tree (builds Dockerfile.verify, railway.json)
+railway variable set FV_BUILD_SHA="$SHA" --service verify --skip-deploys
+railway up --service verify --detach --ci       # --detach returns after the upload; it does not wait for the build
+railway logs --service verify --build           # build output; without --build: the runtime logs (startup refusals)
+# waits until /health reports $SHA (the old deployment answers until then), then checks ok, key and simulator off
+python3 .github/scripts/check-health.py https://verify.flaconvault.com --build "$SHA" --simulator false --wait-for-build --timeout 900
 ```
+
+Changing variables:
+
+```bash
+vercel env add NAME production                  # web (value from stdin), then deploy again as above
+railway variable set K=V --service verify       # verifier: triggers a redeploy of the current deployment
+```
+
+When the programs change too, deploy web and verifier first and upgrade the programs right after: see [`devnet.md`](devnet.md#upgrading-devnet), step 0.
 
 ## Custom domains
 

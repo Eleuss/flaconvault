@@ -1,16 +1,20 @@
-"""Simulator (/api/dev/*) — only when FV_DEV_SIMULATOR=true, otherwise every route is 404."""
+"""
+Simulator (/api/dev/*) — only when FV_DEV_SIMULATOR=true, otherwise every route is 404. Every POST is rate-limited per
+client (FV_RATE_LIMIT_PER_MIN). POST /api/dev/reset wipes and reseeds the database: it always needs x-admin-token =
+FV_ADMIN_TOKEN (403 while the token is unset or wrong), also on a local dev box.
+"""
 from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from fv import proof
 from fv.config import Settings
 from fv.db import (get_passport, get_seal_by_uid, get_sim_tag, insert_tap, list_sim_tags, now, transaction,
                    update_sim_tag, upsert_seal, upsert_sim_tag)
-from fv.deps import admin_token_ok, get_conn, get_db, get_settings
+from fv.deps import get_conn, get_db, get_settings, require_admin
 from fv.ratelimit import rate_limit
 from fv.enums import NO_RESPONSE, SealKind
 from fv.sdm import TagParamError, ctr_hex, key_for_uid, parse_uid, sdm_cmac, tag_url
@@ -108,9 +112,7 @@ def tags(conn=Depends(get_conn)):
     return [sim_tag_view(t, get_seal_by_uid(conn, t["uid_hex"])) for t in list_sim_tags(conn)]
 
 
-@router.post("/reset", dependencies=[Depends(rate_limit)])
-def reset(request: Request, db=Depends(get_db), settings: Settings = Depends(get_settings)):
-    if settings.admin_token and not admin_token_ok(settings, request.headers.get("x-admin-token")):
-        raise HTTPException(403, "admin token required")
+@router.post("/reset", dependencies=[Depends(rate_limit), Depends(require_admin)])
+def reset(db=Depends(get_db), settings: Settings = Depends(get_settings)):
     counts = run_seed(db, settings, wipe=True)
     return {"ok": True, "seeded": counts}

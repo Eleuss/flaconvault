@@ -72,7 +72,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     log.exception("arweave probe failed")
             try:
                 summary = await asyncio.to_thread(reconcile_once, db, settings, app.state.rpc)
-                if summary["checked"] or summary["failed"] or summary["refreshed"]["passports"] or summary["refreshed"]["seals"]:
+                media = summary.get("media") or {}
+                if (summary["checked"] or summary["failed"] or summary["refreshed"]["passports"] or summary["refreshed"]["seals"]
+                        or media.get("rows") or media.get("files")):
                     log.info("reconcile: %s", summary)
             except Exception:  # noqa: BLE001 — keep the loop alive (validator down, RPC error, …)
                 log.exception("reconcile cycle failed")
@@ -125,9 +127,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.db = db
     app.state.rpc = Rpc(settings.solana_rpc)
+    # The body limit runs before routing and any body parsing (every route except POST /api/media); CORS is added last,
+    # so it is the outermost layer and its headers reach the 413 too (otherwise a browser cannot read the error code).
+    app.add_middleware(BodySizeLimit, max_bytes=settings.max_json_body)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
                        allow_methods=["*"], allow_headers=["*"])
-    app.add_middleware(BodySizeLimit, max_bytes=settings.max_json_body)   # outermost: refuses before anything is parsed
     app.include_router(routes_api.router)
     app.include_router(routes_tag.router)
     app.include_router(routes_chain.router)

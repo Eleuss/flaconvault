@@ -6,7 +6,9 @@ Reconcile job (briefing §10). One cycle:
      ScanProof → confirmed: fields compared (mismatches recorded under payload.reconcile), actor, label, tier, role and
      site taken from the on-chain proof (payload.chain). Anything else at that address — no data (a plain SOL transfer
      to the PDA), a foreign account, a proof for another seal/counter — counts as "not created" and never aborts the
-     cycle. A pending SCAN without a ScanProof after FV_RECONCILE_TIMEOUT_S → failed.
+     cycle. A pending SCAN without a ScanProof after FV_RECONCILE_TIMEOUT_S → failed. The tx_sig stored with a
+     confirmation is the record_scan that created the ScanProof (creating_signature: checked with getTransaction), never
+     merely the oldest signature on the PDA — that can be a transfer that pre-funded it; none qualifies → no tx_sig.
   2. Other pending events (no ScanProof can confirm them) → failed after FV_RECONCILE_TIMEOUT_S, so they never block
      the chain refresh of their passport.
   3. Passport/Seal PDAs refresh grade/void and last_counter/dead (once nothing is pending for that passport and the chain
@@ -33,11 +35,55 @@ from fv.db import (Database, all_passports, all_seals, get_event, has_pending_ev
                    upsert_escrow_order)
 from fv.enums import Grade
 from fv.service import apply_confirmed_scan
+from fv.txverify import IX_ACCOUNTS, TxRejected, anchor_discriminator, parse_transaction
 
 log = logging.getLogger("fv.reconcile")
 
 FAILED_RECHECK_S = 24 * 3600     # a failed SCAN is re-checked against its ScanProof PDA for this long
-SIGNATURE_LOOKUP_LIMIT = 10      # creating tx = oldest successful of the newest N signatures on the ScanProof PDA
+SIGNATURE_LOOKUP_LIMIT = 50      # newest N successful signatures on an account searched (oldest first) for its creating tx
+
+
+def creating_signature(rpc, address, *, program: str, instruction: str, accounts: dict[str, str], signer: str | None = None,
+                       limit: int = SIGNATURE_LOOKUP_LIMIT) -> str | None:
+    """
+    The signature of the successful transaction that ran `instruction` of `program` with `accounts` ({IDL role: pubkey},
+    e.g. the ScanProof and seal PDA of record_scan) at their IDL positions, signed by the instruction's signer account
+    (and that signer is `signer`, if given). Searched oldest first among the newest `limit` successful signatures that
+    touched `address`, each checked with getTransaction. Anything else that touched the account never qualifies — a SOL
+    transfer that pre-funded the predictable PDA before it was created (Anchor init accepts a funded account), dust sent
+    afterwards, an escrow tx that only read it. None when nothing qualifies (window exhausted, txs unreadable): the
+    caller then stores no tx_sig rather than a wrong one. Raises RpcError when the signature list cannot be read.
+    """
+    disc = anchor_discriminator(instruction)
+    pos = IX_ACCOUNTS[instruction]
+    for s in reversed(rpc.get_signatures_for_address(address, limit=limit)):      # newest first → oldest first
+        try:
+            res = rpc.get_transaction(s)
+        except RpcError as exc:
+            log.warning("creating signature of %s: getTransaction %s… failed: %s", address, s[:12], exc)
+            continue
+        if not isinstance(res, dict) or not isinstance(res.get("meta"), dict):
+            continue
+        try:
+            tx = parse_transaction(res)
+        except (TxRejected, ValueError, TypeError):
+            continue
+        if tx.err is not None or (tx.signatures and s not in tx.signatures):
+            continue
+        for ix in tx.instructions:
+            if ix.program != program or ix.data[:8] != disc:
+                continue
+
+            def at(role: str) -> str | None:
+                i = pos.get(role)
+                return ix.accounts[i] if i is not None and i < len(ix.accounts) else None
+            if any(at(role) != want for role, want in accounts.items()):
+                continue
+            who = at("signer")
+            if who is None or who not in tx.signers or (signer is not None and who != signer):
+                continue
+            return s
+    return None
 
 
 def now() -> int:
@@ -94,10 +140,11 @@ def _confirm_scan(conn, ev: dict, payload: dict, rec: dict, acct: dict, scan_pda
     new_payload = {**payload, "reconcile": rec, "chain": chain}
     label = conn.execute("SELECT label FROM attesters WHERE pubkey=?", (acct["attester"],)).fetchone()
     # the ScanProof's attester is the verified signer of record_scan: actor, label (never the claimed partner's) and,
-    # for a recovered failed scan, the signature found on chain instead of the client's failed one
+    # for a recovered failed scan, the verified creating signature found on chain — or none: the client's failed tx is
+    # never kept as the signature of a confirmed scan (the client may fill in the real one later, _confirm_event)
     conn.execute(
         f"""UPDATE events SET status='confirmed', actor_pubkey=?, actor_label=?,
-              tx_sig={'COALESCE(?, tx_sig)' if ev['status'] == 'failed' else 'COALESCE(tx_sig, ?)'} WHERE id=?""",
+              tx_sig={'?' if ev['status'] == 'failed' else 'COALESCE(tx_sig, ?)'} WHERE id=?""",
         (acct["attester"], label["label"] if label else None, tx_sig, ev["id"]))
     update_event_payload(conn, ev["id"], new_payload)
     # stats, payload.tier/role and payload.confirmed are credited with the on-chain tier/role/site, never with what the
@@ -137,11 +184,12 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
         accounts = rpc.get_multiple_accounts([w[4] for w in work]) if work else []
         proofs = [_scan_proof(data, w[2], w[3]) for w, data in zip(work, accounts)]
         sigs: dict[int, str | None] = {}
-        for (ev, _p, _s, _c, scan_pda), (acct, _why) in zip(work, proofs):
+        for (ev, _p, seal_pda, _c, scan_pda), (acct, _why) in zip(work, proofs):
             if acct is not None and (not ev["tx_sig"] or ev["status"] == "failed"):
-                try:
-                    found = rpc.get_signatures_for_address(scan_pda, limit=SIGNATURE_LOOKUP_LIMIT)
-                    sigs[ev["id"]] = found[-1] if found else None      # newest first → the oldest is the creating tx
+                try:   # the record_scan that created this ScanProof, signed by its attester — never a pre-funding transfer
+                    sigs[ev["id"]] = creating_signature(rpc, scan_pda, program=settings.program_id, instruction="record_scan",
+                                                        accounts={"seal": str(seal_pda), "scan": str(scan_pda)},
+                                                        signer=acct["attester"])
                 except RpcError as exc:
                     log.warning("reconcile: event %s signatures lookup failed: %s", ev["id"], exc)
         datas = rpc.get_multiple_accounts([*p_pdas, *s_pdas, pda_registry(pid)])

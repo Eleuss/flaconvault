@@ -54,6 +54,7 @@ def test_reconcile_transitions(chain_client, monkeypatch):
     rpc.accounts[str(pda1)] = _account_for(v1)
     rpc.accounts[str(pda2)] = _account_for(v2, fill=81)
     rpc.signatures[str(pda1)] = ["5" * 87 + "A"]
+    rpc.scan_tx("5" * 87 + "A", v1, str(SELLER))                 # the record_scan that created pda1 (checked by reconcile)
 
     n_calls = len(rpc.calls)                                   # the startup registry check (simulator on) read the chain once
     s = c.post("/api/reconcile", headers=ADMIN).json()

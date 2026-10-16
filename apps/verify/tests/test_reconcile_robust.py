@@ -74,6 +74,8 @@ def test_failed_scan_anchored_later_is_recovered_with_the_creating_signature(cha
     # anchored after the timeout; the confirm POST was lost. Newest first: an escrow tx touching the proof, then record_scan
     rpc.accounts[_scan_pda(v)] = _account_for(v)
     rpc.signatures[_scan_pda(v)] = ["E" * 88, "R" * 88]
+    rpc.scan_tx("R" * 88, v, v["bundle"]["attester"]["pubkey"])
+    rpc.escrow_tx("E" * 88, "record_pre_ship_scan", SERIAL, v["bundle"]["attester"]["pubkey"], scan_proof=_scan_pda(v))
     s = _reconcile(c)
     assert s["confirmed"] == 1 and s["recovered"] == 1
     e = _event(c, v["eventId"])
@@ -90,6 +92,7 @@ def test_failed_scan_with_the_clients_failed_tx_gets_the_real_signature(chain_cl
         conn.execute("UPDATE events SET status='failed', tx_sig=? WHERE id=?", ("F" * 88, v["eventId"]))
     rpc.accounts[_scan_pda(v)] = _account_for(v)
     rpc.signatures[_scan_pda(v)] = ["G" * 88]
+    rpc.scan_tx("G" * 88, v, v["bundle"]["attester"]["pubkey"])
     assert _reconcile(c)["recovered"] == 1
     assert _event(c, v["eventId"])["txSig"] == "G" * 88
 

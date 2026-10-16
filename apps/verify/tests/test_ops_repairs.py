@@ -298,14 +298,16 @@ def test_a_row_that_keeps_failing_goes_to_the_back_of_the_queue(ar_on, monkeypat
     tag = c.post("/api/dev/tag", json={"serial": SERIAL, "kind": 1}).json()
     bad = _confirmed(c, tag["uid"], "bad", media=False)
     bad_hash = bad["bundleHash"][2:]
-    sidecar = SelectiveSidecar(lambda t: aw.ArweaveError("irys: 400 bad request") if t.get("FV-Bundle-Hash") == bad_hash else None)
+    sidecar = SelectiveSidecar(lambda t: aw.ArweaveError("irys: 400 bad request") if t.get("FV-Bundle-Hash") == bad_hash
+                               else None)
     monkeypatch.setattr(aw, "_run_sidecar", sidecar)
     good = _confirmed(c, tag["uid"], "good", media=False)
     with c.app.state.db.connect() as conn:
         t0 = 1_800_000_000
         assert aw.backfill(conn, settings, limit=1, now_ts=t0)["archived"] == 1            # newest first: good
         assert aw.backfill(conn, settings, limit=5, now_ts=t0)["failed"] == 1              # bad fails, recorded
-        assert conn.execute("SELECT attempts, last_error FROM arweave_queue WHERE event_id=?", (bad["eventId"],)).fetchone()[:] == (1, "upload_failed")
+        q = conn.execute("SELECT attempts, last_error FROM arweave_queue WHERE event_id=?", (bad["eventId"],)).fetchone()
+        assert tuple(q) == (1, "upload_failed")
         assert aw.backfill(conn, settings, limit=5, now_ts=t0 + 1)["attempted"] == 0       # not due yet
     newest = _confirmed(c, tag["uid"], "newest", media=False)
     with c.app.state.db.connect() as conn:
@@ -474,3 +476,44 @@ def test_a_dispute_of_an_order_reconcile_never_saw_counts_for_seller_and_buyer(c
     _dispute(c, sig("ud1"), seller, buyer)            # no escrow_orders row, Order already closed
     _reconcile(c)
     assert _escrow_counts(c, seller) == (0, 1) and _escrow_counts(c, buyer) == (0, 1)
+
+
+def test_a_transfer_an_older_reconcile_build_stored_is_replaced_by_the_verified_record_scan(chain_client):
+    c, rpc = chain_client, chain_client.rpc
+    v = _anchored(c)
+    attester = v["bundle"]["attester"]["pubkey"]
+    _reconcile(c)                                                             # confirmed (no signature found)
+    with c.app.state.db.connect() as conn:                                    # what older builds stored: an unchecked guess
+        conn.execute("""UPDATE events SET tx_sig=?, payload_json=json_remove(payload_json, '$.reconcile.signatureChecked')
+                        WHERE id=?""", (sig("old-guess"), v["eventId"]))
+    _transfer(rpc, sig("old-guess"), _scan_pda(v))
+    # a transfer, a foreign signer or an unknown tx cannot replace it (and keep the 409 contract) ...
+    _transfer(rpc, sig("old-guess-2"), _scan_pda(v))
+    rpc.scan_tx(sig("foreign-2"), v, ATTACKER)
+    for bad in (sig("old-guess-2"), sig("foreign-2")):
+        assert c.post("/api/events", json={"eventId": v["eventId"], "txSig": bad, "actor": attester}).status_code == 409
+    assert c.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("foreign-2"), "actor": ATTACKER}).status_code == 403
+    assert _event(c, v["eventId"])["txSig"] == sig("old-guess")
+    assert c.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("unknown"), "actor": attester}).status_code == 409
+    # ... the scan's own record_scan does, once; afterwards the verified tx is final
+    rpc.scan_tx(sig("the-creator"), v, attester)
+    r = c.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("the-creator"), "actor": attester})
+    assert r.status_code == 200 and r.json()["txSig"] == sig("the-creator")
+    rpc.scan_tx(sig("another"), v, attester)
+    assert c.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("another"), "actor": attester}).status_code == 409
+    assert _event(c, v["eventId"])["txSig"] == sig("the-creator")
+
+
+def test_a_signature_the_client_filled_in_is_final(chain_client):
+    """Confirmed by an older build without a signature; the client fills it in; nothing replaces it afterwards."""
+    c, rpc = chain_client, chain_client.rpc
+    v = _anchored(c)
+    attester = v["bundle"]["attester"]["pubkey"]
+    _reconcile(c)
+    with c.app.state.db.connect() as conn:
+        conn.execute("UPDATE events SET payload_json=json_remove(payload_json, '$.reconcile.signatureChecked') WHERE id=?",
+                     (v["eventId"],))
+    rpc.scan_tx(sig("fill"), v, attester)
+    assert c.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("fill"), "actor": attester}).status_code == 200
+    rpc.scan_tx(sig("fill-2"), v, attester)
+    assert c.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("fill-2"), "actor": attester}).status_code == 409

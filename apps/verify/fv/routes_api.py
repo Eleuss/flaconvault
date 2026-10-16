@@ -880,11 +880,26 @@ def _scan_chain_values(vt: txverify.VerifiedTx, payload: dict) -> dict:
     return chain
 
 
+def _reconcile_chose_signature(ev: dict) -> bool:
+    """
+    A SCAN that an older reconcile build confirmed from its ScanProof (payload.chain + payload.reconcile.scanPda, without
+    reconcile.signatureChecked): that build stored the oldest signature on the PDA unchecked — possibly a SOL transfer
+    that pre-funded it — so its tx_sig may be replaced once by the verified record_scan.
+    """
+    if int(ev["type"]) != EventType.SCAN:
+        return False
+    payload = json.loads(ev["payload_json"] or "{}")
+    rec = payload.get("reconcile") or {}
+    return "chain" in payload and bool(rec.get("scanPda")) and rec.get("signatureChecked") is not True
+
+
 def _confirm_event(event_id: int, tx_sig: str | None, actor: str | None, conn, settings: Settings, rpc,
                    client: str | None = None):
     """
     {eventId, txSig, actor?}: confirm a pending event (normally a SCAN from /api/verify) with its transaction.
-    A confirmed event never changes again: the same txSig again is an idempotent 200, a different one 409.
+    A confirmed event never changes again: the same txSig again is an idempotent 200, a different one 409 — except that
+    a SCAN whose signature an older reconcile build picked unchecked takes the posted tx once, if it verifies as this
+    scan's record_scan by its attester (only one record_scan can create a ScanProof, so that tx is the creator).
     A failed record_scan marks the scan failed only when it was signed by the scan's claimed attester: a scan without
     a claimed attester (e.g. started in a browser without a wallet, to be anchored via the resume link) stays pending
     whatever failing tx a stranger posts for its public PDAs — otherwise anyone could kill its resume link — and the
@@ -893,10 +908,12 @@ def _confirm_event(event_id: int, tx_sig: str | None, actor: str | None, conn, s
     ev = get_event(conn, event_id)
     if not ev:
         raise HTTPException(404, "event not found")
+    repair = False
     if ev["status"] == "confirmed":
         if tx_sig and ev["tx_sig"] == tx_sig:
             return event_view(ev)
-        if not (tx_sig and ev["tx_sig"] is None):
+        repair = bool(tx_sig and ev["tx_sig"]) and _reconcile_chose_signature(ev)
+        if not (tx_sig and (ev["tx_sig"] is None or repair)):
             raise HTTPException(409, "event_confirmed")
         # confirmed by the reconcile job without a signature (lookup failed): the client's tx may fill it in once
         # verified; status and side effects stay as they are
@@ -919,6 +936,8 @@ def _confirm_event(event_id: int, tx_sig: str | None, actor: str | None, conn, s
         vt = txverify.verify_transaction(rpc, tx_sig, actor, exp, client=client)
     except txverify.TxRejected as exc:
         log.info("events: confirm %s with tx %s… rejected (%s) %s", event_id, tx_sig[:12], exc.detail, exc.reason)
+        if repair:
+            raise HTTPException(409, "event_confirmed") from exc   # the stored signature stays
         if exc.detail == "tx_failed" and etype == EventType.SCAN and expected_actor is not None and actor == expected_actor:
             with transaction(conn):
                 conn.execute("UPDATE events SET status='failed', tx_sig=? WHERE id=? AND status='pending'", (tx_sig, event_id))
@@ -926,16 +945,26 @@ def _confirm_event(event_id: int, tx_sig: str | None, actor: str | None, conn, s
     if etype == EventType.SCAN:
         args = vt.args
         if vt.account("signer") != actor or (args is not None and args.get("counter") != counter):
+            if repair:
+                raise HTTPException(409, "event_confirmed")
             raise HTTPException(403, "tx_mismatch")   # the attester is record_scan's signer account; same counter
 
     ts = now()
     with transaction(conn):
         cur = get_event(conn, event_id)
         if cur["status"] == "confirmed":            # already confirmed (reconcile job / a parallel request)
-            if cur["tx_sig"] is None:
-                conn.execute("UPDATE events SET tx_sig=? WHERE id=? AND tx_sig IS NULL", (tx_sig, event_id))
+            if cur["tx_sig"] is None:              # (a verified tx: never replaced afterwards)
+                conn.execute("""UPDATE events SET tx_sig=?, payload_json=CASE
+                                  WHEN json_extract(payload_json, '$.reconcile.scanPda') IS NOT NULL
+                                  THEN json_set(payload_json, '$.reconcile.signatureChecked', json('true')) ELSE payload_json END
+                                WHERE id=? AND tx_sig IS NULL""", (tx_sig, event_id))
             elif cur["tx_sig"] != tx_sig:
-                raise HTTPException(409, "event_confirmed")
+                if not (repair and _reconcile_chose_signature(cur)):
+                    raise HTTPException(409, "event_confirmed")
+                log.warning("events: scan %s: reconcile-chosen tx %s… replaced by the verified record_scan %s…", event_id,
+                            cur["tx_sig"][:12], tx_sig[:12])
+                conn.execute("""UPDATE events SET tx_sig=?, payload_json=json_set(payload_json, '$.reconcile.signatureChecked',
+                                json('true')) WHERE id=? AND tx_sig=?""", (tx_sig, event_id, cur["tx_sig"]))
             return event_view(get_event(conn, event_id))  # type: ignore[arg-type]
         conn.execute("UPDATE events SET status='confirmed', tx_sig=?, actor_pubkey=?, resume_hash=NULL WHERE id=?",
                      (tx_sig, actor, event_id))

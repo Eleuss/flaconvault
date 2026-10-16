@@ -133,6 +133,7 @@ def _scan_proof(data: bytes | None, seal_pda, counter: int) -> tuple[dict | None
 def _confirm_scan(conn, ev: dict, payload: dict, rec: dict, acct: dict, scan_pda, tx_sig: str | None, ts: int) -> list[str]:
     mismatch = _compare(payload, acct)
     rec["mismatch"] = mismatch
+    rec["signatureChecked"] = True        # tx_sig is the verified creating record_scan (or empty), never a guess
     rec.pop("reason", None)
     rec.pop("ignoredAccount", None)
     if ev["status"] == "failed":

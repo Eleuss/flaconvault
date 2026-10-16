@@ -105,9 +105,14 @@ def test_purge_keeps_on_chain_evidence_and_removes_the_rest(chain_client):
     assert p1["issuer"] == str(REAL_ISSUER)
     assert p1["stats"]["onChainScanCount"] == 1 and p1["stats"]["scanCount"] == 1
     assert p1["grade"] == 1 and p1["void"] is False                                   # chain grade B, real scan A → B
-    # SN-2026-000002: kept (on chain), no seed rows left, recomputed state, seal counter never lowered
+    # SN-2026-000002: kept (on chain), no seed rows left, recomputed state, seal counter never lowered — and its MINT is
+    # rebuilt from chain (the seed MINT's tx does not exist), so no replayed mint tx can rename it (M1 with M2)
     p2 = c.get("/api/passport/SN-2026-000002").json()
-    assert p2["events"] == [] and p2["grade"] == 0 and p2["void"] is False and p2["seals"][0]["lastCounter"] == 4
+    assert p2["grade"] == 0 and p2["void"] is False and p2["seals"][0]["lastCounter"] == 4
+    [mint] = p2["events"]
+    assert mint["type"] == 0 and mint["status"] == "confirmed" and mint["actor"] == str(REAL_ISSUER) and mint["txSig"] is None
+    assert mint["payload"]["fromChain"] is True and "seed" not in mint["payload"] and p2["issuer"] == str(REAL_ISSUER)
+    assert [m["serial"] for m in applied["mintFromChain"]] == ["SN-2026-000002"]
 
     # seed attesters: fake ones without kept events are deleted; the MINT actor is kept but stripped of seed data
     assert c.get("/api/attester/7GhXQ2fV4d1eo9yq1vQdD9Zk9sHkYd8qz2pM4hN6FaK2").status_code == 404
@@ -147,9 +152,9 @@ def test_purge_on_a_production_database(settings, tmp_path):
         assert p3["void"] is False and p3["grade"] == 0 and p3["seals"][0]["dead"] is False and p3["sealStatus"] == "INTACT"
         assert sorted(rep["applied"]["passports"]["deleted"]) == ["SN-2026-000001", "SN-2026-000002"]
         assert [p["serial"] for p in c.get("/api/passports").json()] == ["SN-2026-000003"]
-        with c.app.state.db.connect() as conn:
-            assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
-            assert conn.execute("SELECT COUNT(*) FROM attesters").fetchone()[0] == 0
+        with c.app.state.db.connect() as conn:                   # only the MINT rebuilt from chain and its issuer
+            assert [tuple(r) for r in conn.execute("SELECT type, json_extract(payload_json, '$.fromChain') FROM events")] == [(0, 1)]
+            assert [r[0] for r in conn.execute("SELECT pubkey FROM attesters")] == [p3["issuer"]]
 
 
 def test_rpc_failure_deletes_nothing(chain_client):
@@ -177,8 +182,7 @@ def test_admin_status(chain_client):
 
 @pytest.mark.parametrize("payload, expected", [({"seed": True, "msgHex": "00"}, True), ({}, False)])
 def test_seed_signed_detection(payload, expected):
-    from fv.routes_admin import _seed_signed
-    assert _seed_signed({"type": 2, "serial": "SN-X"}, payload) is expected
-    from fv.seed import seed_nonce
-    assert _seed_signed({"type": 2, "serial": "SN-X"}, {"counter": 3, "session": {"nonce": "0x" + seed_nonce("SN-X", 3).hex()}})
-    assert not _seed_signed({"type": 2, "serial": "SN-X"}, {"counter": 3, "session": {"nonce": "0x" + "ab" * 32}})
+    from fv.seed import seed_nonce, seed_signed
+    assert seed_signed({"type": 2, "serial": "SN-X"}, payload) is expected
+    assert seed_signed({"type": 2, "serial": "SN-X"}, {"counter": 3, "session": {"nonce": "0x" + seed_nonce("SN-X", 3).hex()}})
+    assert not seed_signed({"type": 2, "serial": "SN-X"}, {"counter": 3, "session": {"nonce": "0x" + "ab" * 32}})

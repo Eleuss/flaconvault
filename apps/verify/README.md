@@ -372,6 +372,16 @@ on-chain account. Kept seed passports/seals get grade/void/dead recomputed from 
 on-chain issuer. Without `FV_PROGRAM_ID` or with the RPC down it refuses (503) and deletes nothing.
 `replayedOnChain` lists seed signatures somebody already anchored — retire those seals on chain (`mark_seal_dead`).
 
+A kept passport that exists on chain is never left without a MINT event: without one, anybody could replay the
+issuer's public `mint_passport` tx through `POST /api/events` and give the passport a new brand and name. When no MINT
+of it survives the purge (the seed's fake MINT tx is deleted) — or an older purge build already left it without one —
+a MINT is rebuilt from chain (`mintFromChain` in the report): actor = the on-chain issuer, `txSig` = the passport PDA's
+creating `mint_passport` signed by that issuer (the newest 1000 signatures checked oldest first with `getTransaction`;
+none found → empty), brand/name/batch from the passport row, `payload.fromChain`, no seed flag. Independently, a MINT
+for an existing passport never replaces its brand, name or batch (`upsert_passport`). Kept rows (their tx exists on
+chain) are marked `payload.seedKept`, so the startup warning about leftover seed rows counts only what a purge still has
+to handle and is silent after a complete purge.
+
 ## Simulator flow (curl)
 
 ```bash

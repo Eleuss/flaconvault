@@ -185,13 +185,83 @@ def run_seed(db: Database, settings: Settings, path: Path | None = None, *, wipe
     return counts
 
 
-def count_seed_rows(conn, path: Path) -> int:
-    """Events that came from the demo seed: marked payload.seed, or carrying one of the seed file's (fake) txSigs."""
+# ---------- recognising seed rows in a database (POST /api/admin/purge-seed, the startup warning) ----------
+
+def load_seed_index(path: Path) -> dict:
+    """What the seed file put into a database: its events (serial, type, ts, txSig, counter), seals, attesters, sim tags."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    sigs = sorted({ev["txSig"] for p in data.get("passports", []) for ev in p.get("events", []) if ev.get("txSig")})
-    marks = ",".join("?" * len(sigs)) or "NULL"
-    return int(conn.execute(f"""SELECT COUNT(*) FROM events WHERE tx_sig IN ({marks})
-                                OR COALESCE(json_extract(payload_json, '$.seed'), 0) = 1""", sigs).fetchone()[0])
+    events, seals, attesters = [], {}, {}
+    for a in data.get("attesters", []):
+        attesters[a["pubkey"]] = a
+    for p in data.get("passports", []):
+        for s in p.get("seals", []):
+            seals[s["uid"].upper()] = p["serial"]
+        for ev in p.get("events", []):
+            counter = (ev.get("scan") or ev.get("sighting") or {}).get("counter")
+            events.append({"serial": p["serial"], "type": _event_type(ev["type"]), "ts": _ts(ev["ts"]), "txSig": ev.get("txSig"),
+                           "counter": counter, "sighting": "sighting" in ev})
+            if ev.get("actor"):
+                attesters.setdefault(ev["actor"], {"pubkey": ev["actor"]})
+    return {"serials": {p["serial"]: p for p in data.get("passports", [])}, "events": events, "seals": seals,
+            "attesters": attesters, "simTags": [t["uid"].upper() for t in data.get("simTags", [])]}
+
+
+def seed_signed(ev: dict, payload: dict) -> bool:
+    """A SCAN payload the seed signed: payload.seed, or the seed's deterministic session nonce for (serial, counter)."""
+    if ev["type"] != EventType.SCAN:
+        return False
+    if payload.get("seed") is True and "msgHex" in payload:
+        return True
+    nonce, counter = (payload.get("session") or {}).get("nonce"), payload.get("counter")
+    if not nonce or counter is None:
+        return False
+    try:
+        return proof.strip0x(nonce).lower() == seed_nonce(ev["serial"], int(counter)).hex()
+    except (TypeError, ValueError):
+        return False
+
+
+def match_seed_events(rows: list[dict], seed: dict) -> dict[int, dict]:
+    """DB event id → the seed event it was created from (each seed event matches at most one row)."""
+    out: dict[int, dict] = {}
+    pool = list(seed["events"])
+    for r in rows:
+        payload = json.loads(r["payload_json"] or "{}")
+        for i, se in enumerate(pool):
+            if (se["serial"], se["type"], se["ts"]) != (r["serial"], r["type"], r["ts"]):
+                continue
+            if se["txSig"] and se["txSig"] != r["tx_sig"]:
+                continue
+            if se["sighting"] and (payload.get("counter") != se["counter"] or "tapId" in payload or r["tx_sig"]):
+                continue
+            out[r["id"]] = se
+            pool.pop(i)
+            break
+    return out
+
+
+def seed_candidates(conn, seed: dict) -> tuple[list[dict], dict[int, dict], set[int]]:
+    """
+    (candidate rows, payloads by id, ids of seed-signed scans): the events purge-seed has to classify — rows matched
+    to a seed event, seed-signed scans, rows marked payload.seed. A MINT that purge-seed rebuilt from chain
+    (payload.fromChain) is never one.
+    """
+    rows = [dict(r) for r in conn.execute("SELECT * FROM events ORDER BY id").fetchall()]
+    payloads = {r["id"]: json.loads(r["payload_json"] or "{}") for r in rows}
+    rows = [r for r in rows if payloads[r["id"]].get("fromChain") is not True]
+    matched = match_seed_events([r for r in rows if r["serial"] in seed["serials"]], seed)
+    signed = {r["id"] for r in rows if seed_signed(r, payloads[r["id"]])}
+    candidates = [r for r in rows if r["id"] in matched or r["id"] in signed or payloads[r["id"]].get("seed") is True]
+    return candidates, payloads, signed
+
+
+def count_seed_rows(conn, path: Path) -> int:
+    """
+    Seed rows a purge-seed run still has to handle (the startup warning): every candidate except the rows an earlier
+    purge kept because their transaction exists on chain (payload.seedKept). 0 after a complete purge.
+    """
+    candidates, payloads, _signed = seed_candidates(conn, load_seed_index(path))
+    return sum(1 for r in candidates if payloads[r["id"]].get("seedKept") is not True)
 
 
 def main(argv: list[str] | None = None) -> int:

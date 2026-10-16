@@ -119,10 +119,15 @@ def get_passport(conn, serial: str) -> dict | None:
 def upsert_passport(conn, *, serial: str, serial_hash: str, brand: str, name: str, batch: str | None,
                     asset: str | None, issuer: str | None, issuer_label: str | None, grade: int, void: bool,
                     created_at: int) -> dict:
+    """
+    Create a passport, or update an existing one with chain facts (asset, issuer). Brand, name and batch of an existing
+    passport are never replaced — they come from a client payload (the chain only holds hashes), so a replayed mint tx
+    must not rename a passport; an empty batch may still be filled in.
+    """
     conn.execute(
         """INSERT INTO passports(serial, serial_hash, brand, name, batch, asset, issuer, issuer_label, grade, void, created_at)
            VALUES(?,?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(serial) DO UPDATE SET brand=excluded.brand, name=excluded.name, batch=excluded.batch,
+           ON CONFLICT(serial) DO UPDATE SET batch=COALESCE(passports.batch, excluded.batch),
              asset=COALESCE(excluded.asset, passports.asset), issuer=COALESCE(excluded.issuer, passports.issuer),
              issuer_label=COALESCE(excluded.issuer_label, passports.issuer_label)""",
         (serial, serial_hash, brand, name, batch, asset, issuer, issuer_label, grade, int(void), created_at))

@@ -11,8 +11,10 @@ import fv.reconcile as rc
 from fv import proof
 from fv.config import Settings, is_local_rpc
 from fv.main import create_app
-from tests.conftest import PROGRAM_ID, SYSTEM_PROGRAM, TEST_SEED_HEX, FakeRpc, fake_key, post_media, registry_pda, sig
+from tests.conftest import (ADMIN, PROGRAM_ID, SYSTEM_PROGRAM, TEST_SEED_HEX, FakeRpc, fake_key, passport_pda, post_media,
+                            registry_pda, sig)
 from tests.test_chain import registry_bytes
+from tests.test_purge_seed import REAL_ISSUER, SEED_PARTNER, _chain_like_production
 from tests.test_reconcile import _account_for, _scan
 from tests.test_reconcile_robust import _event, _reconcile, _scan_pda
 from tests.test_stats_grade import MEDIA, SERIAL, _confirm, _verify
@@ -336,3 +338,103 @@ def test_scans_the_reconcile_job_confirms_wait_while_arweave_is_in_backoff(ar_on
     assert s["confirmed"] == 1 and s["arweave"]["skipped"] == "backoff" and sidecar.calls == []
     aw.reset_status()
     assert _reconcile(c)["arweave"]["archived"] == 1 and _ar(c, v)[0].startswith("ar://OPS")
+
+
+# ---------- M1 with M2: purge-seed never leaves an on-chain passport without a MINT; the startup warning clears ----------
+
+SN2 = "SN-2026-000002"                                  # seed-only rows, but the passport exists on devnet
+
+
+def _purge(c, dry_run=False) -> dict:
+    r = c.post(f"/api/admin/purge-seed?dry_run={'true' if dry_run else 'false'}", headers=ADMIN)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _replay_mint(c, actor: str, tag: str):
+    c.rpc.mint_tx(sig(tag), SN2, actor)                                       # the issuer's public mint tx, replayed
+    return c.post("/api/events", json={"serial": SN2, "type": "MINT", "txSig": sig(tag), "actor": actor,
+                                       "payload": {"brand": "FAKE", "name": "COUNTERFEIT - do not buy", "batch": "X"}})
+
+
+def test_after_a_purge_a_replayed_issuer_mint_cannot_rename_the_passport(chain_client):
+    c = chain_client
+    _chain_like_production(c)
+    rep = _purge(c, dry_run=True)
+    assert [m["serial"] for m in rep["mintFromChain"]] == [SN2]               # reported by the dry run ...
+    assert c.get(f"/api/passport/{SN2}").json()["events"][0]["payload"].get("seed") is True   # ... which changes nothing
+    _purge(c)
+    before = c.get(f"/api/passport/{SN2}").json()
+    assert (before["brand"], before["name"]) == ("Guerlain", "Shalimar Parfum (1970s)")
+    r = _replay_mint(c, str(REAL_ISSUER), "replay-issuer")
+    assert r.status_code == 200 and r.json()["payload"]["fromChain"] is True  # the stored MINT comes back
+    after = c.get(f"/api/passport/{SN2}").json()
+    assert (after["brand"], after["name"], after["batch"]) == (before["brand"], before["name"], before["batch"])
+    assert [e["id"] for e in after["events"]] == [e["id"] for e in before["events"]]
+    assert _replay_mint(c, SEED_PARTNER, "replay-stranger").json()["detail"] == "not_issuer"
+
+
+def test_the_rebuilt_mint_carries_the_verified_creating_signature(chain_client):
+    c, rpc = chain_client, chain_client.rpc
+    _chain_like_production(c)
+    pda = passport_pda(SN2)
+    rpc.mint_tx(sig("real-mint"), SN2, str(REAL_ISSUER))
+    rpc.mint_tx(sig("other-signer"), SN2, SEED_PARTNER)                      # not the on-chain issuer
+    _transfer(rpc, sig("prefund-passport"), pda)
+    rpc.signatures[pda] = [sig("real-mint"), sig("other-signer"), sig("prefund-passport")]   # newest first
+    [m] = _purge(c)["applied"]["mintFromChain"]
+    assert m["serial"] == SN2 and m["txSig"] == sig("real-mint") and m["issuer"] == str(REAL_ISSUER)
+    [mint] = c.get(f"/api/passport/{SN2}").json()["events"]
+    assert mint["txSig"] == sig("real-mint") and mint["actor"] == str(REAL_ISSUER)
+
+
+def test_a_database_an_older_purge_left_without_a_mint_gets_one(chain_client):
+    c = chain_client
+    _chain_like_production(c)
+    _purge(c)
+    with c.app.state.db.connect() as conn:                                    # what the previous purge-seed build left
+        conn.execute("DELETE FROM events WHERE serial=? AND type=0", (SN2,))
+    rep = _purge(c)
+    assert rep["events"]["delete"] == [] and rep["applied"]["events"] == 0
+    assert [m["serial"] for m in rep["applied"]["mintFromChain"]] == [SN2]
+    assert [e["type"] for e in c.get(f"/api/passport/{SN2}").json()["events"]] == [0]
+    assert _purge(c)["applied"]["mintFromChain"] == []                         # once is enough
+
+
+def test_the_leftover_seed_warning_clears_after_a_complete_purge(chain_client, settings, caplog):
+    from fv.seed import count_seed_rows
+    c = chain_client
+    _chain_like_production(c)
+    with c.app.state.db.connect() as conn:
+        assert count_seed_rows(conn, settings.seed_path) > 20
+    _purge(c)
+    with c.app.state.db.connect() as conn:
+        assert count_seed_rows(conn, settings.seed_path) == 0                  # the kept MINT (tx on chain) is not counted
+        kept = conn.execute("SELECT json_extract(payload_json, '$.seedKept') FROM events WHERE tx_sig=?",
+                            ("3jBaYVCd9Tyrruz6nqYPScHFHPoqD6P4Bx1vQDty1V2arYnRHczsfWo9QYfqU9vkUwraRAw56FYPwJKfCbthqAuo",)).fetchone()
+        assert kept[0] == 1
+    _purge(c)
+    with c.app.state.db.connect() as conn:
+        assert count_seed_rows(conn, settings.seed_path) == 0
+    # a production restart on this database logs no purge-seed warning any more
+    settings.dev_simulator, settings.key_mode, settings.master_key_hex = False, "sdmbackend", REAL_MASTER
+    caplog.set_level("WARNING", logger="fv")
+    caplog.clear()                                                             # ("purge-seed applied" of the runs above)
+    app = create_app(settings)
+    app.state.rpc = c.rpc
+    with TestClient(app):
+        pass
+    assert not any("demo seed" in r.getMessage() for r in caplog.records)
+
+
+def test_an_existing_passport_is_never_renamed_by_upsert(client):
+    from fv.db import get_passport, transaction, upsert_passport
+    with client.app.state.db.connect() as conn, transaction(conn):
+        kw = dict(serial="SN-OPS-1", serial_hash="ab" * 32, asset=None, issuer=None, issuer_label=None, grade=0, void=False,
+                  created_at=1)
+        upsert_passport(conn, brand="Roja", name="Elysium", batch=None, **kw)
+        upsert_passport(conn, brand="FAKE", name="COUNTERFEIT", batch="B1", **{**kw, "asset": "Asset111"})
+        p = get_passport(conn, "SN-OPS-1")
+        assert (p["brand"], p["name"], p["batch"], p["asset"]) == ("Roja", "Elysium", "B1", "Asset111")   # empty batch filled
+        upsert_passport(conn, brand="FAKE", name="COUNTERFEIT", batch="B2", **kw)
+        assert get_passport(conn, "SN-OPS-1")["batch"] == "B1"

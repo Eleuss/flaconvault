@@ -14,28 +14,33 @@ purge-seed keeps everything that has real on-chain evidence. It deletes
   * sim_tags of the seed (all of them while the simulator is off: they hold derived tag keys),
   * seed passports/seals left without any event and without an on-chain account.
 Kept seed passports/seals get grade, void and dead recomputed from what remains (plus the chain), and a seed issuer is
-replaced by the on-chain issuer. dry_run=true (the default) only reports. All RPC reads happen before the write
-transaction; the deletions re-check their conditions under the lock.
+replaced by the on-chain issuer. A kept seed passport that exists on chain is never left without a MINT event (that is
+what makes POST /api/events answer a replayed mint tx with the stored event instead of taking the poster's brand/name):
+when no MINT of it survives, one is rebuilt from the chain — actor = the on-chain issuer, tx_sig = the passport PDA's
+creating mint_passport (verified with getTransaction, else empty), payload.fromChain, no seed flag. Kept rows are marked
+payload.seedKept, so the startup warning (seed.count_seed_rows) clears after a complete purge. dry_run=true (the
+default) only reports. All RPC reads happen before the write transaction; the deletions re-check their conditions
+under the lock.
 """
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime
+import time
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from fv import arweave, proof
-from fv.chain import (DecodeError, RpcError, decode_passport, decode_registry, decode_seal, is_account, pda_passport, pda_registry,
-                      pda_scan, pda_seal, program_pubkey)
+from fv.chain import (DEFAULT_PUBKEY, DecodeError, RpcError, decode_passport, decode_registry, decode_seal, is_account,
+                      pda_passport, pda_registry, pda_scan, pda_seal, program_pubkey)
 from fv.config import Settings
-from fv.db import transaction
+from fv.db import insert_event, transaction
 from fv.deps import get_db, get_rpc, get_settings, require_admin
 from fv.enums import EventType, Grade
 from fv.ratelimit import rate_limit
-from fv.seed import seed_nonce
+from fv.reconcile import creating_signature
+from fv.seed import load_seed_index, seed_candidates
 
 log = logging.getLogger("fv.admin")
 router = APIRouter(dependencies=[Depends(require_admin)])
@@ -54,73 +59,22 @@ def admin_status(settings: Settings = Depends(get_settings)):
 
 # ---------- purge-seed ----------
 
-def _ts(v: str | int) -> int:
-    return v if isinstance(v, int) else int(datetime.fromisoformat(v).timestamp())
+PASSPORT_SIGNATURE_LIMIT = 1000   # getSignaturesForAddress maximum: every scan/attach/escrow tx touches the passport PDA
 
 
-def _etype(v: str | int) -> int:
-    return v if isinstance(v, int) else getattr(EventType, v)
-
-
-def _load_seed(path: Path) -> dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    events, seals, attesters = [], {}, {}
-    for a in data.get("attesters", []):
-        attesters[a["pubkey"]] = a
-    for p in data.get("passports", []):
-        for s in p.get("seals", []):
-            seals[s["uid"].upper()] = p["serial"]
-        for ev in p.get("events", []):
-            counter = (ev.get("scan") or ev.get("sighting") or {}).get("counter")
-            events.append({"serial": p["serial"], "type": _etype(ev["type"]), "ts": _ts(ev["ts"]), "txSig": ev.get("txSig"),
-                           "counter": counter, "sighting": "sighting" in ev})
-            if ev.get("actor"):
-                attesters.setdefault(ev["actor"], {"pubkey": ev["actor"]})
-    return {"serials": {p["serial"]: p for p in data.get("passports", [])}, "events": events, "seals": seals,
-            "attesters": attesters, "simTags": [t["uid"].upper() for t in data.get("simTags", [])]}
-
-
-def _seed_signed(ev: dict, payload: dict) -> bool:
-    """A SCAN payload the seed signed: payload.seed, or the seed's deterministic session nonce for (serial, counter)."""
-    if ev["type"] != EventType.SCAN:
-        return False
-    if payload.get("seed") is True and "msgHex" in payload:
-        return True
-    nonce, counter = (payload.get("session") or {}).get("nonce"), payload.get("counter")
-    if not nonce or counter is None:
-        return False
+def _mint_signature(rpc, settings: Settings, passport_pda: str, issuer: str) -> str | None:
+    """The passport PDA's creating mint_passport, signed by the on-chain issuer (None: not found / not readable)."""
     try:
-        return proof.strip0x(nonce).lower() == seed_nonce(ev["serial"], int(counter)).hex()
-    except (TypeError, ValueError):
-        return False
-
-
-def _match_seed_events(rows: list[dict], seed: dict) -> dict[int, dict]:
-    """DB event id → the seed event it was created from (each seed event matches at most one row)."""
-    out: dict[int, dict] = {}
-    pool = list(seed["events"])
-    for r in rows:
-        payload = json.loads(r["payload_json"] or "{}")
-        for i, se in enumerate(pool):
-            if (se["serial"], se["type"], se["ts"]) != (r["serial"], r["type"], r["ts"]):
-                continue
-            if se["txSig"] and se["txSig"] != r["tx_sig"]:
-                continue
-            if se["sighting"] and (payload.get("counter") != se["counter"] or "tapId" in payload or r["tx_sig"]):
-                continue
-            out[r["id"]] = se
-            pool.pop(i)
-            break
-    return out
+        return creating_signature(rpc, passport_pda, program=settings.program_id, instruction="mint_passport",
+                                  accounts={"passport": passport_pda}, signer=issuer, limit=PASSPORT_SIGNATURE_LIMIT)
+    except RpcError as exc:
+        log.warning("purge-seed: signatures of %s not readable: %s", passport_pda, exc)
+        return None
 
 
 def _plan(conn, settings: Settings, rpc, seed: dict) -> dict[str, Any]:
     pid = program_pubkey(settings.program_id)
-    rows = [dict(r) for r in conn.execute("SELECT * FROM events ORDER BY id").fetchall()]
-    payloads = {r["id"]: json.loads(r["payload_json"] or "{}") for r in rows}
-    matched = _match_seed_events([r for r in rows if r["serial"] in seed["serials"]], seed)
-    signed = {r["id"] for r in rows if _seed_signed(r, payloads[r["id"]])}
-    candidates = [r for r in rows if r["id"] in matched or r["id"] in signed or payloads[r["id"]].get("seed") is True]
+    candidates, payloads, signed = seed_candidates(conn, seed)
 
     # ---- RPC (no write lock) ----
     tx_sigs = sorted({r["tx_sig"] for r in candidates if r["tx_sig"]})
@@ -165,8 +119,47 @@ def _plan(conn, settings: Settings, rpc, seed: dict) -> dict[str, Any]:
             delete.append({**item, "reason": "seed transaction does not exist on chain"})
         else:
             delete.append({**item, "reason": "seed event without a transaction"})
+
+    # a kept passport that exists on chain must keep a MINT: rebuilt from chain when none survives the purge
+    deleted = {d["id"] for d in delete}
+    mints: list[dict[str, Any]] = []
+    for serial in serials:
+        chain = chain_passports.get(serial)
+        if not chain or conn.execute("SELECT 1 FROM passports WHERE serial=?", (serial,)).fetchone() is None:
+            continue
+        left = [r[0] for r in conn.execute("SELECT id FROM events WHERE serial=? AND type=?", (serial, EventType.MINT)).fetchall()
+                if r[0] not in deleted]
+        if left:
+            continue
+        pda = str(pda_passport(pid, proof.serial_hash(serial)))
+        mints.append({"serial": serial, "issuer": chain["issuer"], "createdAt": chain["createdAt"],
+                      "txSig": _mint_signature(rpc, settings, pda, chain["issuer"])})
     return {"delete": delete, "keep": keep, "replayed": replayed, "chainPassports": chain_passports, "chainSeals": chain_seals,
-            "partners": partners, "sealRows": seal_rows}
+            "partners": partners, "sealRows": seal_rows, "mintFromChain": mints}
+
+
+def _rebuild_mint(conn, serial: str, chain: dict, plan_item: dict, ts: int) -> dict | None:
+    """The MINT of an on-chain passport, from chain facts (and the passport row's names); None if a MINT exists again."""
+    if conn.execute("SELECT 1 FROM events WHERE serial=? AND type=? LIMIT 1", (serial, EventType.MINT)).fetchone():
+        return None
+    p = conn.execute("SELECT * FROM passports WHERE serial=?", (serial,)).fetchone()
+    issuer = chain["issuer"]
+    conn.execute("INSERT INTO attesters(pubkey, first_seen) VALUES(?,?) ON CONFLICT(pubkey) DO NOTHING",
+                 (issuer, int(chain["createdAt"] or 0) or ts))
+    label = conn.execute("SELECT label FROM attesters WHERE pubkey=?", (issuer,)).fetchone()
+    label = label[0] if label else None
+    asset = chain["asset"] if chain["asset"] != DEFAULT_PUBKEY else None
+    payload = {"brand": p["brand"], "name": p["name"], "fromChain": True, "bindingHash": "0x" + chain["bindingHash"]}
+    if p["batch"]:
+        payload["batch"] = p["batch"]
+    if asset:
+        payload["asset"] = asset
+    conn.execute("UPDATE passports SET issuer=?, issuer_label=?, asset=COALESCE(?, asset) WHERE serial=?", (issuer, label, asset, serial))
+    created = int(chain["createdAt"] or 0) or ts
+    row = insert_event(conn, serial=serial, type=EventType.MINT, ts=created, actor_pubkey=issuer, actor_label=label,
+                       tx_sig=plan_item["txSig"], status="confirmed", seal_uid_hash=None, payload=payload,
+                       grade_after=Grade.VOID if p["void"] else p["grade"], country=None, city=None)
+    return {"eventId": row["id"], "issuer": issuer, "txSig": plan_item["txSig"]}
 
 
 def _recompute_passport(conn, serial: str, chain: dict | None) -> dict:
@@ -184,14 +177,19 @@ def _recompute_passport(conn, serial: str, chain: dict | None) -> dict:
     return {"grade": grade, "void": void}
 
 
-def _apply(conn, settings: Settings, seed: dict, plan: dict[str, Any]) -> dict[str, Any]:
-    res: dict[str, Any] = {"events": 0, "attesters": {"deleted": [], "cleaned": []}, "simTags": [], "seals": {"deleted": [], "updated": []},
-                           "passports": {"deleted": [], "updated": []}}
+def _apply(conn, settings: Settings, seed: dict, plan: dict[str, Any], ts: int) -> dict[str, Any]:
+    res: dict[str, Any] = {"events": 0, "kept": 0, "attesters": {"deleted": [], "cleaned": []}, "simTags": [],
+                           "seals": {"deleted": [], "updated": []}, "passports": {"deleted": [], "updated": []}, "mintFromChain": []}
     ids = [d["id"] for d in plan["delete"]]
     touched = {d["serial"] for d in plan["delete"]}
     for i in range(0, len(ids), 500):
         chunk = ids[i:i + 500]
         res["events"] += conn.execute(f"DELETE FROM events WHERE id IN ({','.join('?' * len(chunk))})", chunk).rowcount
+    # kept seed rows (their tx exists on chain) are marked, so the startup warning does not count them again
+    for d in plan["keep"]:
+        res["kept"] += conn.execute("""UPDATE events SET payload_json=json_set(payload_json, '$.seedKept', json('true'))
+                                       WHERE id=? AND COALESCE(json_extract(payload_json, '$.seedKept'), 0) = 0""",
+                                    (d["id"],)).rowcount
 
     # attesters of the seed
     in_orders = {r[0] for r in conn.execute("SELECT seller FROM escrow_orders UNION SELECT buyer FROM escrow_orders WHERE buyer IS NOT NULL")}
@@ -260,6 +258,16 @@ def _apply(conn, settings: Settings, seed: dict, plan: dict[str, Any]) -> dict[s
             upd["issuer"] = chain["issuer"]
         upd["hasMint"] = conn.execute("SELECT 1 FROM events WHERE serial=? AND type=? LIMIT 1", (serial, EventType.MINT)).fetchone() is not None
         res["passports"]["updated"].append(upd)
+    # never an on-chain passport without a MINT (also for databases an earlier purge already left without one)
+    for item in plan.get("mintFromChain", []):
+        chain = plan["chainPassports"].get(item["serial"])
+        if chain and conn.execute("SELECT 1 FROM passports WHERE serial=?", (item["serial"],)).fetchone():
+            rebuilt = _rebuild_mint(conn, item["serial"], chain, item, ts)
+            if rebuilt:
+                res["mintFromChain"].append({"serial": item["serial"], **rebuilt})
+                for u in res["passports"]["updated"]:
+                    if u["serial"] == item["serial"]:
+                        u.update(hasMint=True, issuer=rebuilt["issuer"])
     return res
 
 
@@ -270,7 +278,7 @@ def purge_seed(dry_run: bool = True, db=Depends(get_db), settings: Settings = De
     path = Path(settings.seed_path)
     if not path.exists():
         raise HTTPException(404, "seed file not found")
-    seed = _load_seed(path)
+    seed = load_seed_index(path)
     with db.connect() as conn:
         try:
             plan = _plan(conn, settings, rpc, seed)
@@ -281,7 +289,8 @@ def purge_seed(dry_run: bool = True, db=Depends(get_db), settings: Settings = De
                   "replayedOnChain": plan["replayed"],
                   "chainAccounts": {"passports": sorted(s for s, c in plan["chainPassports"].items() if c),
                                     "seals": sorted(u for u, c in plan["chainSeals"].items() if c)},
-                  "registryPartners": sorted(plan["partners"]) if plan["partners"] is not None else None}
+                  "registryPartners": sorted(plan["partners"]) if plan["partners"] is not None else None,
+                  "mintFromChain": plan["mintFromChain"]}
         if dry_run:
             return report
         with transaction(conn):
@@ -290,7 +299,7 @@ def purge_seed(dry_run: bool = True, db=Depends(get_db), settings: Settings = De
                 f"SELECT id FROM events WHERE id IN ({','.join('?' * len(plan['delete'])) or 'NULL'})",
                 [d["id"] for d in plan["delete"]]).fetchall()}
             plan["delete"] = [d for d in plan["delete"] if d["id"] in still]
-            report["applied"] = _apply(conn, settings, seed, plan)
+            report["applied"] = _apply(conn, settings, seed, plan, int(time.time()))
     log.warning("purge-seed applied: %s events, attesters %s, sim_tags %s, seals %s, passports %s", report["applied"]["events"],
                 report["applied"]["attesters"], len(report["applied"]["simTags"]), report["applied"]["seals"]["deleted"],
                 report["applied"]["passports"]["deleted"])

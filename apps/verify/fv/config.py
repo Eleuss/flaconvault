@@ -3,9 +3,11 @@ Settings from environment / apps/verify/.env (python-dotenv). All keys are prefi
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -24,6 +26,20 @@ def _bool(v: str | None, default: bool) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
+def is_local_rpc(url: str) -> bool:
+    """A JSON-RPC URL on this machine (a local test validator): localhost, *.localhost or a loopback address."""
+    try:
+        host = (urlparse((url or "").strip()).hostname or "").lower()
+    except ValueError:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _resolve(p: str | Path) -> Path:
     p = Path(p)
     return p if p.is_absolute() else (APP_DIR / p).resolve()
@@ -38,7 +54,7 @@ class Settings:
     server_key_id: int = 1
     dev_simulator: bool = False                            # FV_DEV_SIMULATOR — /api/dev/* (off unless explicitly enabled)
     seed_demo: bool = False                                # FV_SEED_DEMO — load docs/seed into an empty DB even with the simulator off
-    allow_sim_with_real_keys: bool = False                 # FV_ALLOW_SIM_WITH_REAL_KEYS — local tests only (see check_startup)
+    allow_sim_with_real_keys: bool = False                 # FV_ALLOW_SIM_WITH_REAL_KEYS — local validator only (see check_startup)
     admin_token: str = ""                                  # FV_ADMIN_TOKEN — x-admin-token for POST /api/reconcile and /api/dev/reset
     nonce_ttl_s: int = 90
     irys_key: str = ""                                     # FV_IRYS_KEY — path to a Solana keypair json, or "default"
@@ -105,9 +121,14 @@ class Settings:
     @property
     def solana_rpc_public(self) -> str:
         """RPC handed to the Irys sidecar: a local validator cannot pay the Irys devnet node, so devnet uploads use public devnet."""
-        if "127.0.0.1" in self.solana_rpc or "localhost" in self.solana_rpc:
+        if self.rpc_is_local:
             return "https://api.devnet.solana.com" if self.irys_network == "devnet" else "https://api.mainnet-beta.solana.com"
         return self.solana_rpc
+
+    @property
+    def rpc_is_local(self) -> bool:
+        """FV_SOLANA_RPC is a local test validator (nothing signed here can reach devnet or mainnet accounts)."""
+        return is_local_rpc(self.solana_rpc)
 
     @property
     def seed_enabled(self) -> bool:
@@ -128,19 +149,49 @@ class Settings:
                     "(FV_MASTER_KEY is ignored), so anyone can forge a valid tap. Use FV_KEY_MODE=sdmbackend with "
                     "FV_SDM_DERIVE=legacy (stickers written with the NFC Developer App) or FV_KEY_MODE=diversified, together "
                     "with the secret FV_MASTER_KEY")
-        elif self.key_mode != "factory" and not self.allow_sim_with_real_keys:
-            problems.append(
-                f"FV_DEV_SIMULATOR=true with FV_KEY_MODE={self.key_mode} — the simulator mints valid taps for any UID with "
-                "these keys, and a verifier that shares FV_MASTER_KEY would accept them. Run the simulator with "
-                "FV_KEY_MODE=factory, a dev-only FV_MASTER_KEY and a dev-only FV_SERVER_ED25519_SEED (never the production "
-                "values), or set FV_ALLOW_SIM_WITH_REAL_KEYS=true for local tests only")
+        elif self.key_mode != "factory":
+            if not self.allow_sim_with_real_keys:
+                problems.append(
+                    f"FV_DEV_SIMULATOR=true with FV_KEY_MODE={self.key_mode} — the simulator mints valid taps for any UID "
+                    "with these keys, and a verifier that shares FV_MASTER_KEY would accept them. Run the simulator with "
+                    "FV_KEY_MODE=factory, a dev-only FV_MASTER_KEY and a dev-only FV_SERVER_ED25519_SEED (never the "
+                    "production values). FV_ALLOW_SIM_WITH_REAL_KEYS=true is only for tests against a local validator "
+                    "(or without FV_PROGRAM_ID), and never together with the production master key or seed")
+            elif self.program_id and not self.rpc_is_local:
+                problems.append(
+                    f"FV_ALLOW_SIM_WITH_REAL_KEYS=true with FV_PROGRAM_ID set and FV_SOLANA_RPC={self.solana_rpc} — the "
+                    f"escape hatch is only accepted against a local validator (localhost / 127.0.0.1) or without a program "
+                    f"id: here the simulator would mint taps with real ({self.key_mode}) tag keys and sign scans that "
+                    "record_scan on a shared cluster accepts. Use FV_KEY_MODE=factory with a dev-only FV_MASTER_KEY and "
+                    "a dev-only FV_SERVER_ED25519_SEED instead")
         return problems
+
+    def registered_key_problem(self, server_keys: list[dict], now_ts: int) -> str | None:
+        """
+        With the simulator on against a shared cluster (FV_PROGRAM_ID set, FV_SOLANA_RPC not local), the signing key must
+        not be a live server key of the on-chain registry: every scan the simulator signs — for virtual tags, or a
+        virtual tag created with a real sticker's UID — would be accepted by record_scan there. `server_keys` are the
+        decoded Registry.serverKeys ({keyId, pubkeyHex, validFrom, validTo}; validTo 0 = never expires).
+        """
+        if not self.dev_simulator or not self.program_id or self.rpc_is_local:
+            return None
+        from fv import proof
+        pub = proof.public_key(self.server_seed).hex()
+        for k in server_keys or []:
+            valid_to = int(k.get("validTo") or 0)
+            if str(k.get("pubkeyHex") or "").lower() == pub and (valid_to == 0 or valid_to > now_ts):
+                return (f"FV_DEV_SIMULATOR=true but FV_SERVER_ED25519_SEED is registered server key {k.get('keyId')} of "
+                        f"program {self.program_id} on {self.solana_rpc} — scans this simulator signs would be accepted "
+                        "by record_scan there. Give the simulator a dev-only seed that is not in the registry (or run it "
+                        "against a local validator)")
+        return None
 
     def check_startup(self) -> None:
         """
         Refuse to serve real taps with a key anyone can compute, and refuse a simulator that mints taps with real tag
-        keys. Called from the app lifespan (startup), so a misconfigured deployment fails loudly instead of accepting
-        forged SUN URLs.
+        keys (FV_ALLOW_SIM_WITH_REAL_KEYS lifts that only against a local validator or without a program id). Called
+        from the app lifespan (startup), so a misconfigured deployment fails loudly instead of accepting forged SUN URLs.
+        The lifespan also refuses a simulator whose signing key is a live registry server key (registered_key_problem).
         """
         problems = self.startup_problems()
         if problems:

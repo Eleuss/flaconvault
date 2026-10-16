@@ -53,9 +53,10 @@ def _counts(c):
 
 
 def test_purge_requires_the_admin_token(chain_client):
+    before = list(chain_client.rpc.calls)                  # the startup registry check (simulator on) reads the chain once
     assert chain_client.post("/api/admin/purge-seed").status_code == 403
     assert chain_client.post("/api/admin/purge-seed", headers={"x-admin-token": "nope"}).status_code == 403
-    assert chain_client.rpc.calls == []
+    assert chain_client.rpc.calls == before
 
 
 def test_purge_refuses_without_a_chain(client):

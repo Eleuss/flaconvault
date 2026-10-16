@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -14,14 +15,41 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from fv import arweave, routes_admin, routes_api, routes_chain, routes_dev, routes_tag
 from fv.bodylimit import BodySizeLimit
-from fv.chain import Rpc
+from fv.chain import Rpc, decode_registry, pda_registry
 from fv.config import Settings, settings_from_env
-from fv.db import Database
+from fv.db import Database, get_chain_state
 from fv.reconcile import reconcile_once
 from fv.seed import count_seed_rows, run_seed
 
 log = logging.getLogger("fv")
 ARWEAVE_PROBE_S = 3600          # Irys balance probe interval of the background loop
+
+
+def simulator_key_problem(settings: Settings, db: Database, rpc) -> str | None:
+    """
+    With the simulator on against a shared cluster: is FV_SERVER_ED25519_SEED a live server key of the on-chain registry?
+    One registry read at startup (getAccountInfo); if the RPC cannot be read, the registry the reconcile job cached in
+    chain_state for the same program. None = fine (or not checkable — logged as an error, the start is not blocked).
+    """
+    if not settings.dev_simulator or not settings.program_id or settings.rpc_is_local:
+        return None
+    keys = None
+    try:
+        data = rpc.get_account_info(pda_registry(settings.program_id))
+        keys = decode_registry(data)["serverKeys"] if data is not None else []   # no registry there: nothing registered
+    except Exception as exc:  # noqa: BLE001 — RPC down, garbage account: fall back to the cached registry
+        log.warning("simulator key check: registry read failed (%s)", exc)
+    if keys is None:
+        with db.connect() as conn:
+            st = get_chain_state(conn, "registry")
+        if st and (st["value"] or {}).get("programId") == settings.program_id:
+            keys = st["value"].get("serverKeys") or []
+    if keys is None:
+        log.error("simulator on against %s (program %s): the registry could not be read, so it is NOT checked that "
+                  "FV_SERVER_ED25519_SEED is a dev-only key — never run the simulator with a registered seed",
+                  settings.solana_rpc, settings.program_id)
+        return None
+    return settings.registered_key_problem(keys, int(time.time()))
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -56,6 +84,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not settings.admin_token:
             log.info("FV_ADMIN_TOKEN not set: POST /api/reconcile is disabled (the background loop still runs)")
         db.init()
+        problem = simulator_key_problem(settings, db, app.state.rpc)
+        if problem:
+            raise RuntimeError("refusing to start: " + problem)
         settings.media_dir.mkdir(parents=True, exist_ok=True)
         problem = arweave.config_problem(settings)
         if problem:

@@ -39,7 +39,7 @@ uv run uvicorn fv.main:app --port 8787 --reload
 | `FV_SERVER_KEY_ID` | `1` | `key_id` in bundles / on-chain registry |
 | `FV_DEV_SIMULATOR` | `false` | enables `/api/dev/*` (404 otherwise) and the demo seed |
 | `FV_SEED_DEMO` | `false` | load the demo seed into an empty database even with the simulator off (demo deployments only; no virtual tags) |
-| `FV_ALLOW_SIM_WITH_REAL_KEYS` | `false` | local tests only: allow the simulator together with `sdmbackend`/`diversified` keys |
+| `FV_ALLOW_SIM_WITH_REAL_KEYS` | `false` | tests against a **local validator** only: allow the simulator together with `sdmbackend`/`diversified` keys. Refused when `FV_PROGRAM_ID` is set and `FV_SOLANA_RPC` is not localhost / a loopback address; never combine it with the production master key or seed |
 | `FV_ADMIN_TOKEN` | — | `x-admin-token` for `POST /api/reconcile`, `/api/admin/*` (403 while unset) and, when set, for `POST /api/dev/reset` |
 | `FV_NONCE_TTL_S` | `90` | nonce lifetime |
 | `FV_DB_PATH` | `./data/flaconvault.db` | SQLite file (relative to `apps/verify`) |
@@ -71,7 +71,14 @@ Comments must be on their own lines (python-dotenv treats an inline `# …` afte
 
 **Startup refusals** (clear error, exit): simulator off with an all-zero `FV_MASTER_KEY`; simulator off with
 `FV_KEY_MODE=factory` (the null keys are public, so anyone could forge a tap); simulator on with `sdmbackend` or
-`diversified` keys unless `FV_ALLOW_SIM_WITH_REAL_KEYS=true`.
+`diversified` keys unless `FV_ALLOW_SIM_WITH_REAL_KEYS=true` — and that flag only counts without `FV_PROGRAM_ID` or
+against a local validator; simulator on against a shared cluster (`FV_PROGRAM_ID` set, `FV_SOLANA_RPC` not local) with an
+`FV_SERVER_ED25519_SEED` whose public key is a live server key of that cluster's registry (one `getAccountInfo` at
+startup, else the registry the reconcile job cached; if neither can be read the start goes on with an error in the log).
+
+A local simulator therefore always runs with `FV_KEY_MODE=factory`, a **dev-only** `FV_MASTER_KEY` and a **dev-only**
+`FV_SERVER_ED25519_SEED` that is not registered on devnet. An older local `.env` that still holds the production master
+key or a registered seed must be changed to such dev-only values — not worked around with `FV_ALLOW_SIM_WITH_REAL_KEYS`.
 
 ## Endpoints
 

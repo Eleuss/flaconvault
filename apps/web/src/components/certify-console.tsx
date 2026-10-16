@@ -8,7 +8,7 @@ import { TxFailedError, friendly } from "@/lib/errors";
 import { ArrowRight, Loader2, Printer, ShieldCheck } from "lucide-react";
 import { bindingHash, bytesToHex, serialHash, uidHash } from "@flaconvault/proof";
 import { MAX_SEALS_PER_PASSPORT, fetchCoreAsset, fetchPassportChain, flaconProgram, passportPda, registryPda, sealPda } from "@/lib/flacon";
-import { isValidSerial, normalizeSerial, passportPath } from "@/lib/escrow-rules";
+import { coreAssetUri, isValidSerial, normalizeSerial, passportPath } from "@/lib/escrow-rules";
 import { api, type SimTag } from "@/lib/verify-api";
 import { DEV_SIMULATOR, PROGRAM_ID, PUBLIC_VERIFY_URL, SOLANA_RPC } from "@/lib/config";
 import { demoMode } from "@/lib/demo";
@@ -93,7 +93,7 @@ export function CertifyConsole() {
       const umi = createUmi(SOLANA_RPC).use(mplCore()).use(walletAdapterIdentity(wallet));
       const signer = generateSigner(umi);
       assetKey = signer.publicKey.toString();
-      const res = await create(umi, { asset: signer, name: `${form.brand} ${form.name} · ${serial}`.trim(), uri: `${PUBLIC_VERIFY_URL}/api/passport/${encodeURIComponent(serial)}` }).sendAndConfirm(umi);
+      const res = await create(umi, { asset: signer, name: `${form.brand} ${form.name} · ${serial}`.trim(), uri: coreAssetUri(PUBLIC_VERIFY_URL, serial) }).sendAndConfirm(umi);
       const { base58 } = await import("@metaplex-foundation/umi/serializers");
       const sig = base58.deserialize(res.signature)[0];
       if (res.result.value.err) throw new TxFailedError(sig, describeTxError(res.result.value.err));
@@ -134,7 +134,7 @@ export function CertifyConsole() {
         // asset and binding hash come from the chain, no Core asset in this page's state is needed.
         if (existing.issuer.toBase58() !== wallet.publicKey.toBase58()) throw new Error(`Passport ${serial} already exists and belongs to another wallet (${existing.issuer.toBase58().slice(0, 8)}…)`);
         usedAsset = existing.asset.toBase58(); bh = Uint8Array.from(existing.bindingHash);
-        const found = await creatingSignature(connection, pda);
+        const found = await creatingSignature(connection, pda, { instruction: "mint_passport", signer: wallet.publicKey });
         if (!found) throw new Error(`Passport ${serial} is on chain, but its mint transaction was not found. Try again in a moment.`);
         sig = found; recovered = true; setAsset({ pubkey: usedAsset, serial });
       } else {
@@ -169,8 +169,8 @@ export function CertifyConsole() {
       let sig: string, recovered = false;
       if (existing) {
         if (existing.passport.toBase58() !== passportPda(sh).toBase58()) throw new Error(`This seal is already attached to another passport (${existing.passport.toBase58().slice(0, 8)}…)`);
-        const found = await creatingSignature(connection, pda);
-        if (!found) throw new Error("The seal is on chain, but its attach transaction was not found. Try again in a moment.");
+        const found = await creatingSignature(connection, pda, { instruction: "attach_seal", signer: wallet.publicKey });
+        if (!found) throw new Error("The seal is on chain, but its attach transaction (signed by this wallet) was not found. Try again in a moment.");
         sig = found; recovered = true;
       } else {
         // the program only lets the passport's issuer (while a partner) or the registry authority attach seals

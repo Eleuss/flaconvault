@@ -73,3 +73,19 @@ test("live check compares scan_count with the server's anchored-scan count, not 
   assert.equal(g.matches, true);
   assert.match(g.text, /grade/);
 });
+
+test("RELEASE says 'Passport → buyer' only when the Core asset moved (payload.passportTo)", () => {
+  const plain = eventLine(ev({ type: EventType.RELEASE, payload: { priceUsdc: 480, currency: "USDC", to: "S" } }));
+  assert.deepEqual(plain.details, ["480 USDC → seller"]);
+  const moved = eventLine(ev({ type: EventType.RELEASE, payload: { priceUsdc: 480, currency: "USDC", to: "S", passportTo: "B" } }));
+  assert.deepEqual(moved.details, ["480 USDC → seller", "Passport → buyer"]);
+  const timeout = eventLine(ev({ type: EventType.RELEASE, payload: { priceUsdc: 1.5, to: "S", reason: "no receipt scan within the deadline" } }));
+  assert.deepEqual(timeout.details, ["1.5 USDC → seller", "no receipt scan within the deadline"]);
+});
+
+test("verified scan tier wins over the claim; reserve shows the escrowed price", () => {
+  const scan = eventLine(ev({ payload: { tier: 0, attester: { tier: 4, role: 4 }, indicators: {}, counter: 3 } }));
+  assert.equal(scan.title, "Sighting");
+  assert.deepEqual(eventLine(ev({ type: EventType.RESERVE, payload: { priceUsdc: 390, currency: "USDC" } })).details, ["390 USDC in escrow"]);
+  assert.equal(eventLine(ev({ type: EventType.DISPUTE, payload: { reason: "not shipped within the deadline" } })).details[0], "not shipped within the deadline");
+});

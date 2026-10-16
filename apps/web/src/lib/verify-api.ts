@@ -31,7 +31,12 @@ export interface TapView extends Preview { tapId: number; ts: number; uid: strin
  * app's browser fetch this signed scan again (GET /api/verify/{eventId}?token=…) while it is pending.
  */
 export type VerifyResult = VerifyResponse & { resumeToken?: string | null };
-export interface Health { ok: boolean; keyId: number; pubkeyHex: string; simulator: boolean; programId: string | null }
+/** GET /health. `build` is the deployed commit (when the platform reports it), `arweave` the archiving status. */
+export interface Health {
+  ok: boolean; keyId: number; pubkeyHex: string; simulator: boolean; programId: string | null;
+  build?: string | null;
+  arweave?: { enabled: boolean; ok: boolean | null; problem: string | null; lastErrorCode: string | null } | null;
+}
 
 export const api = {
   health: () => get<Health>("/health"),

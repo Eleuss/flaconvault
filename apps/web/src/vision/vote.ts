@@ -54,9 +54,14 @@ export function combineReadings(readings: CardReading[], total = readings.length
   // the frame shown/kept as the representative one: agrees on heat, most confident among those
   const pool = voters.filter((r) => r.heat === heat);
   const rep = (pool.length ? pool : voters).reduce((a, b) => (b.confidence.heat + b.confidence.humidity > a.confidence.heat + a.confidence.humidity ? b : a));
+  const agreeing = (pick: (r: CardReading) => number, value: number) => voters.filter((r) => pick(r) === value).length;
+  // an indicator that came out UNREADABLE although frames voted: the frames disagree (or too few frames counted)
+  const split = ([["heat", heat, (r: CardReading) => r.heat], ["humidity", humidity, (r: CardReading) => r.humidity]] as const)
+    .filter(([, v, pick]) => v === Indicator.UNREADABLE && voters.some((r) => pick(r) !== Indicator.UNREADABLE)).map(([n]) => n);
   return {
     ...rep,
-    reason: undefined,
+    reason: split.length ? `Frames disagree on ${split.join(" and ")} (${voters.length} of ${Math.max(total, voters.length)} frames counted): retake the photos` : undefined,
+    votes: { frames: Math.max(total, voters.length), found: voters.length, heat: agreeing((r) => r.heat, heat), humidity: agreeing((r) => r.humidity, humidity), uv: agreeing((r) => r.uv, uv) },
     heat, humidity, uv, heatLevels,
     confidence: {
       heat: decided(heat) ? share((r) => r.heat, heat, (r) => r.confidence.heat) : 0,

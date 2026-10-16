@@ -62,3 +62,12 @@ test("per-field levels are the majority of the frames that agree on heat", () =>
   assert.equal(r.heat, INTACT);
   assert.deepEqual(r.heatLevels, [1, 0, 0, 0, 0, 0]);
 });
+
+test("a split vote says why and how many frames agreed", () => {
+  const r = combineReadings([triggered(), triggered(), frame(), frame(), frame({ found: false, reason: "no card" })], 5)!;
+  assert.match(r.reason ?? "", /Frames disagree on heat/);
+  assert.deepEqual(r.votes, { frames: 5, found: 4, heat: 0, humidity: 4, uv: 4 });
+  const ok = combineReadings([frame(), frame(), frame(), frame(), frame()])!;
+  assert.equal(ok.reason, undefined);
+  assert.equal(ok.votes?.heat, 5);
+});

@@ -1,7 +1,7 @@
 // Run: cd apps/web && npx tsx --test 'src/**/*.test.ts'
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ApiError, CODES, TxFailedError, apiError, friendly } from "./errors";
+import { ApiError, CODES, PROGRAM_ERRORS, TxFailedError, apiError, friendly } from "./errors";
 
 const res = (status: number, body: unknown) => new Response(typeof body === "string" ? body : JSON.stringify(body), { status });
 
@@ -54,4 +54,22 @@ test("timeouts and landed-but-failed transactions read clearly", () => {
   const t = new Error("The operation was aborted due to timeout"); t.name = "TimeoutError";
   assert.match(friendly(t), /did not answer in time/);
   assert.match(friendly(new TxFailedError("sig", "insufficient SOL")), /failed on chain/);
+});
+
+test("not_partner and request_too_large are readable", async () => {
+  for (const [status, code, path] of [[403, "not_partner", "/api/verify"], [413, "request_too_large", "/api/events"]] as const) {
+    const e = await apiError(path, res(status, { detail: code }));
+    assert.equal(friendly(e), CODES[code]);
+    assert.doesNotMatch(CODES[code], /_/);
+  }
+});
+
+test("new program errors read clearly, by Anchor name and by the program's message", () => {
+  const sim = "Transaction simulation failed: Error processing Instruction 1: custom program error: 0x1794. Logs: Program log: AnchorError occurred. Error Code: StaleScanTimestamp. Error Number: 6036. Error Message: Signed ts is more than MAX_SCAN_TS_SKEW_S away from the cluster clock.";
+  assert.match(friendly(new Error(sim)), /expired.*Scan again/);
+  const landed = new TxFailedError("sig", "The order's price differs from the price the buyer agreed to — instruction 1 returned error 6022 (0x1786)");
+  assert.match(friendly(landed), /^The transaction failed on chain: The price of this listing has changed/);
+  for (const p of PROGRAM_ERRORS) assert.equal(friendly(new Error(`Error Code: ${p.name}. Error Number: 6000. Error Message: x.`)), p.text, p.name);
+  // unknown program errors keep the program's own message
+  assert.match(friendly(new Error("Error Code: Whatever. Error Number: 6001. Error Message: Something odd happened.")), /Something odd happened/);
 });

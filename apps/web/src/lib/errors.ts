@@ -60,7 +60,36 @@ export const CODES: Record<string, string> = {
   report_limited: "A report for this seal is already open. A partner checks it; there is no need to report it again.",
   media_nonce_invalid: "The photo upload needs a running scan session. Restart the scan.",
   resume_not_found: "This signed scan is no longer waiting to be anchored (already anchored or expired). Open the passport or start a new scan.",
+  not_partner: "Certified scans and the vault/partner roles need a wallet registered as a FlaconVault partner. Connect the partner wallet or scan as owner.",
+  request_too_large: "The request is too large for the verification server.",
 };
+
+/**
+ * Program errors added with the hardened flacon/escrow programs, by Anchor error name ("Error Code: <Name>" in the
+ * simulation log) and by the program's own message (what a landed-but-failed transaction reports).
+ */
+export const PROGRAM_ERRORS: Array<{ name: string; msg: string; text: string }> = [
+  { name: "NotIssuerOrAuthority", msg: "Signer is neither the passport issuer", text: "Only the issuer of this passport (while a partner) or the registry authority can do this." },
+  { name: "TooManySeals", msg: "maximum number of seals", text: "This passport already has the maximum number of seals (one box, one neck)." },
+  { name: "ServerKeyNotValidNow", msg: "not valid at the current cluster time", text: "The verification server's signing key is no longer valid. Start a new scan." },
+  { name: "StaleScanTimestamp", msg: "Signed ts is more than", text: "The server signature has expired (older than 10 minutes). Scan again." },
+  { name: "CounterOutOfRange", msg: "24-bit NTAG counter range", text: "The seal's tap counter is out of range; this seal cannot be anchored any more." },
+  { name: "PartnerNotFound", msg: "Partner is not registered", text: "This wallet is not a registered partner." },
+  { name: "ServerKeyAlreadyRevoked", msg: "already expired or revoked", text: "This server key is already expired or revoked." },
+  { name: "NotUpgradeAuthority", msg: "upgrade authority", text: "Only the program's upgrade authority can do this." },
+  { name: "AssetMismatch", msg: "does not match the asset", text: "The Core asset does not match this passport." },
+  { name: "InvalidAsset", msg: "not a Metaplex Core asset", text: "The account is not a Metaplex Core asset." },
+  { name: "PriceChanged", msg: "price differs from the price the buyer agreed", text: "The price of this listing has changed. Reload the order and check the new price." },
+  { name: "NotPassportOwner", msg: "Seller is not the owner", text: "Only the owner of the passport's Core asset (or its issuer, when it has no asset) can list it." },
+  { name: "ReceiptMatched", msg: "receipt scan matched", text: "The receipt scan matched the shipping scan, so the order is released instead of disputed." },
+  { name: "WrongTokenOwner", msg: "does not belong to the expected recipient", text: "The USDC account does not belong to the expected recipient." },
+];
+
+function programError(m: string): string | null {
+  const code = /Error Code: (\w+)/.exec(m)?.[1];
+  const hit = PROGRAM_ERRORS.find((p) => p.name === code) ?? PROGRAM_ERRORS.find((p) => m.includes(p.msg));
+  return hit ? hit.text : null;
+}
 
 const sentence = (s: string) => { const t = s.trim().replace(/\s+/g, " "); return t ? t[0].toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? "" : ".") : t; };
 
@@ -90,7 +119,7 @@ function fromApi(e: ApiError): string {
 /** One readable sentence for any error shown to the user. */
 export function friendly(e: unknown): string {
   if (e instanceof ApiError) return fromApi(e);
-  if (e instanceof TxFailedError) return e.message;
+  if (e instanceof TxFailedError) { const p = programError(e.reason); return p ? `The transaction failed on chain: ${p}` : e.message; }
   const name = (e as { name?: string })?.name ?? "";
   const m = (e as Error)?.message ?? String(e);
   if (name === "NotAllowedError" && !/wallet|transaction|sign/i.test(m)) return "Permission denied by the browser. Allow it in the site settings and try again.";
@@ -104,7 +133,9 @@ export function friendly(e: unknown): string {
   if (/429|Too Many Requests/i.test(m)) return "Devnet RPC overloaded (429). Wait 10 seconds, then press again.";
   if (/blockhash not found|block ?height exceeded|has expired/i.test(m)) return "The transaction expired before it was confirmed. Press again and confirm promptly in the wallet.";
   if (/Failed to fetch|Load failed|NetworkError|network request failed/i.test(m)) return "The server is unreachable. Check the connection and try again.";
-  // Anchor / simulation errors: keep the program's own message, drop the log dump
+  // Anchor / simulation errors: a readable text for the known ones, else the program's own message without the log dump
+  const known = programError(m);
+  if (known) return known;
   const anchor = /Error Message: ([^."\]]+)/.exec(m);
   if (anchor) return `The program refused the transaction: ${anchor[1].trim()}.`;
   const sim = /Transaction simulation failed: ([^.]+)/.exec(m);

@@ -10,6 +10,7 @@ import {
   MIN_DISPUTE_AFTER_S,
   OrderState as S,
   availableActions,
+  coreAssetUri,
   effectiveWindow,
   formatUsdc,
   isValidSerial,
@@ -52,6 +53,7 @@ describe("web escrow rules", () => {
   it("paths encode their dynamic part", () => {
     expect(passportPath("SN-1")).to.equal("/p/SN-1");
     expect(passportPath("a/b?c")).to.equal("/p/a%2Fb%3Fc");
+    expect(coreAssetUri("https://verify.example/", "SN 1/x")).to.equal("https://verify.example/api/passport/SN%201%2Fx/metadata.json");
     expect(marketPassportPath("a#b")).to.equal("/market/a%23b");
     expect(orderPath("8vxGxW1gTEST")).to.equal("/market/o/8vxGxW1gTEST");
   });

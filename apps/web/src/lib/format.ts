@@ -99,10 +99,11 @@ export function eventLine(e: PassportEvent): { title: string; details: string[] 
       return { title, details };
     }
     case EventType.LIST: return { title: "Listed", details: str(p.priceUsdc ?? p.price) ? [`${str(p.priceUsdc ?? p.price)} ${str(p.currency) ?? "USDC"}`] : [] };
-    case EventType.RESERVE: return { title: "Reserved", details: [] };
+    case EventType.RESERVE: return { title: "Reserved", details: str(p.priceUsdc ?? p.price) ? [`${str(p.priceUsdc ?? p.price)} ${str(p.currency) ?? "USDC"} in escrow`] : [] };
     case EventType.SHIP: return { title: "Shipped", details: [str(p.carrier), typeof p.preShipScanCounter === "number" ? `Shipping scan counter ${p.preShipScanCounter}` : null].filter((x): x is string => !!x) };
     case EventType.RECEIVE: return { title: "Received", details: [p.match === true ? "Receipt scan matching" : p.match === false ? "Mismatch" : null, typeof p.fillDelta === "number" ? `Fill level ±${p.fillDelta} %` : null].filter((x): x is string => !!x) };
-    case EventType.RELEASE: return { title: "Released", details: [`${str(p.priceUsdc ?? p.price) ?? "?"} ${str(p.currency) ?? "USDC"} → seller`, "Passport → buyer"] };
+    // "Passport → buyer" only when the Core asset really moved out of escrow custody (payload.passportTo)
+    case EventType.RELEASE: return { title: "Released", details: [`${str(p.priceUsdc ?? p.price) ?? "?"} ${str(p.currency) ?? "USDC"} → seller`, str(p.passportTo) ? "Passport → buyer" : null, str(p.reason)].filter((x): x is string => !!x) };
     case EventType.DISPUTE: return { title: "Dispute", details: str(p.reason) ? [str(p.reason)!] : [] };
     // only a confirmed SEAL_DEAD (a partner's mark_seal_dead transaction) voids the passport; a report changes nothing
     case EventType.SEAL_DEAD: return e.status === "confirmed"

@@ -576,6 +576,9 @@ export function ScanFlow() {
               {(reading.heat === Indicator.UNREADABLE || reading.humidity === Indicator.UNREADABLE) && <Pill tone="none">Inspection recommended</Pill>}
             </div>
           )}
+          {reading?.found && (reading.heat === Indicator.UNREADABLE || reading.humidity === Indicator.UNREADABLE) && (
+            <p className="mt-2 text-xs text-muted">{reading.reason ?? "The card could not be read reliably"}{reading.votes ? ` · heat agreed in ${reading.votes.heat} of ${reading.votes.frames} frames` : ""}. Photograph again for a full reading.</p>
+          )}
           <div className="mt-6 grid gap-4 sm:grid-cols-2">
             <label className="card block p-4 text-sm">
               <span className="font-medium">Fill level {fill} %</span>

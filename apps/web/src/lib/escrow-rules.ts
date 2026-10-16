@@ -22,6 +22,8 @@ export const isValidSerial = (s: string) => SERIAL_RE.test(s);
 export const passportPath = (serial: string) => `/p/${encodeURIComponent(serial)}`;
 export const marketPassportPath = (serial: string) => `/market/${encodeURIComponent(serial)}`;
 export const orderPath = (orderPda: string) => `/market/o/${encodeURIComponent(orderPda)}`;
+/** Metaplex Core `uri` of a passport's asset: the verifier's metadata JSON (GET /api/passport/<serial>/metadata.json). */
+export const coreAssetUri = (verifyUrl: string, serial: string) => `${verifyUrl.replace(/\/+$/, "")}/api/passport/${encodeURIComponent(serial)}/metadata.json`;
 
 /**
  * Parses a USDC amount typed by a person into base units (6 decimals). Accepts "480", "480.5", "0.000001";

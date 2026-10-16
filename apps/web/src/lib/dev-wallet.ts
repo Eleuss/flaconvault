@@ -3,8 +3,9 @@ import { BaseSignerWalletAdapter, WalletReadyState, type WalletName } from "@sol
 import { Keypair, PublicKey, type Transaction, type VersionedTransaction } from "@solana/web3.js";
 
 /**
- * Dev-only wallet with a keypair persisted in localStorage — survives reloads, so one browser can play
- * seller and buyer in the escrow demo. Only registered when NEXT_PUBLIC_DEV_SIMULATOR=true.
+ * Demo-only wallet with a keypair persisted in plain text in localStorage — survives reloads, so one browser can play
+ * seller and buyer in the escrow demo. It signs without asking, so it is registered only in demo mode (lib/demo.ts:
+ * NEXT_PUBLIC_DEV_SIMULATOR=true and localhost or /dev?demo=1). Never use it for anything of value.
  */
 export class DevWalletAdapter extends BaseSignerWalletAdapter {
   name: WalletName;

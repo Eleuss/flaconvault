@@ -50,19 +50,29 @@ export function VisionLab() {
     ctx.putImageData(new ImageData(new Uint8ClampedArray(r.warped.data), r.warped.width, r.warped.height), 0, 0);
     const S = cfg.px_per_mm;
     ctx.lineWidth = 2; ctx.font = "11px sans-serif";
-    cfg.fields.forEach((f, i) => {
+    // frame mode (the real card in its holder) reads its own layout (cfg.frame); marker mode the printed test card
+    const frame = r.quality.mode === "frame" && cfg.frame ? cfg.frame : null;
+    (frame ? frame.fields : cfg.fields).forEach((f, i) => {
       const fr = r.heatFields[i];
       ctx.strokeStyle = fr?.level === 1 ? "#b7791f" : "#2f7a4f";
       if (fr && fr.confidence < 0.85) ctx.strokeStyle = "#b3261e";
       ctx.strokeRect(f.roi_mm.x * S, f.roi_mm.y * S, f.roi_mm.w * S, f.roi_mm.h * S);
       ctx.fillStyle = ctx.strokeStyle; ctx.fillText(`${f.temp_c}°`, f.roi_mm.x * S, f.roi_mm.y * S - 3);
     });
-    const hm = cfg.humidity_mm;
+    const hm = frame ? frame.humidity_mm : cfg.humidity_mm;
     ctx.strokeStyle = r.humidity === 1 ? "#b7791f" : r.humidity === 0 ? "#2f7a4f" : "#b3261e";
     ctx.beginPath(); ctx.arc(hm.cx * S, hm.cy * S, hm.roi_r * S, 0, Math.PI * 2); ctx.stroke();
     ctx.strokeStyle = "#8a938c"; ctx.setLineDash([4, 3]);
-    ctx.strokeRect(cfg.aruco.x * S, cfg.aruco.y * S, cfg.aruco.size * S, cfg.aruco.size * S);
-    ctx.strokeRect(cfg.qr.x * S, cfg.qr.y * S, cfg.qr.size * S, cfg.qr.size * S);
+    if (frame) {
+      ctx.strokeRect(frame.uv_mm.x * S, frame.uv_mm.y * S, frame.uv_mm.w * S, frame.uv_mm.h * S);
+      ctx.strokeRect(frame.white_ref_mm.x * S, frame.white_ref_mm.y * S, frame.white_ref_mm.w * S, frame.white_ref_mm.h * S);
+      const b = frame.black_ref;
+      ctx.beginPath(); ctx.arc(b.cx * S, b.cy * S, b.r0 * S, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(b.cx * S, b.cy * S, b.r1 * S, 0, Math.PI * 2); ctx.stroke();
+    } else {
+      ctx.strokeRect(cfg.aruco.x * S, cfg.aruco.y * S, cfg.aruco.size * S, cfg.aruco.size * S);
+      ctx.strokeRect(cfg.qr.x * S, cfg.qr.y * S, cfg.qr.size * S, cfg.qr.size * S);
+    }
     ctx.setLineDash([]);
   }, [cfg]);
 
@@ -105,7 +115,7 @@ export function VisionLab() {
       stream.current = s;
       if (video.current) { video.current.srcObject = s; await video.current.play(); }
       setCamOn(true);
-    } catch (e) { setStatus(`Kamera: ${(e as Error).message}`); }
+    } catch (e) { setStatus(`Camera: ${(e as Error).message}`); }
   };
   const stopCam = () => { stream.current?.getTracks().forEach((t) => t.stop()); stream.current = null; setCamOn(false); };
   const capture = async () => { if (video.current) await analyze(frameFromSource(video.current, 1600)); };

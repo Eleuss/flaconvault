@@ -65,6 +65,11 @@ test("not_partner and request_too_large are readable", async () => {
     assert.equal(friendly(e), CODES[code]);
     assert.doesNotMatch(CODES[code], /_/);
   }
+  // not_partner comes only from the certified page, which has no owner role: the text sends the user to the scan
+  // without certification instead of to an owner choice that page does not offer
+  assert.match(CODES.not_partner, /Connect the partner wallet before “Get signature” \(on iPhone Safari: via WalletConnect\)\./);
+  assert.match(CODES.not_partner, /Without a partner wallet, open the scan without certification and scan as owner\.$/);
+  assert.doesNotMatch(CODES.not_partner, /, or scan as owner/);
 });
 
 test("new program errors read clearly, by Anchor name and by the program's message", () => {
@@ -142,12 +147,21 @@ test("Retry-After is kept on the error and shown for the waiting codes only", as
   assert.equal(limited.retryAfter, 40);
   assert.match(friendly(limited), /^Too many requests from this connection\..*The server asks to wait about 40 seconds\.$/);
   assert.match(friendly(new ApiError("/api/media", 429, "media_limited", "media_limited", 7200)), /about 2 hours/);
-  // without the header (cross-origin and not exposed by the verifier's CORS setup) the plain text stands alone
+  // without the header the plain text stands alone
   assert.equal(friendly(new ApiError("/api/events", 503, "busy", "busy")), CODES.busy);
   // a code without a waiting meaning ignores the header
   assert.equal(friendly(new ApiError("/api/events", 403, "tx_mismatch", "tx_mismatch", 30)), CODES.tx_mismatch);
   assert.equal(waitText(1), "about 1 second");
   assert.equal(waitText(600), "about 10 minutes");
+});
+
+test("the verifier exposes Retry-After to the web origin (cross-origin fetch() hides it otherwise)", () => {
+  // the web calls the verifier from the browser on another origin; Retry-After is not a CORS-safelisted header, so
+  // without Access-Control-Expose-Headers r.headers.get("retry-after") is null there (tested in apps/verify/tests/test_cors.py)
+  const main = readFileSync(resolve(repo, "apps/verify/fv/main.py"), "utf8");
+  const cors = /add_middleware\(\s*CORSMiddleware,([^)]*)\)/.exec(main)?.[1] ?? "";
+  assert.match(cors, /expose_headers=\[[^\]]*"Retry-After"[^\]]*\]/, "fv/main.py CORSMiddleware must expose Retry-After");
+  assert.match(cors, /allow_credentials=False/);
 });
 
 test("media upload refusals (411/413/415) name the cause", async () => {

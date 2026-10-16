@@ -12,7 +12,7 @@ import { adoptDeadline, scanSession, scanUrlFor, secondsLeft, sessionClock, tapH
 import { buildRecordScanTx, flaconProgram, programId } from "@/lib/flacon";
 import { creatingSignature, sendAsV0 } from "@/lib/send-tx";
 import { AnchorRefused, anchorScan, needsOwnScanConfirmation } from "@/lib/anchor-scan";
-import { cameraOn, escrowScanWarning, initialRole, iosSignHint, partnerWalletGate, roleChoices, timedStep, type ScanStep } from "@/lib/scan-steps";
+import { cameraOn, escrowScanWarning, initialRole, iosSignHint, partnerWalletGate, roleChoices, timedStep, uncertifiedScanLink, type ScanStep } from "@/lib/scan-steps";
 import { friendly } from "@/lib/errors";
 import { PROGRAM_ID, WALLETCONNECT_PROJECT_ID } from "@/lib/config";
 import { demoMode } from "@/lib/demo";
@@ -76,6 +76,8 @@ export function ScanFlow() {
   const [passportName, setPassportName] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** a link that goes with `error` (shown only while that very text is the error on screen) */
+  const [errorLink, setErrorLink] = useState<{ text: string; href: string; label: string } | null>(null);
   const [nfcState, setNfcState] = useState<string>("");
   const [deadSerial, setDeadSerial] = useState("");
   const [camReady, setCamReady] = useState(false);
@@ -385,7 +387,13 @@ export function ScanFlow() {
       }));
       setVerify(v);
       setStep(v.verdict === "VALID" ? "tx" : "verify");
-    } catch (e) { setError(friendly(e)); }
+    } catch (e) {
+      const text = friendly(e);
+      setError(text);
+      // not_partner on the certified page: it has no owner role, so link to the scan without certification
+      const href = uncertifiedScanLink(e, certified);
+      setErrorLink(href ? { text, href, label: "Scan without certification" } : null);
+    }
     finally { setBusy(null); }
   };
 
@@ -481,7 +489,13 @@ export function ScanFlow() {
           <button onClick={startSession} className="btn btn-sm mt-3"><RefreshCw className="h-3.5 w-3.5" aria-hidden /> Restart</button>
         </div>
       )}
-      {error && <p className="mb-6 rounded-xl border border-bad/40 px-4 py-3 text-sm text-bad" role="alert">{error}</p>}
+      {error && (
+        <p className="mb-6 rounded-xl border border-bad/40 px-4 py-3 text-sm text-bad" role="alert">
+          {error}
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- a full page load with the session dropped on purpose: the plain scan starts fresh (its own roles and tier, a new session) */}
+          {errorLink?.text === error && <> <a href={errorLink.href} onClick={() => scanSession.clear()} className="link whitespace-nowrap font-medium">{errorLink.label}</a></>}
+        </p>
+      )}
       {walletGate && !expired && busy !== "resume" && PRE_SIGNATURE.includes(step) && (
         <div className="card mb-6 border-warn/50 p-4 text-sm" role="note">
           <p className="font-medium text-warn">{walletGate.title}</p>

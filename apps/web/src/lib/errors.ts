@@ -5,9 +5,8 @@
 
 /**
  * HTTP error from the verifier. `detail` is FastAPI's `detail` flattened to text, `code` a machine code like
- * "tx_not_visible". `retryAfter` is the Retry-After header in seconds when the browser may read it (the verifier sends
- * it with busy, rate_limited, report_limited, media_limited and media_busy; cross-origin it is only readable once the
- * verifier's CORS setup exposes it), else null.
+ * "tx_not_visible". `retryAfter` is the Retry-After header in seconds (the verifier sends it with busy, rate_limited,
+ * report_limited, media_limited and media_busy, and exposes it to the web origins via CORS), else null.
  */
 export class ApiError extends Error {
   constructor(readonly path: string, readonly status: number, readonly detail: string | null, readonly code: string | null, readonly retryAfter: number | null = null) {
@@ -85,7 +84,7 @@ export const CODES: Record<string, string> = {
   media_busy: "The verification server is receiving too many photos right now. Try again in a few minutes.",
   storage_full: "The verification server cannot store photos right now (its storage is full). Try again later.",
   resume_not_found: "This signed scan is no longer waiting to be anchored (already anchored or expired). Open the passport or start a new scan.",
-  not_partner: "Certified scans and the vault/partner roles are signed only for a wallet registered as a FlaconVault partner. Connect the partner wallet before “Get signature” (on iPhone Safari: via WalletConnect), or scan as owner.",
+  not_partner: "Certified scans and the vault/partner roles are signed only for a wallet registered as a FlaconVault partner. Connect the partner wallet before “Get signature” (on iPhone Safari: via WalletConnect). Without a partner wallet, open the scan without certification and scan as owner.",
   request_too_large: "The request is too large for the verification server.",
 };
 

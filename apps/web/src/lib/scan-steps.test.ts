@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Role, Tier } from "@flaconvault/proof";
-import { cameraOn, escrowScanWarning, initialRole, iosSignHint, needsPartnerWallet, partnerWalletGate, roleChoices, timedStep, type ScanStep, type WalletEnv } from "./scan-steps";
+import { ApiError, CODES, friendly } from "./errors";
+import { cameraOn, escrowScanWarning, initialRole, iosSignHint, needsPartnerWallet, partnerWalletGate, roleChoices, timedStep, uncertifiedScanLink, UNCERTIFIED_SCAN_HREF, type ScanStep, type WalletEnv } from "./scan-steps";
+import { scanUrlFor } from "./handoff";
 
 const ALL: ScanStep[] = ["session", "tap", "preview", "camera", "read", "verify", "tx", "done", "dead"];
 
@@ -40,6 +42,22 @@ test("the certified flow offers only the vault and partner roles (owner/seller/b
   assert.equal(initialRole(Role.PARTNER, false), Role.OWNER);
   assert.equal(initialRole(Role.SELLER, false), Role.SELLER);
   assert.equal(initialRole(Number.NaN, false), Role.OWNER);
+});
+
+test("not_partner on the certified page links to the scan without certification, which offers the owner role", () => {
+  const notPartner = new ApiError("/api/verify", 403, "not_partner", "not_partner");
+  assert.equal(uncertifiedScanLink(notPartner, true), UNCERTIFIED_SCAN_HREF);
+  // that page is the plain flow: owner, seller and buyer (initialRole falls back to owner), no tier/role/site kept
+  assert.equal(scanUrlFor(new URLSearchParams(UNCERTIFIED_SCAN_HREF.split("?")[1] ?? "")), "/scan");
+  assert.ok(roleChoices(false).includes(Role.OWNER));
+  // the text the link goes with no longer points at an owner choice the certified page does not have
+  assert.equal(friendly(notPartner), CODES.not_partner);
+  assert.match(CODES.not_partner, /open the scan without certification and scan as owner/);
+  // no link on the plain page, and none for any other error
+  assert.equal(uncertifiedScanLink(notPartner, false), null);
+  for (const e of [new ApiError("/api/verify", 403, "nonce_invalid", "nonce_invalid"), new ApiError("/api/verify", 429, "rate_limited", "rate_limited"), new Error("not_partner")]) {
+    assert.equal(uncertifiedScanLink(e, true), null, String(e));
+  }
 });
 
 test("no gate when no partner is needed or the wallet is connected", () => {

@@ -1,5 +1,6 @@
 /** The steps of the scan page (components/scan-flow.tsx) and the rules that depend only on the step, tier and role. */
 import { Role, Tier } from "@flaconvault/proof";
+import { ApiError } from "./errors";
 import { scanUsableForOrder } from "./escrow-rules";
 import { short } from "./format";
 
@@ -33,6 +34,18 @@ export const roleChoices = (certified: boolean): number[] =>
 /** The role the page starts with: ?role= when the flow offers it, else partner (certified) or owner. */
 export function initialRole(qRole: number, certified: boolean): number {
   return Number.isInteger(qRole) && roleChoices(certified).includes(qRole) ? qRole : certified ? Role.PARTNER : Role.OWNER;
+}
+
+/** The scan page without certification (owner, seller or buyer; tier ≤ 2). */
+export const UNCERTIFIED_SCAN_HREF = "/scan";
+
+/**
+ * The way on after the verifier refused a certified scan with not_partner (the connected wallet is not a registry
+ * partner): the certified page offers only the vault and partner roles, so the error links to the scan without
+ * certification, where any wallet can scan as owner. null for any other error, and on the plain page.
+ */
+export function uncertifiedScanLink(e: unknown, certified: boolean): string | null {
+  return certified && e instanceof ApiError && e.code === "not_partner" ? UNCERTIFIED_SCAN_HREF : null;
 }
 
 /** What this browser offers for connecting a wallet. */

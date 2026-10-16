@@ -120,27 +120,39 @@ def enabled(settings: Settings) -> bool:
     return bool(settings.arweave and (settings.irys_key or settings.irys_key_json))
 
 
-def config_problem(settings: Settings) -> str | None:
-    """Why archiving cannot work although FV_ARWEAVE=true (None when it is off or looks fine). Never contains secrets."""
+def _config_check(settings: Settings) -> tuple[str, str] | None:
+    """(code, text) of why archiving cannot work although FV_ARWEAVE=true; None when it is off or looks fine."""
     if not settings.arweave:
         return None
     if not (settings.irys_key or settings.irys_key_json):
-        return "FV_ARWEAVE=true but neither FV_IRYS_KEY nor FV_IRYS_KEY_JSON is set: nothing is archived"
+        return "key_missing", "FV_ARWEAVE=true but neither FV_IRYS_KEY nor FV_IRYS_KEY_JSON is set: nothing is archived"
     if settings.irys_key_json and _parse_keypair(settings.irys_key_json) is None:
-        return "FV_IRYS_KEY_JSON is not a JSON array of 64 numbers (the Solana keypair file format)"
+        return "key_invalid", "FV_IRYS_KEY_JSON is not a JSON array of 64 numbers (the Solana keypair file format)"
     if not settings.irys_key_json:
         k = key_path(settings)
         if not k.exists():
-            return f"Irys key file not found: {k}"
+            return "key_file_missing", f"Irys key file not found: {k}"
     if not UPLOAD_SCRIPT.exists():
-        return f"sidecar missing: {UPLOAD_SCRIPT}"
+        return "sidecar_missing", f"sidecar missing: {UPLOAD_SCRIPT}"
     if not (SIDECAR_DIR / "node_modules").exists():
-        return "sidecar dependencies missing: run `npm ci --omit=dev` in apps/verify/irys"
+        return "sidecar_dependencies_missing", "sidecar dependencies missing: run `npm ci --omit=dev` in apps/verify/irys"
     try:
         node_bin(settings)
     except ArweaveError as exc:
-        return str(exc)
+        return "node_missing", str(exc)
     return None
+
+
+def config_problem(settings: Settings) -> str | None:
+    """Why archiving cannot work although FV_ARWEAVE=true (None when it is off or looks fine). Never contains secrets."""
+    check = _config_check(settings)
+    return check[1] if check else None
+
+
+def config_problem_code(settings: Settings) -> str | None:
+    """config_problem as a short code (key_missing, key_invalid, key_file_missing, sidecar_missing, …) — no paths."""
+    check = _config_check(settings)
+    return check[0] if check else None
 
 
 def status(settings: Settings) -> dict[str, Any]:
@@ -152,13 +164,17 @@ def status(settings: Settings) -> dict[str, Any]:
 
 
 def health(settings: Settings) -> dict[str, Any]:
-    """Compact public status for GET /health (error codes, no raw sidecar output)."""
+    """
+    Compact public status for GET /health: status flags, times, counters and short codes only — no raw sidecar output,
+    no file paths, no wallet address, never a key. problem = config_problem_code (the full text is in the admin status).
+    """
     st = status(settings)
     probe = st.get("probe") or {}
+    problem = config_problem_code(settings)
     ok = None
     if st["enabled"]:
-        ok = st["problem"] is None and not st["consecutiveFailures"] and probe.get("balanceOk", True) is not False
-    return {"enabled": st["enabled"], "ok": ok, "problem": st["problem"], "lastOkAt": st["lastOkAt"],
+        ok = problem is None and not st["consecutiveFailures"] and probe.get("balanceOk", True) is not False
+    return {"enabled": st["enabled"], "ok": ok, "problem": problem, "lastOkAt": st["lastOkAt"],
             "lastErrorAt": st["lastErrorAt"], "lastErrorCode": st["lastErrorCode"], "failures": st["failures"],
             "balanceSol": probe.get("balanceSol"), "balanceOk": probe.get("balanceOk")}
 
@@ -334,18 +350,26 @@ def archive_media(conn, settings: Settings, sha256_hex: str) -> bool | None:
     return True
 
 
-def archive_scan_event(conn, settings: Settings, event: dict) -> tuple[str | None, str | None]:
+def archive_scan(conn, settings: Settings, event: dict) -> tuple[str | None, str | None, bool | None]:
     """
-    For a confirmed SCAN event: upload the canonical §4.4 bundle (the bytes whose sha256 is bundleHash) → events.ar_bundle,
-    and copy the media's preview/url → events.ar_media. Idempotent; returns (ar_bundle, ar_media).
+    For a confirmed SCAN event: first its media (archive_media, when the event has no ar_media yet), then copy the media's
+    Arweave preview/url → events.ar_media, then upload the canonical §4.4 bundle (the bytes whose sha256 is bundleHash) →
+    events.ar_bundle. The media goes first so a newly confirmed scan never gets an ar_media copied from a row that is not
+    archived yet (it would stay empty for good); the bundle does not depend on it and is archived even when the media
+    upload fails. Idempotent; returns (ar_bundle, ar_media, media result of archive_media or None when not attempted).
     """
     if event["type"] != EventType.SCAN:
-        return event.get("ar_bundle"), event.get("ar_media")
+        return event.get("ar_bundle"), event.get("ar_media"), None
     payload = json.loads(event["payload_json"] or "{}")
     ar_bundle, ar_media = event.get("ar_bundle"), event.get("ar_media")
     media = payload.get("media") or []
-    if not ar_media and media:
-        row = get_media(conn, proof.strip0x(media[0]["sha256"]).lower())
+    sha = media[0].get("sha256") if media and isinstance(media[0], dict) else None
+    media_res = None
+    if not ar_media and sha:
+        sha = proof.strip0x(sha).lower()
+        if enabled(settings):
+            media_res = archive_media(conn, settings, sha)
+        row = get_media(conn, sha)
         if row:
             ar_media = row["ar_preview"] or row["url"]
     if not ar_bundle and "indicators" in payload and enabled(settings):
@@ -361,6 +385,12 @@ def archive_scan_event(conn, settings: Settings, event: dict) -> tuple[str | Non
             ar_bundle = res["ar"]
     if ar_bundle != event.get("ar_bundle") or ar_media != event.get("ar_media"):
         set_event_arweave(conn, event["id"], ar_bundle, ar_media)
+    return ar_bundle, ar_media, media_res
+
+
+def archive_scan_event(conn, settings: Settings, event: dict) -> tuple[str | None, str | None]:
+    """archive_scan without the media result: (ar_bundle, ar_media)."""
+    ar_bundle, ar_media, _ = archive_scan(conn, settings, event)
     return ar_bundle, ar_media
 
 
@@ -378,9 +408,9 @@ def backfill(conn, settings: Settings, *, limit: int = BACKFILL_PER_CYCLE, now_t
     """
     The archiving queue, run by the reconcile job after its write transaction (the only place uploads happen — never a
     request): confirmed SCANs without an Arweave bundle, or whose media is not archived yet, at most `limit` per call,
-    fewest failed attempts first, then newest (db.arweave_queue). Per row the media is uploaded first (its link goes
-    into ar_media), then the bundle — the bundle's canonical bytes and hash do not depend on the media upload, so it is
-    archived even when the media upload fails. A row that fails is recorded in arweave_queue (attempts, last error code)
+    fewest failed attempts first, then newest (db.arweave_queue). Per row archive_scan uploads the media first (its link
+    goes into ar_media), then the bundle — the bundle's canonical bytes and hash do not depend on the media upload, so it
+    is archived even when the media upload fails. A row that fails is recorded in arweave_queue (attempts, last error code)
     and due again after row_backoff_s; the cycle goes on with the next row, unless the failure would hit every upload
     (GLOBAL_ERROR_CODES). After such a global failure whole cycles wait (in_backoff), so a broken sidecar or Irys setup
     is not hammered; row-specific failures (an unpaid media upload, a rejected file) never hold up the other rows.
@@ -400,10 +430,7 @@ def backfill(conn, settings: Settings, *, limit: int = BACKFILL_PER_CYCLE, now_t
     for r in arweave_queue(conn, now_ts, limit):
         out["attempted"] += 1
         failures, _ = _failures()
-        media = json.loads(r["payload_json"] or "{}").get("media") or []
-        sha = media[0].get("sha256") if media and isinstance(media[0], dict) else None
-        media_res = archive_media(conn, settings, proof.strip0x(sha).lower()) if sha and not r["ar_media"] else None
-        ar_bundle, _ar_media = archive_scan_event(conn, settings, r)
+        ar_bundle, _ar_media, media_res = archive_scan(conn, settings, r)      # media first, then the bundle
         if ar_bundle:
             out["archived"] += 1
         else:

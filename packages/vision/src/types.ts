@@ -31,7 +31,8 @@ export interface FrameLayout {
   white_ref_mm: RoiMm;
   /** black reference: the printed ring around the humidity dot (annulus r0..r1 around its centre) */
   black_ref: { cx: number; cy: number; r0: number; r1: number };
-  humidity_mm: { cx: number; cy: number; r: number; roi_r: number };
+  /** humidity dot centre and the radius of the sampled disc (the black ring around the dot is black_ref) */
+  humidity_mm: { cx: number; cy: number; roi_r: number };
   uv_mm: RoiMm;
   fields: Array<{ index: number; temp_c: number; decisive: boolean; roi_mm: RoiMm }>;
 }
@@ -44,9 +45,14 @@ export interface PatchSet { intact: Rgb; triggered: Rgb; grey: Rgb; white: Rgb }
 export interface FieldReading { level: 0 | 1; confidence: number; dIntact: number; dTriggered: number; rgb: Rgb }
 
 export interface CardReading {
+  /** a card was located (marker or holder window); its indicators may still be UNREADABLE */
   found: boolean;
+  /** why the card was not found, or why an indicator is UNREADABLE (missing heat label, failed white balance, …) */
   reason?: string;
-  /** six 0/1 fields (29/33/34/37/40/42 °C) — nearest reference, regardless of confidence */
+  /**
+   * six 0/1 fields (29/33/34/37/40/42 °C), nearest reference per field. All zero unless heat is INTACT or TRIGGERED,
+   * so a guessed 40 °C field never reaches the chain; the per-field measurements stay in heatFields.
+   */
   heatLevels: number[];
   heatFields: FieldReading[];
   /** indicator codes (proof enums): 0 INTACT · 1 TRIGGERED · 2 UNREADABLE · 3 MISSING */

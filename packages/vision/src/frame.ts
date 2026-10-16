@@ -21,9 +21,19 @@ function lineIntersect(a: [number, number, number, number], b: [number, number, 
 }
 
 /**
+ * The two corner orders a card window can have once its long edge is known: as found, and turned by 180°. The holder
+ * window is point-symmetric, so only a printed feature (the heat label) can tell them apart.
+ */
+export function cardOrientations(quad: Pt[]): Pt[][] {
+  return [quad, [quad[2], quad[3], quad[0], quad[1]]];
+}
+
+/**
  * Find the card seen through the holder's window: the largest bright, convex quadrilateral that does not touch the
- * image border and has roughly the window's aspect ratio. Corners are refined by fitting a line to each side
- * (rounded corners, R 2 mm, would otherwise pull approxPolyDP's corners inwards). Returns TL,TR,BR,BL or null.
+ * image border and has roughly the window's aspect ratio, in landscape or portrait (card or phone turned by 90°).
+ * Corners are refined by fitting a line to each side (rounded corners, R 2 mm, would otherwise pull approxPolyDP's
+ * corners inwards). Returns the corners clockwise, starting so that corner 0 → corner 1 runs along a long edge
+ * (TL,TR,BR,BL for an upright card; the caller resolves the remaining 180° ambiguity), or null.
  */
 export function detectCardQuad(cv: CV, gray: CV, aspect: number, dbg?: (...a: unknown[]) => void): Pt[] | null {
   const blur = new cv.Mat(), bin = new cv.Mat();
@@ -47,9 +57,13 @@ export function detectCardQuad(cv: CV, gray: CV, aspect: number, dbg?: (...a: un
     const n = approx.rows;
     if (n !== 4 || !cv.isContourConvex(approx)) { approx.delete(); c.delete(); continue; }
     const a: number[] = Array.from(approx.data32S);
-    const quad = orderQuad([[a[0], a[1]], [a[2], a[3]], [a[4], a[5]], [a[6], a[7]]]);
-    const w = (Math.hypot(quad[1][0] - quad[0][0], quad[1][1] - quad[0][1]) + Math.hypot(quad[2][0] - quad[3][0], quad[2][1] - quad[3][1])) / 2;
-    const h = (Math.hypot(quad[3][0] - quad[0][0], quad[3][1] - quad[0][1]) + Math.hypot(quad[2][0] - quad[1][0], quad[2][1] - quad[1][1])) / 2;
+    const ordered = orderQuad([[a[0], a[1]], [a[2], a[3]], [a[4], a[5]], [a[6], a[7]]]);
+    const len = (p: Pt, q: Pt) => Math.hypot(q[0] - p[0], q[1] - p[1]);
+    const top = (len(ordered[0], ordered[1]) + len(ordered[3], ordered[2])) / 2;
+    const side = (len(ordered[0], ordered[3]) + len(ordered[1], ordered[2])) / 2;
+    // portrait in the image: start one corner later so that corner 0 → 1 runs along a long edge
+    const quad = side > top ? [ordered[1], ordered[2], ordered[3], ordered[0]] : ordered;
+    const w = Math.max(top, side), h = Math.min(top, side);
     const ar = w / Math.max(1, h);
     const fill = area / Math.max(1, w * h);
     const score = Math.abs(ar - aspect) / aspect + (1 - fill) * 2 - Math.min(1, area / imgArea);

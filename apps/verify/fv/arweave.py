@@ -384,6 +384,8 @@ def backfill(conn, settings: Settings, *, limit: int = BACKFILL_PER_CYCLE, now_t
     and due again after row_backoff_s; the cycle goes on with the next row, unless the failure would hit every upload
     (GLOBAL_ERROR_CODES). After such a global failure whole cycles wait (in_backoff), so a broken sidecar or Irys setup
     is not hammered; row-specific failures (an unpaid media upload, a rejected file) never hold up the other rows.
+    → {attempted, archived (rows whose bundle is on Arweave after the attempt), failed (bundle upload failed),
+       mediaFailed (media upload failed), skipped (None | "disabled" | "backoff")}
     """
     out = {"attempted": 0, "archived": 0, "failed": 0, "mediaFailed": 0, "skipped": None}
     if not enabled(settings):

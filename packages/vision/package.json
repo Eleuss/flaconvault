@@ -9,7 +9,8 @@
   "files": ["dist", "src"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test src/*.test.ts",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "test": "tsc -p tsconfig.check.json && node --test src/*.test.ts",
     "prepare": "npm run build"
   },
   "dependencies": {

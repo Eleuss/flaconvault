@@ -1,13 +1,14 @@
 import { HEAT_DECISIVE_INDEX, Indicator } from "@flaconvault/proof";
-import { classify, makeWhiteBalance, rgbToLab } from "./color.ts";
+import { classify, hexToRgb, makeWhiteBalance, rgbToLab } from "./color.ts";
 import type { CardReading, CV, FieldReading, FrameLike, HeatFieldsConfig, PatchSet, Rgb, RoiMm } from "./types.ts";
-import { detectCardQuad } from "./frame.ts";
-import { hexToRgb } from "./color.ts";
+import { cardOrientations, detectCardQuad } from "./frame.ts";
 
 export const CARD_W_MM = 66;
 export const CARD_H_MM = 34;
 export const ARUCO_ID = 7;
 export const CONFIDENCE_THRESHOLD = 0.85;
+/** Frame mode: the ring black may be at most this fraction of the card white (per channel); measured ≈ 0.32. */
+export const RING_MAX_RATIO = 0.6;
 
 type Pt = [number, number];
 
@@ -67,13 +68,14 @@ function applyH(h: number[], p: Pt): Pt {
   const w = h[6] * p[0] + h[7] * p[1] + h[8];
   return [(h[0] * p[0] + h[1] * p[1] + h[2]) / w, (h[3] * p[0] + h[4] * p[1] + h[5]) / w];
 }
+/** Least-squares homography over all points (no RANSAC). Throws for degenerate input instead of returning an empty matrix. */
 function homography(cv: CV, src: Pt[], dst: Pt[]): CV {
   const s = pointsMat(cv, src), d = pointsMat(cv, dst);
-  let H: CV;
-  try { H = cv.findHomography(s, d, 0); }
-  catch { H = cv.getPerspectiveTransform(s, d); }
-  s.delete(); d.delete();
-  return H;
+  try {
+    const H = cv.findHomography(s, d, 0);
+    if (H.empty() || H.rows !== 3 || H.cols !== 3) { H.delete(); throw new Error("Homography could not be estimated (degenerate points)"); }
+    return H;
+  } finally { s.delete(); d.delete(); }
 }
 function invert(cv: CV, H: CV): number[] {
   const inv = new cv.Mat();
@@ -87,12 +89,14 @@ function invert(cv: CV, H: CV): number[] {
 function darknessMap(cv: CV, rgba: CV): CV {
   const ch = new cv.MatVector();
   cv.split(rgba, ch);
+  // MatVector.get returns a new Mat handle on every call: keep and delete them, or each call leaks the channel buffers
+  const r = ch.get(0), g = ch.get(1), b = ch.get(2);
   const mn = new cv.Mat();
-  cv.min(ch.get(0), ch.get(1), mn);
-  cv.min(mn, ch.get(2), mn);
+  cv.min(r, g, mn);
+  cv.min(mn, b, mn);
   const dark = new cv.Mat();
-  cv.subtract(new cv.Mat(mn.rows, mn.cols, cv.CV_8UC1, new cv.Scalar(255)), mn, dark);
-  ch.delete(); mn.delete();
+  cv.bitwise_not(mn, dark); // 8-bit: 255 − v
+  r.delete(); g.delete(); b.delete(); ch.delete(); mn.delete();
   return dark;
 }
 
@@ -155,15 +159,52 @@ function locateDot(cv: CV, dark: CV, cxPx: number, cyPx: number, areaPx: number,
   return best?.pt ?? null;
 }
 
-function notFound(reason: string, t0: number): CardReading {
+/** A reading for "no card in this frame": found false, every indicator MISSING, heat levels zero. */
+export function notFoundReading(reason: string, ms = 0): CardReading {
   return {
     found: false, reason, heatLevels: [0, 0, 0, 0, 0, 0], heatFields: [], heat: Indicator.MISSING, humidity: Indicator.MISSING,
-    humidityField: null, uv: 3, confidence: { heat: 0, humidity: 0 },
+    humidityField: null, uv: Indicator.MISSING, confidence: { heat: 0, humidity: 0 },
     quality: { markerPx: 0, qrUsed: false, anchors: [], groups: { heat: { greyL: 0, whiteL: 0, ok: false }, hum: { greyL: 0, whiteL: 0, ok: false } } },
-    homography: null, warped: null, ms: now() - t0,
+    homography: null, warped: null, ms,
   };
 }
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+const notFound = (reason: string, t0: number) => notFoundReading(reason, now() - t0);
+
+/** INTACT or TRIGGERED: a decided indicator (the only heat verdicts whose heat levels are reported). */
+export const isDecided = (indicator: number): boolean => indicator === Indicator.INTACT || indicator === Indicator.TRIGGERED;
+
+/**
+ * The heat fields must be physically consistent: the strip is irreversible and its fields trigger in temperature
+ * order, so a triggered (black) field above an intact one, e.g. 40 °C black while 37 °C is white, cannot come from a
+ * real card. It means misregistration, a mirrored image or glare. A pair counts when at least one of its two fields
+ * is confident (two unsure fields prove nothing).
+ */
+export function heatFieldsConsistent(fields: FieldReading[], layout: Array<{ temp_c: number }>): boolean {
+  const f = layout.map((l, i) => ({ t: l.temp_c, level: fields[i]?.level, sure: (fields[i]?.confidence ?? 0) >= CONFIDENCE_THRESHOLD })).filter((x) => x.level !== undefined);
+  return !f.some((cool) => f.some((hot) => cool.t < hot.t && cool.level === 0 && hot.level === 1 && (cool.sure || hot.sure)));
+}
+
+/**
+ * Heat verdict from the six fields: the decisive (40 °C) field decides when it is confident, the white balance is
+ * usable and the fields are consistent; otherwise UNREADABLE. Heat levels are reported only for a decided verdict
+ * (zeros otherwise), so a guessed 40 °C field never reaches the chain or the passport. Confidence is 0 when the
+ * measurement itself is void (white balance or consistency failed).
+ */
+function heatVerdict(fields: FieldReading[], layout: Array<{ temp_c: number; decisive: boolean }>, wbOk: boolean): { heat: number; heatLevels: number[]; confidence: number; consistent: boolean } {
+  const idx = layout.findIndex((f) => f.decisive);
+  const decisive = fields[idx >= 0 ? idx : HEAT_DECISIVE_INDEX];
+  const consistent = heatFieldsConsistent(fields, layout);
+  const usable = wbOk && consistent;
+  const heat = !usable || decisive.confidence < CONFIDENCE_THRESHOLD ? Indicator.UNREADABLE : decisive.level;
+  return { heat, heatLevels: isDecided(heat) ? fields.map((f) => f.level) : [0, 0, 0, 0, 0, 0], confidence: usable ? decisive.confidence : 0, consistent };
+}
+
+/** A one-field indicator (humidity, UV): its level when the white balance is usable and the classification confident. */
+function fieldVerdict(field: FieldReading, wbOk: boolean): { value: number; confidence: number } {
+  if (!wbOk) return { value: Indicator.UNREADABLE, confidence: 0 };
+  return { value: field.confidence < CONFIDENCE_THRESHOLD ? Indicator.UNREADABLE : field.level, confidence: field.confidence };
+}
 
 /**
  * Briefing §9 pipeline: ArUco (DICT_4X4_50, id 7) → homography to a 660×340 card (10 px/mm) → white balance per
@@ -285,24 +326,24 @@ export function readCard(cv: CV, frame: FrameLike, cfg: HeatFieldsConfig, opts: 
       const rgb = meanRect(cv, warped, f.roi_mm, S);
       return { rgb, ...classify(wbHeat.apply(rgb), wbHeat.apply(heatP.intact), wbHeat.apply(heatP.triggered)) };
     });
-    const decisiveIdx = cfg.fields.findIndex((f) => f.decisive);
-    const decisive = heatFields[decisiveIdx >= 0 ? decisiveIdx : HEAT_DECISIVE_INDEX];
-    const heat = decisive.confidence < CONFIDENCE_THRESHOLD ? Indicator.UNREADABLE : decisive.level;
+    const hv = heatVerdict(heatFields, cfg.fields, wbHeat.ok);
 
     // 6. humidity: circle ROI (inner 60 %)
     const hm = cfg.humidity_mm;
     const humRgb = meanCircle(cv, warped, hm.cx * S, hm.cy * S, hm.roi_r * S);
     const humidityField: FieldReading = { rgb: humRgb, ...classify(wbHum.apply(humRgb), wbHum.apply(humP.intact), wbHum.apply(humP.triggered)) };
-    const humidity = humidityField.confidence < CONFIDENCE_THRESHOLD ? Indicator.UNREADABLE : humidityField.level;
+    const hum = fieldVerdict(humidityField, wbHum.ok);
 
     let preview: FrameLike | null = null;
     if (opts.preview) preview = { data: new Uint8ClampedArray(warped.data), width: W, height: Hh };
 
     return {
       found: true,
-      heatLevels: heatFields.map((f) => f.level),
-      heatFields, heat, humidity, humidityField, uv: 3,
-      confidence: { heat: decisive.confidence, humidity: humidityField.confidence },
+      reason: !wbHeat.ok || !wbHum.ok ? "White balance failed (glare or exposure on the reference patches)"
+        : !hv.consistent ? "Heat fields are inconsistent (a hotter field is black while a cooler one is white): retake the photo" : undefined,
+      heatLevels: hv.heatLevels,
+      heatFields, heat: hv.heat, humidity: hum.value, humidityField, uv: Indicator.MISSING,
+      confidence: { heat: hv.confidence, humidity: hum.confidence },
       quality: {
         markerPx, qrUsed, anchors, mode: "marker",
         groups: {
@@ -330,10 +371,15 @@ function meanAnnulus(cv: CV, mat: CV, cx: number, cy: number, r0: number, r1: nu
   return [m[0], m[1], m[2]];
 }
 
+const rectCornersMm = (r: RoiMm): Pt[] => [[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h]];
+
 /**
- * Physical Rev C card in its holder: the holder window (62.5 × 30.5 mm) is the fiducial. Homography from its four
- * corners, refined once with the humidity ring; white balance from the card's white and the ring's black; ROIs and
- * reference colours from cfg.frame / cfg.reference_colors.
+ * Physical Rev C card in its holder: the holder window (62.5 × 30.5 mm) is the fiducial for a coarse homography; the
+ * blue heat label (printed on the card itself) fixes the orientation and refines it; white balance from the card's
+ * white and the ring's black; ROIs and reference colours from cfg.frame / cfg.reference_colors.
+ *
+ * Fail-closed: without the heat label the card's orientation and registration are unknown, and with a failed white
+ * balance the colours mean nothing, so both give UNREADABLE for every indicator, never a decision.
  */
 function readCardFrame(cv: CV, src: CV, gray: CV, cfg: HeatFieldsConfig, opts: { preview?: boolean; debug?: boolean }, t0: number, log: string[], dbg: (...a: unknown[]) => void): CardReading {
   const fr = cfg.frame!;
@@ -342,83 +388,91 @@ function readCardFrame(cv: CV, src: CV, gray: CV, cfg: HeatFieldsConfig, opts: {
   const mmToPx = (p: Pt): Pt => [p[0] * S, p[1] * S];
   const trash: CV[] = [];
   const keep = <T,>(m: T): T => { trash.push(m); return m; };
+  const warped = keep(new cv.Mat());
+  const warp = (H: CV) => cv.warpPerspective(src, warped, H, new cv.Size(W, Hh), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(0, 0, 0, 255));
+  const finish = (r: Omit<CardReading, "found" | "homography" | "warped" | "ms" | "debug">, H: CV): CardReading => ({
+    found: true,
+    ...r,
+    homography: Array.from(H.data64F),
+    warped: opts.preview ? { data: new Uint8ClampedArray(warped.data), width: W, height: Hh } : null,
+    ms: now() - t0,
+    debug: opts.debug ? log : undefined,
+  });
   try {
-    const win = fr.window_mm;
-    const quad = detectCardQuad(cv, gray, win.w / win.h, dbg);
+    const quad = detectCardQuad(cv, gray, fr.window_mm.w / fr.window_mm.h, dbg);
     if (!quad) return notFound("Card not detected (no card window in frame)", t0);
     const winPx = (Math.hypot(quad[1][0] - quad[0][0], quad[1][1] - quad[0][1]) + Math.hypot(quad[2][0] - quad[3][0], quad[2][1] - quad[3][1])) / 2;
-    const dstWin: Pt[] = [[win.x, win.y], [win.x + win.w, win.y], [win.x + win.w, win.y + win.h], [win.x, win.y + win.h]];
-    let srcPts: Pt[] = [...quad], dstPts: Pt[] = dstWin.map(mmToPx);
-    let H = keep(homography(cv, srcPts, dstPts));
-    const warped = keep(new cv.Mat());
-    const anchors: string[] = [];
-    // The card sits ~1.8 mm below the holder's top face, so at oblique angles the window outline is parallax-shifted
-    // against the card. Refine on a feature that lies ON the card: the blue heat label (its window rectangle), whose
-    // four corners fully determine the homography. Two rounds: from the coarse warp, then from the refined one.
-    for (let round = 0; round < 2; round++) {
-      cv.warpPerspective(src, warped, H, new cv.Size(W, Hh), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(0, 0, 0, 255));
-      const hi = invert(cv, H);
-      const onCardSrc: Pt[] = [], onCardDst: Pt[] = [];
-      const names: string[] = [];
-      const strip = locateStripQuad(cv, warped, fr.strip_mm, S, dbg);
-      if (strip) {
-        const sm = fr.strip_mm;
-        const dst: Pt[] = [[sm.x, sm.y], [sm.x + sm.w, sm.y], [sm.x + sm.w, sm.y + sm.h], [sm.x, sm.y + sm.h]];
-        strip.forEach((p, i) => { onCardSrc.push(applyH(hi, p)); onCardDst.push(mmToPx(dst[i])); });
-        names.push("heat-label");
+    const dstWin = rectCornersMm(fr.window_mm).map(mmToPx);
+    const dstLabel = rectCornersMm(fr.strip_mm).map(mmToPx);
+
+    // The window outline cannot tell a card from one turned by 180°: try both corner orders and keep the one in which
+    // the blue heat label shows up where the layout puts it. The card sits ~1.8 mm below the holder's top face, so at
+    // oblique angles the window outline is parallax-shifted against the card; the label lies ON the card and its four
+    // corners fully determine the homography. Two rounds: from the coarse warp, then from the refined one. (The
+    // humidity ring is not used as an anchor: the window's shadow rim merges with it and biases its centre.)
+    let H: CV | null = null, coarse: CV | null = null;
+    for (const [turn, q] of cardOrientations(quad).entries()) {
+      let h = keep(homography(cv, q, dstWin));
+      coarse ??= h;
+      let onLabel = false;
+      for (let round = 0; round < 2; round++) {
+        warp(h);
+        const label = locateStripQuad(cv, warped, fr.strip_mm, S, dbg);
+        if (!label) break;
+        const hi = invert(cv, h);
+        h = keep(homography(cv, label.map((p) => applyH(hi, p)), dstLabel));
+        onLabel = true;
+        dbg("turn", turn * 180, "round", round, "anchor heat-label", "H", Array.from(h.data64F as Float64Array).map((v) => +v.toFixed(5)));
       }
-      // (the humidity ring is NOT used as an anchor: the card window's shadow rim merges with it and biases the centre)
-      if (onCardSrc.length === 0) break;
-      // ≥ 4 on-card points: use them alone (parallax-free); fewer: add them to the window corners
-      const useSrc = onCardSrc.length >= 4 ? onCardSrc : [...quad, ...onCardSrc];
-      const useDst = onCardSrc.length >= 4 ? onCardDst : [...dstWin.map(mmToPx), ...onCardDst];
-      H = keep(homography(cv, useSrc, useDst));
-      srcPts = useSrc; dstPts = useDst;
-      anchors.splice(0, anchors.length, ...names);
-      dbg("round", round, "anchors", names.join("+"), "H", Array.from(H.data64F as Float64Array).map((v) => +v.toFixed(5)));
+      if (onLabel) { H = h; break; }
     }
-    cv.warpPerspective(src, warped, H, new cv.Size(W, Hh), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(0, 0, 0, 255));
+    if (!H) {
+      warp(coarse!); // the preview still shows what the reader saw
+      const none = { greyL: 0, whiteL: 0, ok: false };
+      return finish({
+        reason: "Heat label not found: hold the card flat and fully in view, avoid glare",
+        heatLevels: [0, 0, 0, 0, 0, 0], heatFields: [], heat: Indicator.UNREADABLE, humidity: Indicator.UNREADABLE, humidityField: null,
+        uv: Indicator.UNREADABLE, uvField: null, confidence: { heat: 0, humidity: 0 },
+        quality: { markerPx: winPx, qrUsed: false, anchors: [], mode: "frame", groups: { heat: none, hum: none } },
+      }, coarse!);
+    }
+    warp(H);
     // references: card white + ring black → two-point balance per channel (black target = #111111)
     const white = meanRect(cv, warped, fr.white_ref_mm, S);
     const black = meanAnnulus(cv, warped, fr.black_ref.cx * S, fr.black_ref.cy * S, fr.black_ref.r0 * S, fr.black_ref.r1 * S);
-    const wb = makeWhiteBalance(black, white, { grey: 17, white: 255 });
+    // The printed black ring photographs at about a third of the card white. If it is not clearly darker, the
+    // reference sampled something else (misregistration, a mirrored image, glare on the ring) and the balance is void.
+    const ringDark = [0, 1, 2].every((i) => black[i] <= RING_MAX_RATIO * white[i]);
+    const wb0 = makeWhiteBalance(black, white, { grey: 17, white: 255 });
+    const wb = { apply: wb0.apply, ok: wb0.ok && ringDark };
     const ref = (k: string): Rgb => hexToRgb(fr.reference_colors?.[k] ?? cfg.reference_colors[k]);
-    dbg("white", white.map(Math.round), "black", black.map(Math.round), "wb ok", wb.ok ? 1 : 0);
+    dbg("white", white.map(Math.round), "black", black.map(Math.round), "wb ok", wb.ok ? 1 : 0, "ring dark", ringDark ? 1 : 0);
 
     const heatFields: FieldReading[] = fr.fields.map((f) => {
       const rgb = meanRect(cv, warped, f.roi_mm, S);
       return { rgb, ...classify(wb.apply(rgb), ref("heat_intact"), ref("heat_triggered")) };
     });
-    const decisiveIdx = fr.fields.findIndex((f) => f.decisive);
-    const decisive = heatFields[decisiveIdx >= 0 ? decisiveIdx : HEAT_DECISIVE_INDEX];
-    const heat = decisive.confidence < CONFIDENCE_THRESHOLD ? Indicator.UNREADABLE : decisive.level;
+    const hv = heatVerdict(heatFields, fr.fields, wb.ok);
 
     const hm = fr.humidity_mm;
     const humRgb = meanCircle(cv, warped, hm.cx * S, hm.cy * S, hm.roi_r * S);
     const humidityField: FieldReading = { rgb: humRgb, ...classify(wb.apply(humRgb), ref("humidity_intact"), ref("humidity_triggered")) };
-    const humidity = humidityField.confidence < CONFIDENCE_THRESHOLD ? Indicator.UNREADABLE : humidityField.level;
+    const hum = fieldVerdict(humidityField, wb.ok);
 
     const uvRgb = meanRect(cv, warped, fr.uv_mm, S);
     const uvField: FieldReading = { rgb: uvRgb, ...classify(wb.apply(uvRgb), ref("uv_intact"), ref("uv_triggered")) };
-    const uv = uvField.confidence < CONFIDENCE_THRESHOLD ? Indicator.UNREADABLE : uvField.level;
+    const uv = fieldVerdict(uvField, wb.ok);
     dbg("heat", heatFields.map((f) => [f.level, +f.confidence.toFixed(2), f.rgb.map(Math.round)]), "hum", [humidityField.level, +humidityField.confidence.toFixed(2), humRgb.map(Math.round)], "uv", [uvField.level, +uvField.confidence.toFixed(2), uvRgb.map(Math.round)]);
 
-    let preview: FrameLike | null = null;
-    if (opts.preview) preview = { data: new Uint8ClampedArray(warped.data), width: W, height: Hh };
-    return {
-      found: true,
-      heatLevels: heatFields.map((f) => f.level),
-      heatFields, heat, humidity, humidityField, uv, uvField,
-      confidence: { heat: decisive.confidence, humidity: humidityField.confidence },
-      quality: {
-        markerPx: winPx, qrUsed: false, anchors, mode: "frame",
-        groups: { heat: { greyL: rgbToLab(black)[0], whiteL: rgbToLab(white)[0], ok: wb.ok }, hum: { greyL: rgbToLab(black)[0], whiteL: rgbToLab(white)[0], ok: wb.ok } },
-      },
-      homography: Array.from(H.data64F),
-      warped: preview,
-      ms: now() - t0,
-      debug: opts.debug ? log : undefined,
-    };
+    const reason = !wb.ok ? "White balance failed (glare or exposure): card white and ring black are too close"
+      : !hv.consistent ? "Heat fields are inconsistent (a hotter field is black while a cooler one is white): retake the photo"
+      : undefined;
+    const group = { greyL: rgbToLab(black)[0], whiteL: rgbToLab(white)[0], ok: wb.ok };
+    return finish({
+      reason, heatLevels: hv.heatLevels, heatFields, heat: hv.heat, humidity: hum.value, humidityField, uv: uv.value, uvField,
+      confidence: { heat: hv.confidence, humidity: hum.confidence },
+      quality: { markerPx: winPx, qrUsed: false, anchors: ["heat-label"], mode: "frame", groups: { heat: group, hum: group } },
+    }, H);
   } finally {
     for (const m of trash) { try { m.delete(); } catch { /* ignore */ } }
   }

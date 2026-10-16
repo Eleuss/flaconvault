@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { Indicator } from "@flaconvault/proof";
-import { readCard, renderCard, renderScene, tiltedQuad, type HeatFieldsConfig } from "./index.ts";
+import { heatFieldsConsistent, readCard, renderCard, renderScene, tiltedQuad, type HeatFieldsConfig } from "./index.ts";
 
 const cfg = JSON.parse(readFileSync(new URL("../../../docs/heat_fields.json", import.meta.url), "utf8")) as HeatFieldsConfig;
 const mod = await import("@techstark/opencv-js");
@@ -84,4 +84,28 @@ test("glare on the 40 °C field (white) → UNREADABLE, not a decision", () => {
   const r = readCard(cv, frame, cfg);
   assert.equal(r.found, true);
   assert.equal(r.heat, Indicator.UNREADABLE, JSON.stringify({ c: r.confidence, f: r.heatFields[4] }));
+  assert.deepEqual(r.heatLevels, [0, 0, 0, 0, 0, 0], "no guessed 40 °C level for an UNREADABLE verdict");
+  assert.equal(r.heatFields.length, 6, "the per-field measurements stay available");
+});
+
+test("physically impossible strip (40 °C black, 37 °C white) → heat UNREADABLE, no levels", () => {
+  const r = readCard(cv, scene({ heatLevels: [1, 1, 1, 0, 1, 0], humidityTriggered: false }), cfg);
+  assert.equal(r.found, true, r.reason);
+  assert.equal(r.heat, Indicator.UNREADABLE);
+  assert.deepEqual(r.heatLevels, [0, 0, 0, 0, 0, 0]);
+  assert.equal(r.confidence.heat, 0);
+  assert.match(r.reason ?? "", /inconsistent/);
+  assert.equal(r.humidity, Indicator.INTACT, "humidity is read independently");
+});
+
+test("heatFieldsConsistent: a black field above a white one is inconsistent when either is confident", () => {
+  const f = (level: 0 | 1, confidence: number) => ({ level, confidence, dIntact: 0, dTriggered: 0, rgb: [0, 0, 0] as [number, number, number] });
+  const layout = cfg.fields;
+  assert.equal(heatFieldsConsistent([f(1, 1), f(1, 1), f(1, 1), f(0, 1), f(0, 1), f(0, 1)], layout), true);
+  assert.equal(heatFieldsConsistent([f(1, 1), f(1, 1), f(1, 1), f(1, 1), f(1, 1), f(1, 1)], layout), true);
+  // a mirrored card: the cooler fields sample the label (unsure), the hotter ones are confidently black
+  assert.equal(heatFieldsConsistent([f(0, 0.3), f(0, 0.3), f(0, 0.3), f(1, 1), f(1, 1), f(1, 1)], layout), false);
+  assert.equal(heatFieldsConsistent([f(1, 1), f(1, 1), f(1, 1), f(0, 1), f(1, 0.3), f(0, 1)], layout), false);
+  // two unsure fields prove nothing
+  assert.equal(heatFieldsConsistent([f(1, 1), f(1, 1), f(1, 1), f(0, 0.5), f(1, 0.5), f(0, 0.4)], layout), true);
 });

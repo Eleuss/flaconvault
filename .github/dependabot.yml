@@ -1,4 +1,6 @@
-# Dependency update PRs (weekly). Minor and patch updates are grouped per ecosystem; majors come one PR each.
+# Dependency update PRs (weekly). Minor and patch updates are grouped per ecosystem. Major version bumps are ignored
+# here (they need a planned migration: Next/React, Anchor/Solana SDK, Node/Python base images); security advisories
+# still open PRs through Dependabot security updates.
 # Security updates are additionally enabled in the repository settings (Dependabot alerts + security updates).
 version: 2
 updates:
@@ -13,6 +15,10 @@ updates:
         update-types: [minor, patch]
 
   # Irys sidecar of the verifier (own lockfile)
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: npm
     directory: /apps/verify/irys
     schedule:
@@ -23,6 +29,10 @@ updates:
         update-types: [minor, patch]
 
   # Verifier (uv.lock)
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: uv
     directory: /apps/verify
     schedule:
@@ -33,6 +43,10 @@ updates:
         update-types: [minor, patch]
 
   # Anchor programs (Cargo workspace)
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: cargo
     directory: /
     schedule:
@@ -43,6 +57,10 @@ updates:
         update-types: [minor, patch]
 
   # Base images of Dockerfile.verify
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: docker
     directory: /
     schedule:
@@ -50,6 +68,10 @@ updates:
     open-pull-requests-limit: 2
 
   # Actions used in .github/workflows
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]   # base images: patches only
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

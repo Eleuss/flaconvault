@@ -81,11 +81,24 @@ test("/t?tap=…&k=… with the verifier down keeps tap and k in the retry link"
   assert.deepEqual(await tapMetadata({ searchParams: Promise.resolve({ tap: "12" }) }), { title: "Seal check" });
 });
 
-test("/actions.json stays a static document under Next 15 (GET handlers are no longer prerendered by default)", async () => {
-  assert.equal(actionsJson.dynamic, "force-static");
+test("/actions.json serves the fixed discovery document with CORS and a 5 minute browser cache", async () => {
   const r = actionsJson.GET();
   assert.equal(r.headers.get("access-control-allow-origin"), "*");
   assert.equal(r.headers.get("cache-control"), "public, max-age=300");
   const body = (await r.json()) as { rules: { pathPattern: string; apiPath: string }[] };
   assert.deepEqual(body.rules.map((x) => x.pathPattern), ["/market/o/*", "/market/*"]);
+});
+
+test("/actions.json answers the CORS preflight a Blink client's Actions headers trigger (GET and OPTIONS carry CORS)", () => {
+  // a prerendered (force-static) route is served as a file and answers OPTIONS with 405: the route must stay dynamic
+  assert.notEqual((actionsJson as Record<string, unknown>).dynamic, "force-static");
+  const pre = actionsJson.OPTIONS();
+  assert.equal(pre.status, 204);
+  const get = actionsJson.GET();
+  for (const r of [pre, get]) {
+    assert.equal(r.headers.get("access-control-allow-origin"), "*");
+    assert.equal(r.headers.get("access-control-allow-methods"), "GET,OPTIONS");
+    const allowed = (r.headers.get("access-control-allow-headers") ?? "").split(",").map((h) => h.trim().toLowerCase());
+    for (const h of ["content-type", "x-accept-action-version", "x-accept-blockchain-ids"]) assert.ok(allowed.includes(h), `allows ${h}`);
+  }
 });

@@ -5,18 +5,22 @@
 import * as anchor from "@anchor-lang/core";
 import { BN, Program } from "@anchor-lang/core";
 import {
+  Connection,
   Ed25519Program,
   Keypair,
   PublicKey,
   SYSVAR_INSTRUCTIONS_PUBKEY,
   SystemProgram,
+  Transaction,
   TransactionInstruction,
+  sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import { expect } from "chai";
 import { createHash, randomBytes } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import nacl from "tweetnacl";
+import { createCoreAssetIx } from "../../scripts/lib/core";
 
 export const ROOT = path.join(__dirname, "../..");
 export const vectors = JSON.parse(fs.readFileSync(path.join(ROOT, "docs/vectors.json"), "utf8"));
@@ -115,6 +119,11 @@ export async function expectAnchorError(
 // PDAs
 // ---------------------------------------------------------------------------
 
+export const BPF_LOADER_UPGRADEABLE = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
+/** ProgramData account of an upgradeable program (holds its upgrade authority). */
+export const programDataOf = (programId: PublicKey) =>
+  PublicKey.findProgramAddressSync([programId.toBuffer()], BPF_LOADER_UPGRADEABLE)[0];
+
 export const registryPdaOf = (programId: PublicKey) =>
   PublicKey.findProgramAddressSync([Buffer.from(SEEDS.registry)], programId)[0];
 export const passportPdaOf = (programId: PublicKey, serialHash: Buffer) =>
@@ -149,7 +158,12 @@ export async function ensureRegistry(program: Program<any>, wallet: PublicKey): 
   if (!reg) {
     await program.methods
       .initRegistry()
-      .accountsStrict({ ...admin, systemProgram: SystemProgram.programId })
+      .accountsStrict({
+        ...admin,
+        systemProgram: SystemProgram.programId,
+        program: program.programId,
+        programData: programDataOf(program.programId),
+      })
       .rpc();
     created = true;
     reg = await registryAccount.fetch(registryPda);
@@ -186,30 +200,62 @@ export interface PassportHandle {
   asset: PublicKey;
 }
 
-/** Mints a passport (issuer = wallet, must be partner) and attaches one seal. */
+/**
+ * Creates a Metaplex Core asset (no plugins, no collection) owned by `owner` (default: the payer).
+ * mint_passport only accepts a Core-owned AssetV1, so every test passport needs one.
+ */
+export async function createCoreAsset(
+  connection: Connection,
+  payer: Keypair,
+  opts: { owner?: PublicKey; name?: string } = {}
+): Promise<PublicKey> {
+  const asset = Keypair.generate();
+  const ix = createCoreAssetIx({
+    asset: asset.publicKey,
+    payer: payer.publicKey,
+    owner: opts.owner,
+    name: opts.name ?? "FlaconVault test bottle",
+    uri: "https://flaconvault.test/asset.json",
+  });
+  await sendAndConfirmTransaction(connection, new Transaction().add(ix), [payer, asset], { commitment: "confirmed" });
+  return asset.publicKey;
+}
+
+/** The provider's keypair (AnchorProvider.env() uses a NodeWallet that exposes `payer`). */
+export const providerPayer = (program: Program<any>): Keypair => ((program.provider as anchor.AnchorProvider).wallet as anchor.Wallet).payer;
+
+/** Mints a passport (issuer = wallet or `opts.issuer`, must be partner) with a fresh Core asset and attaches one seal. */
 export async function mintPassportWithSeal(
   program: Program<any>,
   registryPda: PublicKey,
   wallet: PublicKey,
-  opts: { serial?: string; uid?: Buffer; asset?: PublicKey; kind?: number; bindingHash?: Buffer } = {}
+  opts: { serial?: string; uid?: Buffer; asset?: PublicKey; kind?: number; bindingHash?: Buffer; issuer?: Keypair } = {}
 ): Promise<PassportHandle> {
   const serial = opts.serial ?? `SN-TEST-${randomBytes(6).toString("hex")}`;
   const serialHash = sha256(serial);
   const uid = opts.uid ?? randomBytes(7);
   const uidHash = sha256(uid);
-  const asset = opts.asset ?? Keypair.generate().publicKey;
+  const connection = program.provider.connection;
+  const issuer = opts.issuer?.publicKey ?? wallet;
+  const asset = opts.asset ?? (await createCoreAsset(connection, providerPayer(program), { owner: issuer }));
   const bindingHash = opts.bindingHash ?? sha256(Buffer.concat([Buffer.from(serial), Buffer.from("TEST"), uidHash]));
   const passportPda = passportPdaOf(program.programId, serialHash);
   const sealPda = sealPdaOf(program.programId, uidHash);
-  await program.methods
+  const mint = program.methods
     .mintPassport(bytes(serialHash), bytes(bindingHash), asset)
-    .accountsStrict({ registry: registryPda, passport: passportPda, issuer: wallet, systemProgram: SystemProgram.programId })
-    .rpc();
-  await program.methods
+    .accountsStrict({ registry: registryPda, passport: passportPda, issuer, systemProgram: SystemProgram.programId, coreAsset: asset });
+  await (opts.issuer ? mint.signers([opts.issuer]) : mint).rpc();
+  const attach = program.methods
     .attachSeal(bytes(uidHash), opts.kind ?? enums.seal_kind.NECK)
-    .accountsStrict({ registry: registryPda, passport: passportPda, seal: sealPda, signer: wallet, systemProgram: SystemProgram.programId })
-    .rpc();
+    .accountsStrict({ registry: registryPda, passport: passportPda, seal: sealPda, signer: issuer, systemProgram: SystemProgram.programId });
+  await (opts.issuer ? attach.signers([opts.issuer]) : attach).rpc();
   return { serial, serialHash, uidHash, passportPda, sealPda, asset };
+}
+
+/** Unix time of the local validator (the program checks signed ts against this clock). */
+export async function chainTime(connection: Connection): Promise<number> {
+  const slot = await connection.getSlot("confirmed");
+  return (await connection.getBlockTime(slot)) ?? Math.floor(Date.now() / 1000);
 }
 
 export interface ScanOpts {
@@ -221,25 +267,21 @@ export interface ScanOpts {
   hum?: number;
   heatLevels?: number;
   siteId?: number;
+  tamper?: number;
   ts?: number;
+  /** registry key_id to sign under (default: the handle's test key id) */
+  serverKeyId?: number;
   /** attester keypair; defaults to the provider wallet */
   attester?: Keypair;
 }
 
-/** Signs a §4.3 message with the test server key and sends [ed25519, record_scan]. */
-export async function recordScan(
-  program: Program<any>,
-  provider: anchor.AnchorProvider,
-  reg: RegistryHandle,
-  p: PassportHandle,
-  o: ScanOpts
-): Promise<PublicKey> {
-  const attester = o.attester?.publicKey ?? provider.wallet.publicKey;
+/** record_scan args + the signed §4.3 message for a passport/seal (test server key). */
+export function scanArgs(reg: RegistryHandle, p: { serialHash: Buffer; uidHash: Buffer }, o: ScanOpts) {
   const args = {
     counter: o.counter,
     tier: o.tier ?? enums.tier.SELF_MEDIA,
     role: o.role ?? enums.role.SELLER,
-    tamper: enums.tamper.UNKNOWN,
+    tamper: o.tamper ?? enums.tamper.UNKNOWN,
     uv: enums.indicator.MISSING,
     hum: o.hum ?? enums.indicator.INTACT,
     heat: o.heat ?? enums.indicator.INTACT,
@@ -250,7 +292,7 @@ export async function recordScan(
     bundleHash: bytes(randomBytes(32)),
     nonce: bytes(randomBytes(32)),
     ts: new BN(o.ts ?? Math.floor(Date.now() / 1000)),
-    serverKeyId: reg.serverKeyId,
+    serverKeyId: o.serverKeyId ?? reg.serverKeyId,
   };
   const msg = buildScanMessage({
     serialHash: p.serialHash,
@@ -265,22 +307,47 @@ export async function recordScan(
     nonce: Buffer.from(args.nonce),
     ts: BigInt(args.ts.toString()),
   });
-  const scanProof = scanPdaOf(program.programId, p.sealPda, o.counter);
+  return { args, msg };
+}
+
+/** The [ed25519, record_scan] method builder (not sent). `accounts` overrides passport/seal for negative tests. */
+export function recordScanBuilder(
+  program: Program<any>,
+  provider: anchor.AnchorProvider,
+  reg: RegistryHandle,
+  p: PassportHandle,
+  o: ScanOpts,
+  accounts: { passport?: PublicKey; seal?: PublicKey } = {}
+) {
+  const attester = o.attester?.publicKey ?? provider.wallet.publicKey;
+  const { args, msg } = scanArgs(reg, p, o);
+  const seal = accounts.seal ?? p.sealPda;
   const b = program.methods
     .recordScan(args)
     .accountsStrict({
       registry: reg.registryPda,
-      passport: p.passportPda,
-      seal: p.sealPda,
-      scanProof,
+      passport: accounts.passport ?? p.passportPda,
+      seal,
+      scanProof: scanPdaOf(program.programId, seal, o.counter),
       attester,
       instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
       systemProgram: SystemProgram.programId,
     })
     .preInstructions([ed25519Ix(msg, signMessage(msg))]);
   if (o.attester) b.signers([o.attester]);
-  await b.rpc();
-  return scanProof;
+  return b;
+}
+
+/** Signs a §4.3 message with the test server key and sends [ed25519, record_scan]. */
+export async function recordScan(
+  program: Program<any>,
+  provider: anchor.AnchorProvider,
+  reg: RegistryHandle,
+  p: PassportHandle,
+  o: ScanOpts
+): Promise<PublicKey> {
+  await recordScanBuilder(program, provider, reg, p, o).rpc();
+  return scanPdaOf(program.programId, p.sealPda, o.counter);
 }
 
 export async function airdrop(provider: anchor.AnchorProvider, to: PublicKey, sol = 2) {

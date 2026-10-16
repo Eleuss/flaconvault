@@ -192,7 +192,8 @@
     {
       "name": "attach_seal",
       "docs": [
-        "Partner (or authority) only. `kind` ∈ {BOX, NECK}."
+        "The passport's issuer (while a partner) or the authority. `kind` ∈ {BOX, NECK}; at most",
+        "`MAX_SEALS_PER_PASSPORT` seals; not on a void passport."
       ],
       "discriminator": [
         61,
@@ -275,7 +276,7 @@
         {
           "name": "signer",
           "docs": [
-            "Must be a registered partner (or the registry authority)."
+            "The passport's issuer while it is a partner, or the registry authority."
           ],
           "writable": true,
           "signer": true
@@ -304,7 +305,8 @@
     {
       "name": "init_registry",
       "docs": [
-        "Creates the singleton registry; the payer becomes `authority`."
+        "Creates the singleton registry; the payer becomes `authority`. Only the program's upgrade",
+        "authority (checked through the ProgramData account) may call it."
       ],
       "discriminator": [
         131,
@@ -341,7 +343,7 @@
         {
           "name": "authority",
           "docs": [
-            "Payer becomes the registry authority."
+            "Payer becomes the registry authority; must be the program's upgrade authority."
           ],
           "writable": true,
           "signer": true
@@ -349,6 +351,16 @@
         {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "program",
+          "docs": [
+            "This program (its ProgramData address is checked below)."
+          ],
+          "address": "7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL"
+        },
+        {
+          "name": "program_data"
         }
       ],
       "args": []
@@ -356,7 +368,8 @@
     {
       "name": "mark_seal_dead",
       "docs": [
-        "Partner (or authority) only. Seal no longer answers → seal dead, passport void, grade VOID."
+        "The passport's issuer (while a partner) or the authority. Seal no longer answers → seal dead,",
+        "passport void, grade VOID."
       ],
       "discriminator": [
         65,
@@ -440,7 +453,7 @@
         {
           "name": "signer",
           "docs": [
-            "Must be a registered partner (or the registry authority) — after a",
+            "The passport's issuer while it is a partner, or the registry authority — after a",
             "confirmed no-response (escrow dispute or certification)."
           ],
           "signer": true
@@ -451,7 +464,8 @@
     {
       "name": "mint_passport",
       "docs": [
-        "Partner (or authority) only. Birth certificate of a bottle."
+        "Partner (or authority) only. Birth certificate of a bottle. `asset` must be a Metaplex Core",
+        "asset, passed again as the `core_asset` account."
       ],
       "discriminator": [
         191,
@@ -520,6 +534,13 @@
         {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "core_asset",
+          "docs": [
+            "that Metaplex Core owns the account and that it is an `AssetV1`. Appended last so the",
+            "indices of the accounts above stay unchanged."
+          ]
         }
       ],
       "args": [
@@ -687,6 +708,161 @@
           }
         }
       ]
+    },
+    {
+      "name": "remove_partner",
+      "docs": [
+        "Authority only. The removed wallet also loses `attach_seal` / `mark_seal_dead` on its passports."
+      ],
+      "discriminator": [
+        205,
+        64,
+        184,
+        235,
+        182,
+        107,
+        63,
+        15
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "registry"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "partner",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "revoke_server_key",
+      "docs": [
+        "Authority only. Ends the key's validity now (`valid_to = clock − 1`); the entry is kept."
+      ],
+      "discriminator": [
+        115,
+        174,
+        199,
+        96,
+        252,
+        37,
+        5,
+        67
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "registry"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "key_id",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "transfer_authority",
+      "docs": [
+        "Current and new authority both sign."
+      ],
+      "discriminator": [
+        48,
+        169,
+        76,
+        72,
+        229,
+        180,
+        55,
+        161
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "registry"
+          ]
+        },
+        {
+          "name": "new_authority",
+          "signer": true
+        }
+      ],
+      "args": []
     }
   ],
   "accounts": [
@@ -745,6 +921,19 @@
   ],
   "events": [
     {
+      "name": "AuthorityTransferred",
+      "discriminator": [
+        245,
+        109,
+        179,
+        54,
+        135,
+        92,
+        22,
+        64
+      ]
+    },
+    {
       "name": "PartnerAdded",
       "discriminator": [
         118,
@@ -755,6 +944,19 @@
         162,
         106,
         164
+      ]
+    },
+    {
+      "name": "PartnerRemoved",
+      "discriminator": [
+        178,
+        6,
+        204,
+        239,
+        88,
+        105,
+        43,
+        91
       ]
     },
     {
@@ -833,6 +1035,19 @@
         59,
         33,
         89
+      ]
+    },
+    {
+      "name": "ServerKeyRevoked",
+      "discriminator": [
+        107,
+        233,
+        32,
+        172,
+        165,
+        208,
+        93,
+        46
       ]
     },
     {
@@ -1014,11 +1229,89 @@
       "code": 6032,
       "name": "ScanCountOverflow",
       "msg": "Passport scan_count overflow"
+    },
+    {
+      "code": 6033,
+      "name": "NotIssuerOrAuthority",
+      "msg": "Signer is neither the passport issuer (a current partner) nor the registry authority"
+    },
+    {
+      "code": 6034,
+      "name": "TooManySeals",
+      "msg": "Passport already holds the maximum number of seals"
+    },
+    {
+      "code": 6035,
+      "name": "ServerKeyNotValidNow",
+      "msg": "Server key is not valid at the current cluster time (expired or revoked)"
+    },
+    {
+      "code": 6036,
+      "name": "StaleScanTimestamp",
+      "msg": "Signed ts is more than MAX_SCAN_TS_SKEW_S away from the cluster clock"
+    },
+    {
+      "code": 6037,
+      "name": "CounterOutOfRange",
+      "msg": "counter is above the 24-bit NTAG counter range"
+    },
+    {
+      "code": 6038,
+      "name": "PartnerNotFound",
+      "msg": "Partner is not registered"
+    },
+    {
+      "code": 6039,
+      "name": "ServerKeyAlreadyRevoked",
+      "msg": "Server key is already expired or revoked"
+    },
+    {
+      "code": 6040,
+      "name": "NotUpgradeAuthority",
+      "msg": "Signer is not the program's upgrade authority"
+    },
+    {
+      "code": 6041,
+      "name": "AssetMismatch",
+      "msg": "Asset account does not match the asset argument"
+    },
+    {
+      "code": 6042,
+      "name": "InvalidAsset",
+      "msg": "Asset account is not a Metaplex Core asset"
     }
   ],
   "types": [
     {
+      "name": "AuthorityTransferred",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "previous",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
       "name": "PartnerAdded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "partner",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PartnerRemoved",
       "type": {
         "kind": "struct",
         "fields": [
@@ -1642,6 +1935,25 @@
       }
     },
     {
+      "name": "ServerKeyRevoked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "key_id",
+            "type": "u8"
+          },
+          {
+            "name": "valid_to",
+            "docs": [
+              "New `valid_to` (one second before the revocation's cluster time)."
+            ],
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
       "name": "Site",
       "docs": [
         "A physical location (vault, partner shop). `label` is UTF-8, zero padded."
@@ -1808,9 +2120,33 @@
       "value": "2"
     },
     {
+      "name": "MAX_COUNTER",
+      "docs": [
+        "NTAG 424 DNA SUN counters are 24 bit; anything above cannot come from a real tap."
+      ],
+      "type": "u32",
+      "value": "16777215"
+    },
+    {
       "name": "MAX_PARTNERS",
       "type": "u8",
       "value": "16"
+    },
+    {
+      "name": "MAX_SCAN_TS_SKEW_S",
+      "docs": [
+        "`record_scan` accepts a signed message only while |msg.ts − cluster clock| ≤ this (seconds)."
+      ],
+      "type": "i64",
+      "value": "600"
+    },
+    {
+      "name": "MAX_SEALS_PER_PASSPORT",
+      "docs": [
+        "A passport carries at most one BOX and one NECK seal."
+      ],
+      "type": "u8",
+      "value": "2"
     },
     {
       "name": "MAX_SERVER_KEYS",
@@ -1821,6 +2157,14 @@
       "name": "MAX_SITES",
       "type": "u8",
       "value": "16"
+    },
+    {
+      "name": "MPL_CORE_PROGRAM_ID",
+      "docs": [
+        "Metaplex Core: `mint_passport` only accepts an asset account owned by this program."
+      ],
+      "type": "pubkey",
+      "value": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
     },
     {
       "name": "MSG_LEN",

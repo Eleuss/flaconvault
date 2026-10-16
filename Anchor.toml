@@ -1,4 +1,7 @@
 [toolchain]
+# Pinned so `anchor build --verifiable` reproduces the deployed binaries (see programs/README.md).
+anchor_version = "1.2.0"
+solana_version = "4.1.2"
 package_manager = "npm"
 
 [features]
@@ -23,7 +26,13 @@ test = "NODE_OPTIONS=--no-experimental-strip-types npx ts-mocha -p ./tsconfig.js
 
 [hooks]
 
+[test]
+# Deploy the workspace programs upgradeable with the provider wallet as upgrade authority (as on devnet):
+# init_registry / init_config only accept the upgrade authority recorded in the ProgramData account.
+upgradeable = true
+
 # Local validator: clone Metaplex Core from devnet so /certify can mint real Core assets offline (needs network at start).
+# mint_passport only accepts Core assets, so the tests need it too.
 [test.validator]
 url = "https://api.devnet.solana.com"
 

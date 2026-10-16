@@ -46,8 +46,10 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      # npm ci also builds packages/proof and packages/vision through their `prepare` scripts.
-      - run: npm ci --no-audit --no-fund
+      # --ignore-scripts: npm runs the workspaces' `prepare` scripts in parallel, and vision's build needs proof's
+      # type declarations, so a plain `npm ci` fails at random on a clean checkout. Build the packages in order.
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build:packages
       - name: proof tests (incl. parity with docs/vectors.json and docs/enums.json)
         run: npm run proof:test
       - name: committed vectors match gen-vectors output
@@ -65,7 +67,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      - run: npm ci --no-audit --no-fund
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build:packages
       - run: npm run web:typecheck
       - run: npm run web:lint
       - run: npm run web:build
@@ -116,7 +119,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      - run: npm ci --no-audit --no-fund
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build:packages
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Install Solana CLI (Agave)

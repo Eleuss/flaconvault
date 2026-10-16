@@ -54,6 +54,7 @@ Read these before setting any variable.
 ## Web app (Vercel)
 
 - Project root directory `apps/web`, framework Next.js, "Include source files outside of the Root Directory" on (npm workspaces: `packages/proof` and `packages/vision` build through their `prepare` scripts). Node 22.18 or newer.
+- npm runs the workspaces' `prepare` scripts in parallel, and the vision build needs the proof build's type declarations. If an install fails with `Cannot find module '@flaconvault/proof'` in `packages/vision`, set the Install Command to `cd ../.. && npm ci --ignore-scripts && npm run build:packages` (the same sequence CI and the README use).
 - Environment variables (Production):
 
 | Variable | Value | Notes |

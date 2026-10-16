@@ -13,6 +13,7 @@
     "vectors": "npm run vectors -w @flaconvault/proof",
     "vectors:check": "npm run vectors && git diff --exit-code -- docs/vectors.json docs/enums.json",
     "vision:build": "npm run build -w @flaconvault/vision",
+    "build:packages": "npm run proof:build && npm run vision:build",
     "vision:test": "npm run test -w @flaconvault/vision",
     "test": "npm run proof:test && npm run vision:test",
     "web:dev": "npm run dev -w @flaconvault/web",

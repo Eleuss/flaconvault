@@ -39,7 +39,7 @@ A buyer needs no app and no wallet: tapping the sticker with an iPhone opens the
 
 - **iPhone** reads the stickers every time through background NFC and opens the result page in Safari. The scan continues from that tap (one tap, no second read) via a single-use token.
 - **Android:** a Google Pixel 6 rejects this sticker batch at the NDEF level (TagInfo reads the full SUN URL, Android's NDEF detection does not), so WebNFC returns an empty record. The WebNFC path is implemented for compatible tags; re-programming the batch with factory configuration is on the list.
-- **Wallets on iPhone:** Safari has no injected wallet, so signing works through **WalletConnect** or by continuing in the Phantom/Solflare in-app browser (a resume link reopens the scan at the signing step there). Android uses the Mobile Wallet Adapter (Solflare).
+- **Wallets on iPhone:** Safari has no injected wallet, so signing works through **WalletConnect** or by continuing in the Phantom/Solflare in-app browser (a resume link reopens the scan at the signing step there). Certified (partner) scans need WalletConnect: the server signs them only for the partner wallet connected before "Get signature". Android uses the Mobile Wallet Adapter (Solflare).
 - **The physical card** has no printed marker. "Frame mode" uses the holder's window and the blue heat label as anchors and corrects the parallax of the recessed card. Verified on daylight, room light and oblique photos.
 
 ## Security model (honest)

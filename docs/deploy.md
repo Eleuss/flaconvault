@@ -83,7 +83,7 @@ Read these before setting any variable.
 | `NEXT_PUBLIC_SOLANA_RPC` | `https://api.devnet.solana.com` | |
 | `NEXT_PUBLIC_PROGRAM_ID` | `7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL` | |
 | `NEXT_PUBLIC_ESCROW_PROGRAM_ID` | `9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL` | |
-| `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | Reown Cloud project id | optional; enables the WalletConnect entry (sign from Safari on iPhone) |
+| `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | Reown Cloud project id | required for certified (tier 3/4) and vault/partner scans from iPhone Safari: Safari has no wallet extension, so without it iPhone partners cannot certify (the scan page says "This browser cannot sign a certified scan"). Other flows work without it (on iPhone, owner scans then sign through the Phantom/Solflare resume links) |
 | `NEXT_PUBLIC_ESCROW_ADMIN_CONTACT` | a `mailto:` address or an `https://` link of the escrow admin | set it in production. The order page shows it as "Contact the escrow admin" when a buyer needs the admin (non-delivery, a dead seal after shipping, disagreeing scans; see `programs/README.md`, escrow admin duties); a `mailto:` gets the order as subject. Any other value is ignored, and without it the page shows the admin wallet only |
 | `NEXT_PUBLIC_DEV_SIMULATOR` | `false` | `true` only for a demo deployment: it enables the demo tools (dev wallets, burner, airdrop, test images, simulator UI), which then still need demo mode in the browser (`apps/web/src/lib/demo.ts`; any visitor can switch it on for their own browser with `/dev?demo=1`, so only `false` removes them). The dev wallets keep their secret keys in the browser's `localStorage`: never register them as partners or fund them with anything of value. |
 

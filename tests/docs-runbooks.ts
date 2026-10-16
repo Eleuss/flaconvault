@@ -144,6 +144,42 @@ describe("runbooks match the code", () => {
     expect(dead, dead.join("\n")).to.deep.equal([]);
   });
 
+  it("the certification scene is a certified scan (the tier 3/4 scan page), not the tap page's owner scan", () => {
+    // the code the docs rely on: "Check condition" (tapLanding) carries no tier, scan-flow certifies only tier 3/4, and
+    // /certify's "Go to scan" opens the tier 4 page
+    const format = read("apps/web/src/lib/format.ts");
+    const landing = format.slice(format.indexOf("export function tapLanding"), format.indexOf("export function verdictText"));
+    expect(landing).to.include("/scan?adopt=").and.not.to.match(/tier=/);
+    expect(read("apps/web/src/components/scan-flow.tsx")).to.match(/const certified = qTier === Tier\.CERTIFIED \|\| qTier === Tier\.BIRTH;/);
+    expect(read("apps/web/src/components/certify-console.tsx")).to.match(/href=\{`\/scan\?role=4&tier=4&site=\$\{form\.siteId\}`\}[^\n]*Go to scan/);
+    const scene3 = read("docs/demo-script.md").split("\n").filter((l) => /^\| 3 /.test(l));
+    expect(scene3).to.have.length(2);
+    for (const row of scene3) {
+      expect(row, row).to.match(/\/scan\?[^`\s]*tier=[34]|"Go to scan"/);
+      expect(row, "Check condition is never a step of the certification scene").not.to.match(/→ "?Check condition/);
+    }
+    // iPhone: the partner wallet is connected (WalletConnect) before the session starts, the seal is tapped after
+    const iphone = scene3.find((r) => /iPhone/.test(r)) ?? "";
+    expect(iphone.indexOf("WalletConnect →")).to.be.greaterThan(-1);
+    expect(iphone.indexOf("WalletConnect →")).to.be.lessThan(iphone.indexOf('"Start session"'));
+    expect(iphone.indexOf('"Start session"')).to.be.lessThan(iphone.indexOf("tap the Tom Ford tag"));
+    // hardware-day.md §7 says where certified scans start on iPhone
+    const hw = read("docs/hardware-day.md").split("\n").find((l) => /"Check condition" on `\/t` always makes an owner, seller or buyer scan/.test(l)) ?? "";
+    expect(hw, "hardware-day.md: Check condition is never certified").to.match(/tier ≤ 2/).and.to.match(/"Go to scan"/).and.to.match(/WalletConnect/);
+  });
+
+  it("WalletConnect is documented as required for certified scans on iPhone (the scan page's partner wallet gate)", () => {
+    expect(read("apps/web/src/components/scan-flow.tsx")).to.match(/partnerWalletGate\([^)]*walletConnect: !!WALLETCONNECT_PROJECT_ID/);
+    expect(read("apps/web/src/lib/scan-steps.ts")).to.include("This browser cannot sign a certified scan");
+    const row = read("docs/deploy.md").split("\n").find((l) => l.startsWith("| `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` |")) ?? "";
+    expect(row, "deploy.md WalletConnect row").to.match(/required for certified \(tier 3\/4\)/).and.to.match(/iPhone/).and.not.to.match(/\| optional/);
+    const example = read("apps/web/.env.example").split("\n");
+    const at = example.findIndex((l) => l.startsWith("NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID="));
+    let i = at;
+    while (i > 0 && example[i - 1].startsWith("#")) i--;
+    expect(example.slice(i, at).join(" "), ".env.example comment above the variable").to.match(/Required for certified \(tier 3\/4\)/).and.to.match(/iPhone/);
+  });
+
   it("demo-script: demo tools need demo mode, and the triggered scene never uses the featured bottle", () => {
     const demo = read("docs/demo-script.md");
     expect(demo).to.match(/NEXT_PUBLIC_DEV_SIMULATOR=true/).and.to.match(/\/dev\?demo=1/).and.to.match(/\/dev\?demo=0/);

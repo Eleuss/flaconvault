@@ -16,6 +16,7 @@ export PATH="$HOME/.local/node/bin:$HOME/.cargo/bin:$HOME/.local/share/solana/in
 anchor build                         # target/deploy/*.so, target/idl/*.json, target/types/*.ts
 cargo test -p flacon -p escrow       # unit tests: message layout vs docs/vectors.json, grade rule, freshness, escrow rules
 anchor test --validator legacy       # integration tests in tests/ on a local validator (clones Metaplex Core from devnet)
+scripts/test-escrow-time-travel.sh   # escrow window branches in LiteSVM with a Clock override (see below)
 
 # the web app and the scripts read the committed IDLs:
 cp target/idl/flacon.json packages/proof/src/idl/flacon.json && cp target/types/flacon.ts packages/proof/src/idl/flacon.ts
@@ -24,6 +25,13 @@ cp target/idl/escrow.json packages/proof/src/idl/escrow.json && cp target/types/
 
 `[test] upgradeable = true` deploys the workspace programs upgradeable with the provider wallet as upgrade authority,
 because `init_registry` and `init_config` only accept the upgrade authority recorded in the ProgramData account.
+
+The local validator cannot move its clock, so the branches that only open after a dispute window (at least one hour)
+run in `programs/escrow/tests/time_travel.rs`: LiteSVM loads the escrow program, the test writes an order in the state
+under test and moves the `Clock` sysvar to just before and just after `reserved_at + window` (buyer TIMEOUT refund) and
+`shipped_at + window` (`release_after_timeout`). LiteSVM 0.10 (Agave 3.1) cannot load the SBPF v3 binary that
+`anchor build` produces, so `scripts/test-escrow-time-travel.sh` builds the same source for SBPF v2 into
+`target/sbf-v2/` first; a plain `cargo test` lists these tests as ignored.
 
 ## Verifiable builds
 
@@ -53,10 +61,17 @@ for existing accounts:
 - Server keys are checked against the cluster clock as well as the signed `ts`, and `|ts − clock| ≤ 600 s`
   (`MAX_SCAN_TS_SKEW_S`): signatures older than ten minutes (including every published seed/vector signature) can no
   longer be anchored. Retire leaked keys with `revoke_server_key`.
-- Grades only get worse. A passport whose grade is VOID counts as void everywhere (no scans, no new seals, no listing,
-  no reservation) even when its `void` flag was never set, e.g. after an OPENED scan before this upgrade.
-- `mint_passport` requires a Metaplex Core asset; passports minted earlier with a placeholder asset keep it and can
-  only be listed by their issuer.
+- VOID and C are sticky; A/B/D follow the latest scan's fill level (a fill reading is set with a slider and no tier
+  verifies it, so one wrong or malicious low reading must not degrade a passport for good; a C bottle stays C at any
+  fill level). A passport whose grade is VOID counts as void everywhere (no scans, no new seals, no listing, no
+  reservation) even when its `void` flag was never set, e.g. after an OPENED scan before this upgrade.
+- `mint_passport` requires a Metaplex Core asset owned by the issuer; passports minted earlier with a placeholder
+  asset keep it and can only be listed by their issuer, and only while the issuer is still a partner.
+- `reserve` checks the seller again (unless the asset is in the order's custody), so orders listed before the upgrade,
+  or whose seller has given the Core asset away since, cannot be bought.
+- The shipping scan must be dated no earlier than `reserved_at − 600 s` and the receipt scan no earlier than
+  `shipped_at − 600 s`; orders already past those steps are not affected.
+- A dead seal no longer lets the buyer refund a SHIPPED order; the admin decides (see "Escrow admin duties").
 - Orders listed before the upgrade keep their stored `dispute_after_s`; the program clamps it to 1 h ..= 60 days when
   it evaluates a deadline.
 
@@ -70,10 +85,10 @@ for existing accounts:
 | `add_partner(partner)` / `remove_partner(partner)` | authority | a removed partner also loses seal rights on its passports |
 | `transfer_authority()` | authority **and** new authority sign | accounts `registry, authority, new_authority` |
 | `add_site(site_id, label)` | authority | |
-| `mint_passport(serial_hash, binding_hash, asset)` | partner or authority | extra last account `core_asset` = `asset`, must be a Core `AssetV1` |
+| `mint_passport(serial_hash, binding_hash, asset)` | partner or authority | extra last account `core_asset` = `asset`, must be a Core `AssetV1` owned by the issuer (`AssetNotOwnedByIssuer`) |
 | `attach_seal(uid_hash, kind)` | passport issuer (while partner) or authority | not on a void passport, at most `MAX_SEALS_PER_PASSPORT` (2) |
 | `mark_seal_dead()` | passport issuer (while partner) or authority | seal dead, passport void, grade VOID |
-| `record_scan(args)` | any attester (partner for tier ≥ 3 / VAULT / PARTNER) | `[Ed25519, record_scan]`; key valid at ts and now; fresh ts; counter ≤ 0xFFFFFF; `grade = worst(old, scan)`; OPENED tamper voids; every accepted scan increments `scan_count` |
+| `record_scan(args)` | any attester (partner for tier ≥ 3 / VAULT / PARTNER) | `[Ed25519, record_scan]`; key valid at ts and now; fresh ts; counter ≤ 0xFFFFFF; VOID and C sticky, A/B/D from the latest fill; OPENED tamper voids; every accepted scan increments `scan_count` |
 
 ## escrow instructions
 
@@ -81,22 +96,42 @@ for existing accounts:
 |---|---|---|
 | `init_config(dispute_after_s)` | upgrade authority | accounts `…, program, program_data`; window 1 h ..= 60 days |
 | `set_dispute_window(dispute_after_s)` | admin | 1 h ..= 60 days, future orders only |
-| `list(price)` | owner of the passport's Core asset (issuer if there is none) | extra last account `asset` = `passport.asset`; void passports refused |
+| `list(price)` | owner of the passport's Core asset (if there is none: the issuer while still a partner or the authority) | extra accounts `asset` = `passport.asset`, then the flacon `registry`; void passports refused |
 | `deposit_asset()` / `cancel()` / `close_order()` | seller | custody, withdraw while LISTED, reclaim a terminal order |
-| `reserve(expected_price)` | buyer | `expected_price == order.price`; extra last account `passport` (void refused) |
-| `record_pre_ship_scan()` / `ship()` | seller | |
-| `record_receipt_scan()` | buyer | match → RECEIPT_SCANNED, else MISMATCH |
+| `reserve(expected_price)` | buyer | `expected_price == order.price`; extra accounts `passport` (void refused), `asset` = `order.asset`, flacon `registry`: unless the asset is in custody the seller must still pass the `list` rule |
+| `record_pre_ship_scan()` / `ship()` | seller | the scan must be dated ≥ `reserved_at − 600 s` (`ScanBeforeOrderStep`) |
+| `record_receipt_scan()` | buyer | dated ≥ `shipped_at − 600 s`; match → RECEIPT_SCANNED, else MISMATCH |
 | `release()` | anyone | RECEIPT_SCANNED → USDC to the seller (custody asset to the buyer) |
 | `release_after_timeout()` | anyone | SHIPPED and no receipt scan within the window after `ship` → USDC to the seller |
-| `dispute()` | admin (RESERVED / PRESHIP_SCANNED / SHIPPED); buyer when not shipped within the window after `reserve`, or with a dead seal before a matching receipt | USDC back to the buyer |
+| `dispute()` | admin (RESERVED / PRESHIP_SCANNED / SHIPPED); buyer when not shipped within the window after `reserve`, or with a dead seal before `ship` (after `ship`: `DeadSealAfterShipping`, the admin decides) | USDC back to the buyer |
 | `resolve(to_seller)` | admin | settles MISMATCH: `true` pays the seller (RELEASED), `false` refunds the buyer (DISPUTE) |
 
 The rules live in `programs/escrow/src/rules.rs` (unit-tested) and are mirrored for the web app in
-`apps/web/src/lib/escrow-rules.ts` (tested in `tests/web-escrow-rules.ts`).
+`apps/web/src/lib/escrow-rules.ts` (tested in `tests/web-escrow-rules.ts`). The instruction builders the web app, the
+Blink and `scripts/list-order.ts` send are in `apps/web/src/lib/escrow-ix.ts`; `tests/escrow.ts` pays a seller
+without a USDC account through them.
+
+## Escrow admin duties
+
+Some outcomes the program cannot decide from chain data, so they wait for the escrow admin (`config.admin`), who
+settles them with `dispute` (refund to the buyer) or `resolve` (MISMATCH):
+
+- **Shipped, never arrived.** `ship()` needs no proof of handover. A buyer cannot record a receipt scan without the
+  bottle, and after `shipped_at + window` anyone may call `release_after_timeout`, which pays the seller. A buyer who
+  reports non-delivery before the receipt deadline (the order page shows them how to reach the admin, set
+  `NEXT_PUBLIC_ESCROW_ADMIN_CONTACT` to a `mailto:` or `https:` link) must get an answer before that deadline: check
+  the carrier's tracking with the seller and refund with `dispute` from SHIPPED if the parcel did not arrive.
+- **Seal dead after shipping.** The program cannot tell whether the seal died before the parcel left or after it
+  arrived (a `Seal` has no `dead_at`), and the issuer or the registry authority can mark a seal dead, so only the admin
+  may refund a SHIPPED order on a dead seal.
+- **Scans disagree (MISMATCH).** Review both ScanProofs and photos, then `resolve(to_seller)`.
+
+The admin key is also the registry authority and the upgrade authority on devnet: keep it off shared machines.
 
 ## Ops scripts
 
-`scripts/seed-devnet.ts` (registry; explicit server key), `scripts/server-key.ts` (add / revoke / list),
+`scripts/seed-devnet.ts` (registry; explicit server key, `--key-id`, keeps a key already registered under any valid
+key_id so it can be re-run after a rotation), `scripts/server-key.ts` (add / revoke / list),
 `scripts/partner.ts` (add / remove / list), `scripts/seed-escrow.ts`, `scripts/seed-passports.ts`,
 `scripts/bind-chip.ts`, `scripts/list-order.ts`, `scripts/fund-dev-wallet.ts`. All honour `ANCHOR_PROVIDER_URL`
 (default devnet) and `ANCHOR_WALLET`; set `ANCHOR_PROVIDER_URL=http://127.0.0.1:8899` to work against a local validator.

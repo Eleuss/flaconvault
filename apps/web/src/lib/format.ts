@@ -78,7 +78,16 @@ const str = (v: unknown) => (typeof v === "string" ? v : typeof v === "number" ?
 const indicatorWord = (code: unknown): string | null =>
   code === Indicator.INTACT ? "ok" : code === Indicator.TRIGGERED ? "triggered" : code === Indicator.UNREADABLE ? "unreadable" : null;
 
+/** A row of the verifier's demo seed (payload.seed): its txSig is not a real transaction. */
+export const isSeedEvent = (e: Pick<PassportEvent, "payload">): boolean => e.payload?.seed === true;
+
+/** Title and detail words of a timeline entry; demo seed rows say so. */
 export function eventLine(e: PassportEvent): { title: string; details: string[] } {
+  const l = lineOf(e);
+  return isSeedEvent(e) ? { ...l, details: [...l.details, "demo data"] } : l;
+}
+
+function lineOf(e: PassportEvent): { title: string; details: string[] } {
   const p = e.payload ?? {};
   const att = (p.attester ?? {}) as Record<string, unknown>;
   const details: string[] = [];
@@ -91,13 +100,18 @@ export function eventLine(e: PassportEvent): { title: string; details: string[] 
       details.push(`Chip ${str(p.uidTail) ?? `…${(e.sealUidHash ?? "").slice(-4).toUpperCase()}`}`);
       return { title: p.kind === 0 || p.kindName === "BOX" ? "Box seal attached" : "Neck seal attached", details };
     case EventType.SCAN: {
+      // payload.tier/role of a confirmed scan are the verified chain values; before that they are only what the
+      // client claimed at /api/verify (it may name any registered partner), so a claimed certification is not shown
+      // as one until the partner's own record_scan confirmed it
+      const confirmed = e.status === "confirmed";
       const tier = typeof p.tier === "number" ? p.tier : typeof att.tier === "number" ? att.tier : null;
       const role = typeof p.role === "number" ? p.role : typeof att.role === "number" ? att.role : null;
       const ind = (p.indicators ?? {}) as Record<string, unknown>;
       let title = tier === Tier.BIRTH || p.purpose === "BIRTH" ? "Birth scan" : tier === Tier.CERTIFIED ? "Certification scan" : tier === Tier.SIGHTING || tier === null ? "Sighting" : `Scan tier ${tier}`;
+      if (!confirmed && tier != null && tier >= Tier.CERTIFIED) title = "Scan · certification claimed";
       if (p.purpose === "PRE_SHIP" || p.kind === "pre_ship") title = "Shipping scan";
       if (p.purpose === "RECEIPT" || p.kind === "receipt") title = "Receipt scan";
-      if (role != null && !e.actorLabel) details.push(roleLabel[role] ?? "Wallet");
+      if (role != null && !e.actorLabel) details.push(!confirmed && role >= Role.VAULT ? `${roleLabel[role] ?? "Wallet"} (claimed)` : roleLabel[role] ?? "Wallet");
       if (typeof p.counter === "number") details.push(`Counter ${p.counter}`);
       if (tier != null && tier >= Tier.SELF) {
         const heat = indicatorWord(ind.heat), humidity = indicatorWord(ind.humidity);

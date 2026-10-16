@@ -2,7 +2,7 @@ import Link from "next/link";
 import { EventType } from "@flaconvault/proof";
 import { Award, Camera, Coins, ExternalLink, FileCheck2, PackageCheck, Scan, ShieldOff, Stamp, Truck, Unlock, type LucideIcon } from "lucide-react";
 import type { PassportEvent } from "@/lib/api";
-import { eventLine, fmtDate, txUrl, visibleEvents } from "@/lib/format";
+import { eventLine, fmtDate, isSeedEvent, txUrl, visibleEvents } from "@/lib/format";
 import { GradeMark } from "./badges";
 
 /** ar://<id> → a gateway URL a browser can open (Irys devnet data is served by the Irys gateway). */
@@ -54,7 +54,8 @@ export function Timeline({ events }: { events: PassportEvent[] }) {
               </div>
               <div className="mt-2 flex items-center gap-3 text-xs">
                 {e.gradeAfter != null && <span className="inline-flex items-center gap-1.5 text-muted">Grade <GradeMark grade={e.gradeAfter} size="sm" /></span>}
-                {e.txSig && <a href={txUrl(e.txSig)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink">tx <ExternalLink className="h-3 w-3" aria-hidden /></a>}
+                {/* demo seed rows carry made-up signatures: no explorer link for them */}
+                {e.txSig && !isSeedEvent(e) && <a href={txUrl(e.txSig)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink">tx <ExternalLink className="h-3 w-3" aria-hidden /></a>}
                 {e.arMedia && <a href={arUrl(e.arMedia)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink"><Camera className="h-3 w-3" aria-hidden /> Photo</a>}
                 {e.arBundle && <a href={arUrl(e.arBundle)} target="_blank" rel="noreferrer" className="text-muted hover:text-ink">Bundle</a>}
               </div>

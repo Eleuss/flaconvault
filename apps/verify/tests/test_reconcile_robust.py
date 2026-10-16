@@ -1,7 +1,6 @@
 """Reconcile robustness: poisoned ScanProof PDAs (M10), status gaps (S8), on-chain signer/tier (reconcile.py:111),
 registry partners and escrow counters from chain (S10), the confirm race (E9) and counter seeding."""
 import hashlib
-import json
 
 from solders.pubkey import Pubkey
 
@@ -192,4 +191,3 @@ def test_counter_seeding_ignores_invalid_taps(client):
     assert client.get(tap["url"] + "&format=json").json()["verdict"] == "UNREGISTERED"   # not REPLAY
     t = client.post("/api/dev/tag", json={"uid": uid, "serial": "SN-2026-000002"}).json()
     assert t["sealLastCounter"] == tap["ctr"] < 0xFFFFFF
-    assert json.dumps(t)

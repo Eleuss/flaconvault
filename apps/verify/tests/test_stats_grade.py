@@ -2,7 +2,7 @@
 import json
 
 from fv.db import passport_stats, set_passport_grade
-from tests.conftest import ADMIN, PROGRAM_ID, passport_pda
+from tests.conftest import ADMIN, passport_pda
 from tests.test_chain import passport_bytes
 
 SERIAL = "SN-2026-000001"
@@ -127,4 +127,3 @@ def test_reconcile_never_clears_void(chain_client):
     c.post("/api/reconcile", headers=ADMIN)
     p = c.get(f"/api/passport/{serial}").json()
     assert p["void"] is True and p["grade"] == 4
-    assert PROGRAM_ID

@@ -1,6 +1,5 @@
 """POST /api/admin/purge-seed — removes what the demo seed put into a database, keeps everything with on-chain evidence (M1)."""
 import hashlib
-import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -172,7 +171,7 @@ def test_admin_status(chain_client):
     assert chain_client.get("/api/admin/status").status_code == 403
     st = chain_client.get("/api/admin/status", headers=ADMIN).json()
     assert st["keyMode"] == "factory" and st["simulator"] is True and st["arweave"]["enabled"] is False
-    assert "lastError" in st["arweave"] and json.dumps(st)
+    assert "lastError" in st["arweave"] and st["arweave"]["problem"] is None
 
 
 @pytest.mark.parametrize("payload, expected", [({"seed": True, "msgHex": "00"}, True), ({}, False)])

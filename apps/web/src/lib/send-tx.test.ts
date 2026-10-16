@@ -55,17 +55,25 @@ test("txCreates wants the program, the instruction, the account and the signer",
   assert.equal(txCreates(await txResponse({ payer: me, ixs: [await recordScanIx(me)], err: { InstructionError: [0, "x"] } }), target, PROGRAM, disc), false, "failed tx");
 });
 
-/** Fake RPC: `sigs` newest first. */
-function fakeConnection(sigs: Array<{ signature: string; err?: unknown }>, txs: Record<string, VersionedTransactionResponse>) {
-  let txCalls = 0;
-  const conn = {
-    async getSignaturesForAddress(_a: PublicKey, o: { limit: number; before?: string }) {
-      const start = o.before ? sigs.findIndex((s) => s.signature === o.before) + 1 : 0;
-      return sigs.slice(start, start + o.limit).map((s) => ({ signature: s.signature, err: s.err ?? null, slot: 1, blockTime: 1, memo: null }));
+/** Fake RPC: `sigs` newest first. `batch: "refuse"` makes getTransactions throw (an RPC without JSON-RPC batches). */
+function fakeConnection(sigs: Array<{ signature: string; err?: unknown }>, txs: Record<string, VersionedTransactionResponse>, o: { batch?: "ok" | "refuse" | "none" } = {}) {
+  let txCalls = 0, batchCalls = 0;
+  const conn: Record<string, unknown> = {
+    async getSignaturesForAddress(_a: PublicKey, q: { limit: number; before?: string }) {
+      const start = q.before ? sigs.findIndex((s) => s.signature === q.before) + 1 : 0;
+      return sigs.slice(start, start + q.limit).map((s) => ({ signature: s.signature, err: s.err ?? null, slot: 1, blockTime: 1, memo: null }));
     },
     async getTransaction(sig: string) { txCalls++; return txs[sig] ?? null; },
   };
-  return { conn: conn as unknown as Connection, calls: () => txCalls };
+  if (o.batch !== "none") {
+    conn.getTransactions = async (list: string[]) => {
+      batchCalls++;
+      if (o.batch === "refuse") throw new Error("batch requests are not supported");
+      txCalls += list.length;
+      return list.map((sig) => txs[sig] ?? null);
+    };
+  }
+  return { conn: conn as unknown as Connection, calls: () => txCalls, batches: () => batchCalls };
 }
 
 test("creatingSignature skips a pre-funding transfer and returns this wallet's record_scan", async () => {
@@ -90,4 +98,30 @@ test("creatingSignature ignores failed signatures", async () => {
   const txs = { ok: await txResponse({ payer: me, ixs: [await recordScanIx(me)] }) };
   const { conn } = fakeConnection([{ signature: "ok" }, { signature: "bad", err: { InstructionError: [0, "x"] } }], txs);
   assert.equal(await creatingSignature(conn, target, { programId: PROGRAM, instruction: "record_scan" }), "ok");
+});
+
+test("creatingSignature finds the creating tx behind any number of junk transactions sent first (M10)", async () => {
+  // anyone can predict the PDA and send cheap transactions to it before the real record_scan / mint_passport
+  const junk = Array.from({ length: 40 }, (_, i) => ({ signature: `junk${i}` })); // newest first: junk0 … junk39 (oldest)
+  const txs: Record<string, VersionedTransactionResponse> = { create: await txResponse({ payer: me, ixs: [await recordScanIx(me)] }) };
+  for (const j of junk) txs[j.signature] = await txResponse({ payer: someoneElse, ixs: [transferIx(someoneElse)] });
+  // a record_scan signed by another wallet among the junk does not count either
+  txs.junk3 = await txResponse({ payer: someoneElse, ixs: [await recordScanIx(someoneElse)] });
+  const history = [{ signature: "later" }, { signature: "create" }, ...junk];
+  for (const batch of ["ok", "refuse", "none"] as const) {
+    const { conn, calls, batches } = fakeConnection(history, txs, { batch });
+    assert.equal(await creatingSignature(conn, target, { programId: PROGRAM, instruction: "record_scan", signer: me }), "create", batch);
+    // oldest first in batches of 10: four batches of junk, then the batch holding "create" (and "later")
+    assert.equal(calls(), 42, `${batch}: every older candidate checked`);
+    assert.equal(batches(), batch === "none" ? 0 : 5, batch);
+  }
+});
+
+test("creatingSignature stops at the oldest match without reading the newer history", async () => {
+  const txs = { s24: await txResponse({ payer: me, ixs: [await recordScanIx(me)] }), s10: await txResponse({ payer: me, ixs: [await recordScanIx(me)] }) };
+  const history = Array.from({ length: 25 }, (_, i) => ({ signature: `s${i}` })); // s24 is the oldest
+  const { conn, calls, batches } = fakeConnection(history, txs);
+  assert.equal(await creatingSignature(conn, target, { programId: PROGRAM, instruction: "record_scan", signer: me }), "s24");
+  assert.equal(batches(), 1, "the oldest batch matched: no further lookups");
+  assert.equal(calls(), 10);
 });

@@ -137,12 +137,26 @@ export function txCreates(tx: VersionedTransactionResponse, account: PublicKey, 
     && ix.accountKeyIndexes.some((i) => !!keys.get(i)?.equals(account)));
 }
 
-const SIG_PAGE = 250, SIG_WINDOW = 1000, MAX_CANDIDATES = 12;
+const SIG_PAGE = 250, SIG_WINDOW = 1000, TX_BATCH = 10;
+const TX_OPTS = { commitment: "confirmed", maxSupportedTransactionVersion: 0 } as const;
+
+/** getTransaction for several signatures: one JSON-RPC batch, or one call each when the RPC refuses batches. */
+async function fetchTransactions(connection: Connection, sigs: string[]): Promise<Array<VersionedTransactionResponse | null>> {
+  if (sigs.length > 1 && typeof connection.getTransactions === "function") {
+    try { return await connection.getTransactions(sigs, TX_OPTS); } catch { /* batch refused or one entry failed: one by one */ }
+  }
+  const out: Array<VersionedTransactionResponse | null> = [];
+  for (const sig of sigs) out.push(await connection.getTransaction(sig, TX_OPTS));
+  return out;
+}
 
 /**
  * Signature of the transaction that created `account`: the oldest successful transaction that carries the expected
- * instruction on that account (a plain SOL transfer to the address, sent before, is skipped). Returns null when the
- * account has more than 1000 signatures (the creating one is out of reach) or no candidate matches.
+ * instruction on that account (and the expected signer's signature). Anything else that touched the address is
+ * skipped — a SOL transfer that pre-funded it, a memo or dust sent before or after. Every successful signature in the
+ * window is a candidate, checked oldest first in batches: the PDAs are predictable from public data, so a fixed
+ * number of candidates would let anyone hide the creating transaction behind that many cheap transactions sent first.
+ * Returns null when the account has more than 1000 signatures (the creating one is out of reach) or none matches.
  */
 export async function creatingSignature(connection: Connection, account: PublicKey, expect: CreatingTxExpectation = {}): Promise<string | null> {
   const programId = expect.programId ?? (PROGRAM_ID ? new PublicKey(PROGRAM_ID) : null);
@@ -160,9 +174,12 @@ export async function creatingSignature(connection: Connection, account: PublicK
     before = sigs[sigs.length - 1].signature;
   }
   if (!complete) return null; // the window ended before the account's first transaction
-  for (const sig of ok.reverse().slice(0, MAX_CANDIDATES)) {
-    const tx = await connection.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
-    if (tx && txCreates(tx, account, programId, discriminators, expect.signer)) return sig;
+  const oldestFirst = ok.reverse();
+  for (let i = 0; i < oldestFirst.length; i += TX_BATCH) {
+    const chunk = oldestFirst.slice(i, i + TX_BATCH);
+    const txs = await fetchTransactions(connection, chunk);
+    const hit = chunk.findIndex((_, j) => { const tx = txs[j]; return !!tx && txCreates(tx, account, programId, discriminators, expect.signer); });
+    if (hit >= 0) return chunk[hit];
   }
   return null;
 }

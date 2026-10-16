@@ -1,7 +1,8 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { ZERO32, buildScanMessage, bytesToHex, serialHash } from "@flaconvault/proof";
-import { api, attesterMismatch, signedAttester, signedScanSummary, verifyBody, type VerifyInput } from "./verify-api";
+import { ApiError } from "./errors";
+import { EVENT_RETRIES, api, attesterMismatch, eventRetryDelay, signedAttester, signedScanSummary, uploadMediaOnce, verifyBody, type VerifyInput } from "./verify-api";
 
 const realFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = realFetch; });
@@ -77,4 +78,73 @@ test("the anchor step shows what the signed message commits to (resume link, M3)
   assert.equal(tier1.place, null);
   assert.equal(signedScanSummary({ msgHex: "00", serial: "SN-1", bundle: null }), null);
   assert.equal(signedScanSummary(null), null);
+});
+
+// ---- /api/events retries ----------------------------------------------------------------------------------------
+
+const apiErr = (status: number, code: string, retryAfter: number | null = null) => new ApiError("/api/events", status, code, code, retryAfter);
+
+test("event posts are retried for tx_not_visible and busy, and for rate_limited only with a short Retry-After", () => {
+  assert.equal(eventRetryDelay(apiErr(503, "tx_not_visible"), 0), 2500);
+  // busy: the verifier's Retry-After when the browser can read it (at most 5 s), else 2 s
+  assert.equal(eventRetryDelay(apiErr(503, "busy"), 0), 2000);
+  assert.equal(eventRetryDelay(apiErr(503, "busy", 3), 0), 3000);
+  assert.equal(eventRetryDelay(apiErr(503, "busy", 60), 0), 5000);
+  // rate_limited: this connection's own lookups still running (Retry-After 1) — not the per-minute budget
+  assert.equal(eventRetryDelay(apiErr(429, "rate_limited", 1), 0), 1000);
+  assert.equal(eventRetryDelay(apiErr(429, "rate_limited", 30), 0), null);
+  assert.equal(eventRetryDelay(apiErr(429, "rate_limited"), 0), null);
+  // never retried
+  for (const [s, c] of [[403, "tx_mismatch"], [422, "tx_failed"], [409, "event_confirmed"], [503, "chain_not_configured"], [429, "report_limited"]] as const) assert.equal(eventRetryDelay(apiErr(s, c), 0), null, c);
+  assert.equal(eventRetryDelay(new Error("Failed to fetch"), 0), null);
+  // bounded
+  assert.equal(eventRetryDelay(apiErr(503, "busy"), EVENT_RETRIES - 1), 2000);
+  assert.equal(eventRetryDelay(apiErr(503, "busy"), EVENT_RETRIES), null);
+});
+
+test("api.events waits out 'busy' and then posts the event", async () => {
+  const answers = [{ status: 503, body: { detail: "busy" } }, { status: 503, body: { detail: "tx_not_visible" } }, { status: 200, body: { id: 9 } }];
+  let calls = 0;
+  globalThis.fetch = (async () => { const a = answers[calls++]; return new Response(JSON.stringify(a.body), { status: a.status }); }) as typeof fetch;
+  const waits: number[] = [];
+  const r = await api.events({ serial: "SN-1", type: 2, txSig: "sig", actor: "me", ts: 5 }, async (ms) => { waits.push(ms); });
+  assert.deepEqual(r, { id: 9 });
+  assert.equal(calls, 3);
+  assert.deepEqual(waits, [2000, 2500]);
+});
+
+test("api.events gives up after EVENT_RETRIES and surfaces the last error", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => { calls++; return new Response(JSON.stringify({ detail: "busy" }), { status: 503 }); }) as typeof fetch;
+  await assert.rejects(api.events({ serial: "SN-1", type: 2 }, async () => {}), (e: unknown) => e instanceof ApiError && e.code === "busy");
+  assert.equal(calls, EVENT_RETRIES + 1);
+  // a refusal is not retried at all
+  calls = 0;
+  globalThis.fetch = (async () => { calls++; return new Response(JSON.stringify({ detail: "tx_mismatch" }), { status: 403 }); }) as typeof fetch;
+  await assert.rejects(api.events({ serial: "SN-1", type: 2 }, async () => {}));
+  assert.equal(calls, 1);
+});
+
+// ---- media upload cache -----------------------------------------------------------------------------------------
+
+test("photos are uploaded once per session nonce and set of frames, and again for a new session", async () => {
+  const uploads: string[] = [];
+  const upload = async (_b: Blob[], nonce: string) => { uploads.push(nonce); return { sha256: "0xABCD" }; };
+  const frames = { blobs: [new Blob(["x"])], mediaHash: "0xabcd" };
+  const first = await uploadMediaOnce(null, "0xn1", frames, upload);
+  assert.deepEqual(first, { nonce: "0xn1", mediaHash: "0xabcd", sha256: "0xABCD" });
+  // retried "Get signature" in the same session: reused (the verifier caps the files per nonce)
+  assert.equal(await uploadMediaOnce(first, "0xN1", frames, upload), first);
+  assert.deepEqual(uploads, ["0xn1"]);
+  // the session was renewed: the server keeps uploads only for the nonce they came with, so upload again
+  const renewed = await uploadMediaOnce(first, "0xn2", frames, upload);
+  assert.equal(renewed.nonce, "0xn2");
+  assert.deepEqual(uploads, ["0xn1", "0xn2"]);
+  // new frames in the same session: upload again
+  await uploadMediaOnce(renewed, "0xn2", { ...frames, mediaHash: "0xbeef" }, async (b, n) => { uploads.push(n); return { sha256: "0xbeef" }; });
+  assert.deepEqual(uploads, ["0xn1", "0xn2", "0xn2"]);
+});
+
+test("an upload whose server hash differs from the frames is refused", async () => {
+  await assert.rejects(uploadMediaOnce(null, "0xn1", { blobs: [], mediaHash: "0x01" }, async () => ({ sha256: "0x02" })), /different hash/);
 });

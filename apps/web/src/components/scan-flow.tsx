@@ -4,20 +4,19 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { ArrowRight, Camera, Loader2, Nfc, RefreshCw, ShieldOff, Zap } from "lucide-react";
-import { Indicator, Role, Tier, NONCE_TTL_S } from "@flaconvault/proof";
-import type { CardReading, FrameLike, HeatFieldsConfig } from "@flaconvault/vision";
+import { Indicator, Tier, NONCE_TTL_S } from "@flaconvault/proof";
+import { combineReadings, type CardReading, type FrameLike, type HeatFieldsConfig } from "@flaconvault/vision";
 import { VisionClient, frameFromSource } from "@/vision/client";
-import { combineReadings } from "@/vision/vote";
-import { api, parseTagUrl, sha256Hex, signedAttester, signedScanSummary, verifyBody, type Preview, type Session, type SimTag, type TagParams, type VerifyResult } from "@/lib/verify-api";
+import { api, parseTagUrl, sha256Hex, signedAttester, signedScanSummary, uploadMediaOnce, verifyBody, type Preview, type Session, type SimTag, type TagParams, type UploadedMedia, type VerifyResult } from "@/lib/verify-api";
 import { adoptDeadline, scanSession, scanUrlFor, secondsLeft, sessionClock, tapHandoff, type SessionClock } from "@/lib/handoff";
 import { buildRecordScanTx, flaconProgram, programId } from "@/lib/flacon";
 import { creatingSignature, sendAsV0 } from "@/lib/send-tx";
 import { AnchorRefused, anchorScan, needsOwnScanConfirmation } from "@/lib/anchor-scan";
-import { cameraOn, timedStep, type ScanStep } from "@/lib/scan-steps";
+import { cameraOn, escrowScanWarning, initialRole, iosSignHint, partnerWalletGate, roleChoices, timedStep, type ScanStep } from "@/lib/scan-steps";
 import { friendly } from "@/lib/errors";
-import { PROGRAM_ID } from "@/lib/config";
+import { PROGRAM_ID, WALLETCONNECT_PROJECT_ID } from "@/lib/config";
 import { demoMode } from "@/lib/demo";
-import { effectiveVerdict, gradeLetter, gradeSentence, indicatorText, passportHref, short, txUrl, verdictText } from "@/lib/format";
+import { effectiveVerdict, gradeLetter, gradeSentence, indicatorText, passportHref, roleLabel, short, txUrl, verdictText } from "@/lib/format";
 import { GradeMark, Lamp, Pill } from "./badges";
 import { WalletButton } from "./wallet-button";
 import { isIOS, noInjectedWallet, resumeRef, resumeUrl, walletBrowseLinks } from "@/lib/wallet-links";
@@ -30,6 +29,8 @@ interface Tag extends TagParams { source: "nfc" | "simulator"; serial?: string |
 type Clock = SessionClock & { limitedBy: "session" | "tap" };
 const platform = () => (typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent) ? "ANDROID_WEB" : typeof navigator !== "undefined" && /iPhone|iPad/i.test(navigator.userAgent) ? "IOS_WEB" : "DESKTOP_WEB");
 const nonceCode = (nonce: string) => nonce.replace(/^0x/, "").slice(0, 6).toUpperCase();
+/** steps before the server signature, where a missing partner wallet still matters */
+const PRE_SIGNATURE: Step[] = ["session", "tap", "preview", "camera", "read"];
 
 function StepHeader({ n, title, hint }: { n: number; title: string; hint?: string }) {
   return (
@@ -60,8 +61,8 @@ export function ScanFlow() {
   const pathname = usePathname();
   const qRole = Number(params.get("role")), qTier = Number(params.get("tier")), qSite = Number(params.get("site"));
   const certified = qTier === Tier.CERTIFIED || qTier === Tier.BIRTH;
-  // Vault/Partner roles only exist in the certified flow (the role select offers them only there)
-  const defaultRole = Number.isInteger(qRole) && qRole >= 0 && qRole <= 4 && (certified || qRole <= Role.BUYER) ? qRole : Role.OWNER;
+  // the certified flow offers only the vault and partner roles, the others only owner, seller and buyer (lib/scan-steps.ts)
+  const defaultRole = initialRole(qRole, certified);
   const [role, setRole] = useState<number>(defaultRole);
   const siteId = certified && Number.isInteger(qSite) && qSite > 0 ? qSite : 0;
   const [city, setCity] = useState("");
@@ -85,8 +86,8 @@ export function ScanFlow() {
   const nfcAbort = useRef<AbortController | null>(null);
   /** synchronous guard: a second press on Capture must not start a parallel run before `busy` re-renders */
   const capturing = useRef(false);
-  /** the photos uploaded for this session (one upload per set of frames; the verifier caps files per nonce) */
-  const uploaded = useRef<{ mediaHash: string; sha256: string } | null>(null);
+  /** the photos uploaded, keyed on session nonce + media hash (uploadMediaOnce: a new nonce always uploads again) */
+  const uploaded = useRef<UploadedMedia | null>(null);
   // demo tools (virtual taps, test images, airdrop) — read after hydration, see lib/demo.ts
   const [demo, setDemo] = useState(false);
   useEffect(() => setDemo(demoMode()), []);
@@ -98,6 +99,12 @@ export function ScanFlow() {
   const [tierOverride, setTierOverride] = useState<number | null>(null);
   const tier = tierOverride ?? (certified ? qTier : frames ? Tier.SELF_MEDIA : Tier.SELF);
   const scanUrl = scanUrlFor(params);
+  // the device is known only after hydration (the server render must match the first client render)
+  const [ios, setIos] = useState(false);
+  useEffect(() => setIos(isIOS()), []);
+  const injectedWallet = !noInjectedWallet(wallet.wallets.map((w) => ({ name: w.adapter.name, installed: w.readyState === WalletReadyState.Installed })));
+  /** certified flow: the partner wallet must be connected before the server signs (lib/scan-steps.ts) */
+  const walletGate = partnerWalletGate(tier, role, { connected: wallet.connected && !!wallet.publicKey, ios, injectedWallet, walletConnect: !!WALLETCONNECT_PROJECT_ID });
 
   /**
    * Takes a fresh session from the server: local deadline + clock offset. `share` publishes it to /t in other tabs
@@ -319,7 +326,7 @@ export function ScanFlow() {
     setReading(null);
     setStep("read");
     setBusy("read");
-    // every frame is read; the indicators are decided by a majority of the frames (vision/vote.ts)
+    // every frame is read; each indicator is decided by a majority of all captured frames (@flaconvault/vision combineReadings)
     const readings: CardReading[] = [];
     for (const f of imgs) readings.push(await vision.current.read({ data: new Uint8ClampedArray(f.data), width: f.width, height: f.height }, cfg.current, {}));
     setReading(combineReadings(readings, imgs.length));
@@ -360,18 +367,16 @@ export function ScanFlow() {
   // ---- 6–7. bundle + signature -----------------------------------------
   const requestSignature = async () => {
     if (!tag || !session) return;
+    // a certified scan is signed for the connected wallet: without the partner wallet it would be refused (not_partner)
+    if (walletGate) { setError(walletGate.text); return; }
     setBusy("verify"); setError(null);
     try {
       let mediaHash: string | undefined;
       if (frames) {
-        // one upload per set of frames: retrying "Get signature" reuses it (the verifier caps the files per session)
-        let up = uploaded.current;
-        if (!up || up.mediaHash !== frames.mediaHash) {
-          const m = await api.media(frames.blobs, session.nonce);
-          if (m.sha256.toLowerCase() !== frames.mediaHash.toLowerCase()) throw new Error("Media hash differs from the server");
-          up = { mediaHash: frames.mediaHash, sha256: m.sha256 };
-          uploaded.current = up;
-        }
+        // one upload per set of frames AND session: retrying "Get signature" reuses it (the verifier caps the files
+        // per nonce), a renewed session uploads again (the server keeps uploads only for the nonce they came with)
+        const up = await uploadMediaOnce(uploaded.current, session.nonce, frames);
+        uploaded.current = up;
         mediaHash = up.sha256;
       }
       const v = await api.verify(verifyBody({
@@ -442,6 +447,8 @@ export function ScanFlow() {
     finally { setBusy(null); }
   };
 
+  // seller / buyer: a shipping or receipt scan needs heat and humidity read, else the order page cannot use it
+  const escrowWarning = step === "read" ? escrowScanWarning(role, reading) : null;
   const heatTxt = reading?.found ? indicatorText("heat", reading.heat) : null;
   const humTxt = reading?.found ? indicatorText("humidity", reading.humidity) : null;
   const previewVerdict = preview
@@ -475,6 +482,14 @@ export function ScanFlow() {
         </div>
       )}
       {error && <p className="mb-6 rounded-xl border border-bad/40 px-4 py-3 text-sm text-bad" role="alert">{error}</p>}
+      {walletGate && !expired && busy !== "resume" && PRE_SIGNATURE.includes(step) && (
+        <div className="card mb-6 border-warn/50 p-4 text-sm" role="note">
+          <p className="font-medium text-warn">{walletGate.title}</p>
+          <p className="mt-1 text-muted">{walletGate.text}</p>
+          {/* the session step has its own wallet button next to "Start session" */}
+          {walletGate.canConnect && step !== "session" && <div className="mt-3"><WalletButton browseLinks={false} /></div>}
+        </div>
+      )}
 
       {step === "session" && (
         <div>
@@ -483,8 +498,8 @@ export function ScanFlow() {
             <p className="mt-6 flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Loading the signed scan …</p>
           ) : (
             <div className="mt-6 flex flex-wrap items-center gap-3">
-              <button onClick={startSession} className="btn">Start session <ArrowRight className="h-4 w-4" aria-hidden /></button>
-              <WalletButton />
+              <button onClick={startSession} disabled={!!walletGate} className="btn">Start session <ArrowRight className="h-4 w-4" aria-hidden /></button>
+              {walletGate?.canConnect !== false && <WalletButton browseLinks={false} />}
             </div>
           )}
           {!PROGRAM_ID && <p className="mt-4 text-xs text-muted">Note: no program ID set — the anchor step is disabled.</p>}
@@ -580,8 +595,9 @@ export function ScanFlow() {
             </div>
           )}
           {reading?.found && (reading.heat === Indicator.UNREADABLE || reading.humidity === Indicator.UNREADABLE) && (
-            <p className="mt-2 text-xs text-muted">{reading.reason ?? "The card could not be read reliably"}{reading.votes ? ` · heat agreed in ${reading.votes.heat} of ${reading.votes.frames} frames` : ""}. Photograph again for a full reading.</p>
+            <p className="mt-2 text-xs text-muted">{(reading.reason ?? "The card could not be read reliably").replace(/[.\s]+$/, "")}{reading.votes ? ` · heat agreed in ${reading.votes.heat} of ${reading.votes.frames} frames` : ""}. Photograph again for a full reading.</p>
           )}
+          {escrowWarning && busy !== "read" && <p role="note" className="mt-3 max-w-lg text-sm text-warn">{escrowWarning}</p>}
           <div className="mt-6 grid gap-4 sm:grid-cols-2">
             <label className="card block p-4 text-sm">
               <span className="font-medium">Fill level {fill} %</span>
@@ -591,8 +607,7 @@ export function ScanFlow() {
             <div className="card p-4 text-sm">
               <label className="block">Role
                 <select value={role} onChange={(e) => setRole(+e.target.value)} className="ml-2 rounded-full border border-line bg-surface px-2 py-0.5 text-sm">
-                  <option value={Role.OWNER}>Owner</option><option value={Role.SELLER}>Seller</option><option value={Role.BUYER}>Buyer</option>
-                  {certified && <><option value={Role.VAULT}>Vault</option><option value={Role.PARTNER}>Partner</option></>}
+                  {roleChoices(certified).map((r) => <option key={r} value={r}>{roleLabel[r]}</option>)}
                 </select>
                 {certified && <span className="ml-2 text-xs text-muted">Tier {qTier} · Site {siteId}</span>}
               </label>
@@ -604,7 +619,7 @@ export function ScanFlow() {
             </div>
           </div>
           <div className="mt-6 flex flex-wrap gap-3">
-            <button onClick={requestSignature} disabled={busy !== null} className="btn">{busy === "verify" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Get signature <ArrowRight className="h-4 w-4" aria-hidden /></button>
+            <button onClick={requestSignature} disabled={busy !== null || !!walletGate} className="btn">{busy === "verify" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Get signature <ArrowRight className="h-4 w-4" aria-hidden /></button>
             {frames && <button onClick={() => setStep("camera")} disabled={busy !== null} className="btn-outline">Photograph again</button>}
           </div>
         </div>
@@ -649,25 +664,23 @@ export function ScanFlow() {
               </label>
             </div>
           )}
-          {!wallet.connected && isIOS() && noInjectedWallet(wallet.wallets.map((w) => ({ name: w.adapter.name, installed: w.readyState === WalletReadyState.Installed }))) && (
+          {!wallet.connected && ios && !injectedWallet && (
             <div className="card mt-6 p-4 text-sm">
               <p className="font-medium">Sign with your wallet app</p>
-              {resumeLinks ? (
-                <>
-                  <p className="mt-1 text-muted">Safari cannot connect a wallet. The scan continues in the wallet app, where you sign directly.</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <a href={resumeLinks.phantom} className="btn btn-sm">Continue in Phantom</a>
-                    <a href={resumeLinks.solflare} className="btn-outline btn-sm">Continue in Solflare</a>
-                  </div>
-                </>
-              ) : <p className="mt-1 text-muted">Safari cannot connect a wallet, and this scan cannot be handed to the wallet app. Connect a wallet (WalletConnect) above.</p>}
+              <p className="mt-1 text-muted">{iosSignHint({ walletConnect: !!WALLETCONNECT_PROJECT_ID, canResume: !!resumeLinks, signedFor: signed.pubkey })}</p>
+              {resumeLinks && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <a href={resumeLinks.phantom} className="btn btn-sm">Continue in Phantom</a>
+                  <a href={resumeLinks.solflare} className="btn-outline btn-sm">Continue in Solflare</a>
+                </div>
+              )}
             </div>
           )}
           {signed.pubkey && wallet.publicKey && signed.pubkey !== wallet.publicKey.toBase58() && (
             <p className="mt-6 text-sm text-warn">Signed for wallet {short(signed.pubkey)} — switch to that wallet in the header to anchor this scan.</p>
           )}
           <div className="mt-6 flex flex-wrap items-center gap-3">
-            {!wallet.connected ? <WalletButton /> : (
+            {!wallet.connected ? <WalletButton browseLinks={false} /> : (
               <>
                 <button onClick={sendTx} disabled={busy !== null || !PROGRAM_ID || (ownScanNeeded && !ownScan)} className="btn">{busy === "tx" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} {txSig ? "Retry confirmation with the server" : `Sign and send with ${wallet.wallet?.adapter.name ?? "wallet"}`}</button>
                 {txSig && <a href={txUrl(txSig)} target="_blank" rel="noreferrer" className="link text-xs text-muted">Transaction landed · explorer</a>}

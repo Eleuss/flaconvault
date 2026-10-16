@@ -1,11 +1,12 @@
 {
-  "//": "Unit tests only (npx tsx --tsconfig tsconfig.test.json --test 'src/**/*.test.ts'): the web code is CommonJS under tsx, and @flaconvault/proof exports only an ESM 'import' entry, so the tests read its TypeScript source instead. jsx react-jsx: tests can call server components as plain functions (Next itself compiles with jsx preserve).",
+  "//": "Unit tests only (npx tsx --tsconfig tsconfig.test.json --test 'src/**/*.test.ts'): the web code is CommonJS under tsx, and @flaconvault/proof and @flaconvault/vision export only an ESM 'import' entry, so the tests read their TypeScript source instead. jsx react-jsx: tests can call server components as plain functions (Next itself compiles with jsx preserve).",
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "jsx": "react-jsx",
     "paths": {
       "@/*": ["./src/*"],
-      "@flaconvault/proof": ["../../packages/proof/src/index.ts"]
+      "@flaconvault/proof": ["../../packages/proof/src/index.ts"],
+      "@flaconvault/vision": ["../../packages/vision/src/index.ts"]
     }
   }
 }

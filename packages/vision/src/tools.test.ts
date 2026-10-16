@@ -1,8 +1,9 @@
-// Node tooling: the dependency-free image codec used by the test fixtures.
+// Node tooling: the dependency-free image codec used by the fixtures and scripts/calibrate.ts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { decodeImage, decodePng, encodePng } from "../scripts/image-io.ts";
+import { warpedName } from "../scripts/calibrate.ts";
 
 const fixture = (name: string) => readFileSync(new URL(`../fixtures/${name}`, import.meta.url));
 
@@ -31,4 +32,12 @@ test("encodePng / decodePng round trip is lossless", () => {
 
 test("decodeImage rejects data that is neither JPEG nor PNG", () => {
   assert.throws(() => decodeImage(new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61])), /Unsupported image format/);
+});
+
+test("calibrate: the annotated output never replaces the input photo", () => {
+  assert.equal(warpedName("cal/IMG_1.PNG"), "cal/IMG_1.warped.png");
+  assert.equal(warpedName("cal/2.png"), "cal/2.warped.png");
+  assert.equal(warpedName("a.JPEG"), "a.warped.png");
+  assert.equal(warpedName("photo"), "photo.warped.png");
+  for (const f of ["IMG_1.PNG", "x.Jpg", "plain"]) assert.notEqual(warpedName(f), f);
 });

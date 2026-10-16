@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { Indicator } from "@flaconvault/proof";
-import { readCard, type CardReading, type FrameLike, type HeatFieldsConfig } from "./index.ts";
+import { combineReadings, readCard, type CardReading, type FrameLike, type HeatFieldsConfig } from "./index.ts";
 import { decodeImage } from "../scripts/image-io.ts";
 
 const cfg = JSON.parse(readFileSync(new URL("../../../docs/heat_fields.json", import.meta.url), "utf8")) as HeatFieldsConfig;
@@ -82,6 +82,7 @@ function glare(f: FrameLike, c: Pt, r: number): FrameLike {
   }
   return { data, width: f.width, height: f.height };
 }
+const centreMm = (r: { x: number; y: number; w: number; h: number }): Pt => [r.x + r.w / 2, r.y + r.h / 2];
 const pxPerMm = (r: CardReading, at: Pt) => { const [a, b] = toPhoto(r, [at, [at[0] + 1, at[1]]]); return Math.hypot(b[0] - a[0], b[1] - a[1]); };
 
 /** The photo with the given heat fields painted in the triggered (black) colour measured on the same card. */
@@ -171,4 +172,20 @@ test("37 + 40 °C fields black → TRIGGERED [1,1,1,1,1,0]; 40 °C alone black (
     assert.equal(odd.heat, Indicator.UNREADABLE, `${name}: ${JSON.stringify(summary(odd))}`);
     assert.deepEqual(odd.heatLevels, [0, 0, 0, 0, 0, 0], name);
   }
+});
+
+test("five frames of a triggered card, one with a highlight on the 40 °C field → combined reading stays TRIGGERED", () => {
+  const name = "card-2.jpg", u = upright.get(name)!;
+  const triggered = withTriggered(name, [3, 4]);
+  const f40 = fr.fields[4].roi_mm, c = centreMm(f40);
+  const t = read(triggered);
+  const g = read(glare(triggered, toPhoto(u, [c])[0], 1.6 * pxPerMm(u, c)));
+  assert.notEqual(g.heat, Indicator.TRIGGERED, "the highlight hides the black field in that frame");
+  const one = combineReadings([t, t, g, t, t]);
+  assert.equal(one.heat, Indicator.TRIGGERED);
+  assert.deepEqual(one.heatLevels, [1, 1, 1, 1, 1, 0]);
+  assert.equal(one.humidity, Indicator.INTACT);
+  assert.deepEqual(one.votes, { frames: 5, found: 5, heat: 4, humidity: 5, uv: 5 });
+  assert.equal(combineReadings([t, g, t, g, t]).heat, Indicator.TRIGGERED, "3 of 5 still decide");
+  assert.equal(combineReadings([t, g, t, g]).heat, Indicator.UNREADABLE, "2 : 2 decides nothing");
 });

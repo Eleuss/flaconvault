@@ -69,4 +69,6 @@ export interface CardReading {
   warped: FrameLike | null;
   ms: number;
   debug?: string[];
+  /** set by combineReadings: frames combined, frames with a card, and how many of those agree with each verdict */
+  votes?: { frames: number; found: number; heat: number; humidity: number; uv: number };
 }

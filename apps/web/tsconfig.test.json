@@ -1,0 +1,10 @@
+{
+  "//": "Unit tests only (npx tsx --tsconfig tsconfig.test.json --test 'src/**/*.test.ts'): the web code is CommonJS under tsx, and @flaconvault/proof exports only an ESM 'import' entry, so the tests read its TypeScript source instead.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"],
+      "@flaconvault/proof": ["../../packages/proof/src/index.ts"]
+    }
+  }
+}

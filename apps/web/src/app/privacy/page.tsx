@@ -15,6 +15,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 const STORAGE: Array<[string, string]> = [
   ["fv.scanSession", "The scan running in this browser (session code, expiry, scan page address), so a tap on the seal page can be handed to it. Cleared when the scan step ends; useless after 90 seconds."],
   ["fv.tapHandoff, fv.tapHandoffClaim", "A seal tap handed from the seal page to the scan page (the chip link's parameters). Taken within seconds; ignored after 3 minutes."],
+  ["fv.pendingEvent.<order>", "An escrow transaction that landed while the server's confirmation failed (its signature, your wallet and the planned history entry), so the confirmation can be retried; removed once the server confirms it."],
   ["fv.lastTap", "The last chip that is not yet assigned to a passport (UID, serial, counter), for the certify page. Ignored after one hour."],
   ["fv.scanOwner (sessionStorage)", "Which browser tab started the scan. Only in this tab; gone when the tab is closed."],
   ["walletName", "The wallet you picked, so it reconnects on your next visit."],

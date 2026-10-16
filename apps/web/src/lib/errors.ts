@@ -57,7 +57,8 @@ export const CODES: Record<string, string> = {
   event_confirmed: "This entry is already confirmed with another transaction.",
   chain_not_configured: "The verification server has no chain connection configured, so it cannot confirm transactions right now.",
   rate_limited: "Too many requests from this connection. Wait a minute, then try again.",
-  report_limited: "A report for this seal is already open. A partner checks it; there is no need to report it again.",
+  // two causes on the verifier: an open report for this seal or passport (last 24 h), or the per-connection report budget
+  report_limited: "A report for this seal is already open (from the last 24 hours), or too many reports came from this connection. Try again later.",
   media_nonce_invalid: "The photo upload needs a running scan session. Restart the scan.",
   resume_not_found: "This signed scan is no longer waiting to be anchored (already anchored or expired). Open the passport or start a new scan.",
   not_partner: "Certified scans and the vault/partner roles need a wallet registered as a FlaconVault partner. Connect the partner wallet or scan as owner.",

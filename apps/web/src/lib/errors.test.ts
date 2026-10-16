@@ -73,3 +73,10 @@ test("new program errors read clearly, by Anchor name and by the program's messa
   // unknown program errors keep the program's own message
   assert.match(friendly(new Error("Error Code: Whatever. Error Number: 6001. Error Message: Something odd happened.")), /Something odd happened/);
 });
+
+test("report_limited does not claim an open report: it can also be the per-connection budget (C8)", () => {
+  const m = friendly(new ApiError("/api/events", 429, "report_limited", "report_limited"));
+  assert.match(m, /already open/);
+  assert.match(m, /too many reports came from this connection/);
+  assert.doesNotMatch(m, /no need to report it again/);
+});

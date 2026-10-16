@@ -60,6 +60,18 @@ export async function get<T>(path: string, fetchImpl: typeof fetch = fetch, base
 }
 export const getPassport = (serial: string) => get<Passport>(`/api/passport/${encodeURIComponent(serial)}`);
 export const getPassports = () => get<PassportListItem[]>(`/api/passports`);
-export const getTap = (id: string) => get<TapView>(`/api/tap/${encodeURIComponent(id)}`);
+/** Largest tap id the verifier accepts: 2^63 − 1 (SQLite INTEGER, apps/verify routes_tag MAX_ID). */
+const MAX_TAP_ID = "9223372036854775807";
+/**
+ * A tap id as the verifier issues it: a positive integer without leading zeros, at most 2^63 − 1. Anything else (a
+ * truncated or altered /t link) can never resolve: the verifier answers 422, which must not read as an outage.
+ */
+export function validTapId(id: string | null | undefined): id is string {
+  // digit strings of equal length compare like the numbers they spell
+  return typeof id === "string" && /^[1-9]\d{0,18}$/.test(id) && (id.length < MAX_TAP_ID.length || id <= MAX_TAP_ID);
+}
+/** A malformed id is "missing" without asking the verifier (its 422 would otherwise show "server did not answer"). */
+export const getTap = (id: string): Promise<ApiResult<TapView>> =>
+  validTapId(id) ? get<TapView>(`/api/tap/${encodeURIComponent(id)}`) : Promise.resolve({ status: "missing" });
 export const getAttester = (pubkey: string) => get<Attester>(`/api/attester/${encodeURIComponent(pubkey)}`);
 export const getHealth = () => get<{ ok: boolean; simulator: boolean }>(`/health`);

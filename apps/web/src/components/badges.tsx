@@ -18,7 +18,11 @@ export function Pill({ tone, children, className }: { tone: Tone; children: Reac
 }
 /**
  * The verification server did not answer (timeout, 5xx, network). Shown instead of "does not exist": a genuine
- * passport must never look like a fake because the server was redeploying. `retry` reloads the same URL.
+ * passport must never look like a fake because the server was redeploying.
+ *
+ * `retry` is the URL already on screen, so "Try again" is a plain link with a full page load: a client-side <Link> to
+ * the same URL is answered from the router cache (Next 14 seeds it with the first page load and keeps it for 30 s),
+ * which sends nothing to the server and shows this outage page again.
  */
 export function Unavailable({ what, retry }: { what: string; retry: string }) {
   return (
@@ -27,7 +31,8 @@ export function Unavailable({ what, retry }: { what: string; retry: string }) {
       <h1 className="mt-3 font-serif text-4xl">The verification server did not answer</h1>
       <p className="mt-3 max-w-md text-muted">{what} could not be loaded right now. This says nothing about the bottle: try again in a moment.</p>
       <div className="mt-6 flex flex-wrap gap-3">
-        <Link href={retry} prefetch={false} className="btn">Try again</Link>
+        {/* a full page load on purpose, see above */}
+        <a href={retry} className="btn">Try again</a>
         <Link href="/" className="btn-outline">Back to home</Link>
       </div>
     </div>

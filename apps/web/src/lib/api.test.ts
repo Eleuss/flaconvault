@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { get } from "./api";
+import { get, getTap, validTapId } from "./api";
 
 const fake = (impl: () => Promise<Response>) => (async () => impl()) as unknown as typeof fetch;
 
@@ -26,4 +26,24 @@ test("200 returns the data, and every request carries a timeout signal", async (
   const r = await get<{ serial: string }>("/api/passport/SN-1", f, "http://v");
   assert.deepEqual(r, { status: "ok", data: { serial: "SN-1" } });
   assert.ok(init?.signal instanceof AbortSignal);
+});
+
+test("tap ids: only what the verifier can issue (positive, no leading zero, at most 2^63 - 1)", () => {
+  for (const ok of ["1", "42", "9223372036854775807", "1000000000000000000"]) assert.equal(validTapId(ok), true, ok);
+  for (const bad of ["", "0", "007", "-1", "abc", "12a", " 12", "1e3", "9223372036854775808", "99999999999999999999", null, undefined]) {
+    assert.equal(validTapId(bad), false, String(bad));
+  }
+});
+
+test("a malformed /t tap id is 'missing' without a request, never an outage (S2)", async () => {
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => { calls++; return new Response("{}", { status: 422 }); }) as unknown as typeof fetch;
+  try {
+    for (const id of ["abc", "0", "12345678901234567890", "1%2F2"]) assert.deepEqual(await getTap(id), { status: "missing" }, id);
+    assert.equal(calls, 0, "the verifier is not asked about an id it would reject with 422");
+    globalThis.fetch = (async () => { calls++; return new Response("{}", { status: 503 }); }) as unknown as typeof fetch;
+    assert.equal((await getTap("17")).status, "error", "a well-formed id during an outage is still an outage");
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = original; }
 });

@@ -11,8 +11,8 @@ import fv.reconcile as rc
 from fv import proof
 from fv.config import Settings, is_local_rpc
 from fv.main import create_app
-from tests.conftest import (ADMIN, PROGRAM_ID, SYSTEM_PROGRAM, TEST_SEED_HEX, FakeRpc, fake_key, passport_pda, post_media,
-                            registry_pda, sig)
+from tests.conftest import (ADMIN, ESCROW_ID, PROGRAM_ID, SYSTEM_PROGRAM, TEST_SEED_HEX, FakeRpc, encode_event, fake_key,
+                            order_bytes, order_pda, passport_pda, post_media, program_logs, registry_pda, sig)
 from tests.test_chain import registry_bytes
 from tests.test_purge_seed import REAL_ISSUER, SEED_PARTNER, _chain_like_production
 from tests.test_reconcile import _account_for, _scan
@@ -438,3 +438,39 @@ def test_an_existing_passport_is_never_renamed_by_upsert(client):
         assert (p["brand"], p["name"], p["batch"], p["asset"]) == ("Roja", "Elysium", "B1", "Asset111")   # empty batch filled
         upsert_passport(conn, brand="FAKE", name="COUNTERFEIT", batch="B2", **kw)
         assert get_passport(conn, "SN-OPS-1")["batch"] == "B1"
+
+
+# ---------- S10: escrow counters have one source, so closing an order never erases a dispute ----------
+
+def _escrow_counts(c, pk):
+    a = c.get(f"/api/attester/{pk}").json()
+    return a["escrowsOk"], a["escrowsDisputed"]
+
+
+def _dispute(c, s, seller, buyer):
+    dis = encode_event("OrderDisputed", order=order_pda(SN2, seller), by=buyer, reason=2, refunded=480_000_000)
+    c.rpc.escrow_tx(s, "dispute", SN2, buyer, seller=seller, buyer=buyer, logs=program_logs(ESCROW_ID, dis))
+    e = c.post("/api/events", json={"serial": SN2, "type": "DISPUTE", "txSig": s, "actor": buyer}).json()
+    assert e["status"] == "confirmed", e
+
+
+def test_a_dispute_keeps_counting_after_the_seller_closes_the_order(chain_client):
+    c, rpc = chain_client, chain_client.rpc
+    seller, buyer = fake_key("closing-disputed-seller"), fake_key("disputing-buyer")
+    order = order_pda(SN2, seller)
+    rpc.program_accounts = {order: order_bytes(serial=SN2, seller=seller, buyer=buyer, state=4)}   # reconcile saw it shipped
+    _reconcile(c)
+    rpc.program_accounts = {}                         # dispute, then close_order before the next cycle: the account is gone
+    _dispute(c, sig("cd1"), seller, buyer)
+    assert _escrow_counts(c, seller) == (0, 1) and _escrow_counts(c, buyer) == (0, 1)
+    for _ in range(2):                                # reconcile cycles with no Order account on chain
+        _reconcile(c)
+        assert _escrow_counts(c, seller) == (0, 1) and _escrow_counts(c, buyer) == (0, 1)
+
+
+def test_a_dispute_of_an_order_reconcile_never_saw_counts_for_seller_and_buyer(chain_client):
+    c = chain_client
+    seller, buyer = fake_key("unseen-disputed-seller"), fake_key("unseen-buyer")
+    _dispute(c, sig("ud1"), seller, buyer)            # no escrow_orders row, Order already closed
+    _reconcile(c)
+    assert _escrow_counts(c, seller) == (0, 1) and _escrow_counts(c, buyer) == (0, 1)

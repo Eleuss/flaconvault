@@ -7,7 +7,7 @@ import { ArrowRight, Loader2 } from "lucide-react";
 import { EventType, hexToBytes, serialHash } from "@flaconvault/proof";
 import { fetchSealStates, passportPda, scanPda, sealPda } from "@/lib/flacon";
 import { escrowProgram, escrowIx, fetchConfig, fetchOrder, fetchOrders, OrderState, orderStateLabel, orderStateTone, FILL_TOLERANCE, type EscrowConfigView, type OrderView } from "@/lib/escrow";
-import { availableActions, buyerNeedsAdmin, formatUsdc, isTerminal, isValidSerial, marketPassportPath, orderPath, passportPath, receiptDeadline, scanFitsStep, shipDeadline, type EscrowAction } from "@/lib/escrow-rules";
+import { availableActions, buyerNeedsAdmin, formatUsdc, isTerminal, isValidSerial, marketPassportPath, orderPath, passportPath, receiptDeadline, scanUsableForOrder, shipDeadline, stepScanChoice, type EscrowAction } from "@/lib/escrow-rules";
 import { flushPending, loadPending, rememberPending, savePending, type PendingEvent } from "@/lib/pending-events";
 import { api } from "@/lib/verify-api";
 import { sendAsV0 } from "@/lib/send-tx";
@@ -19,7 +19,8 @@ import { GradeMark, Pill } from "./badges";
 import { WalletButton } from "./wallet-button";
 
 const STEPS = [OrderState.LISTED, OrderState.RESERVED, OrderState.PRESHIP_SCANNED, OrderState.SHIPPED, OrderState.RECEIPT_SCANNED, OrderState.RELEASED];
-interface ScanOpt { counter: number; ts: number; fill: number | null; pda: PublicKey; seal: PublicKey; label: string }
+/** `unusable`: why the scan cannot stand for an order step (heat or humidity not decided), null when it can. */
+interface ScanOpt { key: string; counter: number; ts: number; fill: number | null; pda: PublicKey; seal: PublicKey; label: string; unusable: string | null }
 type Ev = { type: number; payload?: Record<string, unknown> };
 /** The verifier already holds this entry (with another transaction): nothing left to retry. */
 const alreadyRecorded = (e: unknown) => e instanceof ApiError && e.code === "event_confirmed";
@@ -132,7 +133,10 @@ export function OrderDetail({ orderPda }: { orderPda: string }) {
       const seal = sealPda(hexToBytes(e.sealUidHash!));
       const counter = e.payload.counter as number;
       const fill = typeof e.payload.fill === "number" ? e.payload.fill : null;
-      return { counter, ts: e.ts, fill, seal, pda: scanPda(seal, counter), label: `Counter ${counter} · ${fmtDate(e.ts)}${fill !== null ? ` · fill level ${fill} %` : ""}` };
+      const usable = scanUsableForOrder(e.payload.indicators as { heat?: unknown; humidity?: unknown } | undefined);
+      const unusable = usable.ok ? null : usable.reason;
+      const pda = scanPda(seal, counter);
+      return { key: pda.toBase58(), counter, ts: e.ts, fill, seal, pda, unusable, label: `Counter ${counter} · ${fmtDate(e.ts)}${fill !== null ? ` · fill level ${fill} %` : ""}${unusable ? ` · ${unusable}, cannot be recorded` : ""}` };
     })
     .reverse();
 
@@ -191,10 +195,13 @@ export function OrderDetail({ orderPda }: { orderPda: string }) {
   // scan, after shipping for the receipt scan — an older scan (for example from when the seller bought the bottle) is
   // never offered
   const step = order?.state === OrderState.RESERVED ? "preShip" : order?.state === OrderState.SHIPPED ? "receipt" : null;
-  const stepScans = order && step ? myScans.filter((s) => scanFitsStep(order, step, s.ts)) : [];
-  const olderHidden = myScans.length - stepScans.length;
-  const noScanLabel = olderHidden > 0 ? `— no scan of this wallet after the ${step === "receipt" ? "shipping" : "reservation"} yet —` : "— no anchored scan of this wallet yet —";
-  const chosen = stepScans.find((s) => s.pda.toBase58() === scanChoice) ?? stepScans[0];
+  // a scan with heat or humidity not decided (UNREADABLE / MISSING) is listed but cannot be chosen (stepScanChoice)
+  const { offered: stepScans, chosen, olderHidden, undecided } = stepScanChoice(order, step, myScans, scanChoice);
+  const noScanLabel = undecided > 0 ? "— no scan with heat and humidity read —"
+    : olderHidden > 0 ? `— no scan of this wallet after the ${step === "receipt" ? "shipping" : "reservation"} yet —` : "— no anchored scan of this wallet yet —";
+  const undecidedNote = undecided > 0
+    ? `${undecided === 1 ? "One scan" : `${undecided} scans`} of this wallet cannot be recorded: heat and humidity must both be read (intact or triggered). The escrow compares them between the shipping and the receipt scan, and an unreadable or missing value cannot be compared. Do a new scan with a sharp, glare-free photo of the card.`
+    : null;
   const sellerScanCounter = passport?.events.find((e) => e.type === EventType.SHIP && (e.payload.order === orderPda || e.payload.order === undefined))?.payload.preShipScanCounter as number | undefined;
   const viewer = { isSeller, isBuyer, isAdmin, sealDead: !!deadSeal };
   const actions: EscrowAction[] = order ? availableActions(order, viewer, now) : [];
@@ -299,12 +306,13 @@ export function OrderDetail({ orderPda }: { orderPda: string }) {
                     <p className="text-muted">Do the shipping scan (tier 2, with photo), then record it here. The scan must come from this wallet, be anchored on chain and be made after the reservation{olderHidden > 0 ? ` (${olderHidden} older scan${olderHidden === 1 ? " is" : "s are"} not offered)` : ""}.</p>
                     <div className="flex flex-wrap items-center gap-2">
                       <Link href="/scan?role=1" className="btn-outline btn-sm">Do shipping scan <ArrowRight className="h-3.5 w-3.5" aria-hidden /></Link>
-                      <select value={chosen?.pda.toBase58() ?? ""} onChange={(e) => setScanChoice(e.target.value)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
-                        {stepScans.length === 0 && <option value="">{noScanLabel}</option>}
-                        {stepScans.map((s) => <option key={s.pda.toBase58()} value={s.pda.toBase58()}>{s.label}</option>)}
+                      <select value={chosen?.key ?? ""} onChange={(e) => setScanChoice(e.target.value)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
+                        {!chosen && <option value="">{noScanLabel}</option>}
+                        {stepScans.map((s) => <option key={s.key} value={s.key} disabled={s.unusable !== null}>{s.label}</option>)}
                       </select>
                       <button onClick={act.preShip} disabled={busy !== null || !chosen} className="btn btn-sm">{spin("preShip")} Record shipping scan</button>
                     </div>
+                    {undecidedNote && <p role="note" className="text-xs text-warn">{undecidedNote}</p>}
                   </div>
                 )}
                 {can("ship") && <button onClick={act.ship} disabled={busy !== null} className="btn btn-sm">{spin("ship")} Mark as shipped</button>}
@@ -313,12 +321,13 @@ export function OrderDetail({ orderPda }: { orderPda: string }) {
                     <p className="text-muted">After receipt: do a scan (tier 2, with photo) and record it before {fmtDate(receiptDeadline(order))}. Only scans made after shipping count{olderHidden > 0 ? ` (${olderHidden} older scan${olderHidden === 1 ? " is" : "s are"} not offered)` : ""}. Release happens when heat and humidity match and the fill level differs by at most {FILL_TOLERANCE} %. Without a receipt scan by the deadline the USDC goes to the seller.</p>
                     <div className="flex flex-wrap items-center gap-2">
                       <Link href="/scan?role=2" className="btn-outline btn-sm">Do receipt scan <ArrowRight className="h-3.5 w-3.5" aria-hidden /></Link>
-                      <select value={chosen?.pda.toBase58() ?? ""} onChange={(e) => setScanChoice(e.target.value)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
-                        {stepScans.length === 0 && <option value="">{noScanLabel}</option>}
-                        {stepScans.map((s) => <option key={s.pda.toBase58()} value={s.pda.toBase58()}>{s.label}</option>)}
+                      <select value={chosen?.key ?? ""} onChange={(e) => setScanChoice(e.target.value)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
+                        {!chosen && <option value="">{noScanLabel}</option>}
+                        {stepScans.map((s) => <option key={s.key} value={s.key} disabled={s.unusable !== null}>{s.label}</option>)}
                       </select>
                       <button onClick={act.receipt} disabled={busy !== null || !chosen} className="btn btn-sm">{spin("receipt")} Record receipt scan</button>
                     </div>
+                    {undecidedNote && <p role="note" className="text-xs text-warn">{undecidedNote}</p>}
                   </div>
                 )}
                 {askAdmin && (

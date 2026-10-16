@@ -16,9 +16,26 @@ async function get<T>(path: string): Promise<T> {
   if (!r.ok) throw await apiError(path, r);
   return r.json() as Promise<T>;
 }
-const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
-/** /api/events answers 503 "tx_not_visible" while its RPC has not seen the transaction yet. */
-const EVENT_RETRIES = 5, EVENT_RETRY_MS = 2500;
+const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
+/** Retries of one /api/events post, and the pause before each (see eventRetryDelay). */
+export const EVENT_RETRIES = 5;
+const EVENT_RETRY_MS = 2500, BUSY_RETRY_MS = 2000, MAX_RETRY_WAIT_S = 5;
+/**
+ * How long to wait before posting an event again, or null to give up. Retried, at most EVENT_RETRIES times:
+ *   503 tx_not_visible — the verifier's RPC has not seen the transaction yet;
+ *   503 busy           — all of the verifier's transaction lookups are in use (global); waits its Retry-After when
+ *                        readable (at most 5 s), else 2 s;
+ *   429 rate_limited   — only with a readable Retry-After of at most 5 s: this connection's own confirmations still
+ *                        running (the per-minute request budget says to wait longer, and is not hammered).
+ */
+export function eventRetryDelay(e: unknown, attempt: number): number | null {
+  if (attempt >= EVENT_RETRIES || !(e instanceof ApiError)) return null;
+  const after = e.retryAfter;
+  if (e.status === 503 && e.code === "tx_not_visible") return EVENT_RETRY_MS;
+  if (e.status === 503 && e.code === "busy") return after != null && after > 0 ? Math.min(after, MAX_RETRY_WAIT_S) * 1000 : BUSY_RETRY_MS;
+  if (e.status === 429 && e.code === "rate_limited" && after != null && after > 0 && after <= MAX_RETRY_WAIT_S) return after * 1000;
+  return null;
+}
 
 export interface Session { nonce: string; expiresAt: number; ttl: number; issuedAt?: number }
 export interface SimTag { uid: string; serial: string | null; kind: number | null; counter: number; alive: boolean }
@@ -54,17 +71,19 @@ export const api = {
   resume: (eventId: number, token: string) => get<VerifyResult>(`/api/verify/${encodeURIComponent(String(eventId))}?token=${encodeURIComponent(token)}`),
   /**
    * Chain-backed events need `txSig` and `actor`. The server stamps the time itself, so `ts` is never sent.
-   * Retries while the server's RPC has not seen the transaction yet (503 "tx_not_visible").
+   * Retries while the server's RPC has not seen the transaction yet or its lookups are busy (eventRetryDelay).
+   * `wait` is the pause between attempts (tests pass a fast one).
    */
-  async events(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async events(body: Record<string, unknown>, wait: (ms: number) => Promise<void> = sleep): Promise<Record<string, unknown>> {
     const clean: Record<string, unknown> = { ...body };
     delete clean.ts;
     for (let attempt = 0; ; attempt++) {
       try {
         return await post<Record<string, unknown>>("/api/events", clean);
       } catch (e) {
-        if (attempt < EVENT_RETRIES && e instanceof ApiError && e.status === 503 && e.code === "tx_not_visible") { await sleep(EVENT_RETRY_MS); continue; }
-        throw e;
+        const delay = eventRetryDelay(e, attempt);
+        if (delay == null) throw e;
+        await wait(delay);
       }
     }
   },
@@ -78,6 +97,25 @@ export const api = {
     return r.json();
   },
 };
+
+/** Card photos the verifier holds for one session nonce: their hash as computed here and as the server stored it. */
+export interface UploadedMedia { nonce: string; mediaHash: string; sha256: string }
+const sameHex = (a: string, b: string) => a.replace(/^0x/i, "").toLowerCase() === b.replace(/^0x/i, "").toLowerCase();
+/**
+ * The upload of `frames` for the session `nonce`. The verifier stages uploads per nonce and keeps them only when a
+ * VALID /api/verify consumes that nonce with their hash (at most 6 files per nonce), so an earlier upload is reused
+ * only for the same nonce AND the same frames: a retried "Get signature" does not upload again, while a new session
+ * (new nonce) always uploads again — the signed scan must never reference photos the server dropped.
+ */
+export async function uploadMediaOnce(
+  cached: UploadedMedia | null, nonce: string, frames: { blobs: Blob[]; mediaHash: string },
+  upload: (blobs: Blob[], nonce: string) => Promise<{ sha256: string }> = api.media,
+): Promise<UploadedMedia> {
+  if (cached && sameHex(cached.nonce, nonce) && sameHex(cached.mediaHash, frames.mediaHash)) return cached;
+  const m = await upload(frames.blobs, nonce);
+  if (!sameHex(m.sha256, frames.mediaHash)) throw new Error("The server computed a different hash for the photos. Photograph the card again.");
+  return { nonce, mediaHash: frames.mediaHash, sha256: m.sha256 };
+}
 
 export interface VerifyInput {
   tag: TagParams & { source: "nfc" | "simulator"; tapId?: number; tapToken?: string };

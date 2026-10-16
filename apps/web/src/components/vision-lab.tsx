@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Camera, FlaskConical, Loader2, Repeat, Upload } from "lucide-react";
 import { Indicator, HEAT_FIELDS_C } from "@flaconvault/proof";
-import type { CardReading, FrameLike, HeatFieldsConfig } from "@flaconvault/vision";
+import { combineReadings, type CardReading, type FrameLike, type HeatFieldsConfig } from "@flaconvault/vision";
 import { VisionClient, frameFromSource } from "@/vision/client";
 import { indicatorText } from "@/lib/format";
 import { Lamp, Pill } from "./badges";
@@ -133,7 +133,8 @@ export function VisionLab() {
 
   const heat = reading ? indicatorText("heat", reading.heat) : null;
   const hum = reading ? indicatorText("humidity", reading.humidity) : null;
-  const agree = series.length ? series.filter((r) => r.found && r.heat === series[0].heat && r.humidity === series[0].humidity && JSON.stringify(r.heatLevels) === JSON.stringify(series[0].heatLevels)).length : 0;
+  // the series combined as the scan page combines its five frames (majority of all captures, same helper)
+  const combined = series.length ? combineReadings(series) : null;
 
   return (
     <div className="mt-8 grid gap-8 lg:grid-cols-[380px_1fr]">
@@ -178,9 +179,10 @@ export function VisionLab() {
               </>
             )}
           </div>
-          {series.length > 0 && (
+          {combined?.votes && (
             <p className="mt-3 text-xs">
-              <span className="font-medium">{agree} of {series.length}</span> captures agree · heat {series.map((r) => r.heat).join("")} · humidity {series.map((r) => r.humidity).join("")}
+              <span className="font-medium">{`Combined: heat ${indicatorText("heat", combined.heat).detail ?? "not read"} (${combined.votes.heat} of ${combined.votes.frames} agree) · humidity ${indicatorText("humidity", combined.humidity).detail ?? "not read"} (${combined.votes.humidity} of ${combined.votes.frames})`}</span>
+              <span className="block text-muted">{`${combined.votes.found} of ${combined.votes.frames} captures voted · per capture: heat ${series.map((r) => r.heat).join("")} · humidity ${series.map((r) => r.humidity).join("")}${combined.reason ? ` · ${combined.reason}` : ""}`}</span>
             </p>
           )}
         </section>
@@ -202,6 +204,7 @@ export function VisionLab() {
               <Pill tone={hum.tone}>{hum.label}: {hum.detail}</Pill>
               <Pill tone="none">Light: {reading?.found && reading.uv !== 3 ? indicatorText("uv", reading.uv).detail : "not fitted"}</Pill>
             </div>
+            {reading.reason && <p className="mt-2 text-xs text-muted">{reading.reason}</p>}
             <div className="mt-4 grid grid-cols-6 gap-2">
               {HEAT_FIELDS_C.map((c, i) => {
                 const f = reading.heatFields[i];

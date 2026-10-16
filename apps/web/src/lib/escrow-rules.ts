@@ -70,6 +70,44 @@ export function scanFitsStep(o: OrderLike, step: "preShip" | "receipt", scanTs: 
   return scanTs >= stepAt - SCAN_TS_SKEW_S;
 }
 
+/** Indicator codes (proof enums Indicator): what a heat or humidity reading of a signed scan can be. */
+const INDICATOR = { INTACT: 0, TRIGGERED: 1, UNREADABLE: 2, MISSING: 3 } as const;
+const indicatorProblem = (name: string, code: unknown): string | null =>
+  code === INDICATOR.INTACT || code === INDICATOR.TRIGGERED ? null
+  : code === INDICATOR.UNREADABLE ? `${name} unreadable`
+  : `${name} not read`;
+
+/**
+ * Whether an anchored scan may be recorded as an order's shipping or receipt scan, judged by its signed indicators.
+ * The program compares the codes of the receipt scan with those of the shipping scan (heat equal, humidity equal, fill
+ * within the tolerance → release, anything else → MISMATCH). An UNREADABLE or MISSING heat or humidity would therefore
+ * either push the order into MISMATCH or "match" another unread scan without checking anything, so only scans with
+ * both indicators decided (INTACT or TRIGGERED) are offered. `reason` names what is missing, e.g. "heat unreadable".
+ */
+export function scanUsableForOrder(indicators: { heat?: unknown; humidity?: unknown } | null | undefined): { ok: true } | { ok: false; reason: string } {
+  const problems = [indicatorProblem("heat", indicators?.heat), indicatorProblem("humidity", indicators?.humidity)].filter((p): p is string => p !== null);
+  return problems.length ? { ok: false, reason: problems.join(", ") } : { ok: true };
+}
+
+/**
+ * The scans the order page offers for a step, and the one it would record. Only scans made after the step count
+ * (scanFitsStep; `olderHidden` of the wallet's scans are left out); of those, a scan with `unusable` set (heat or
+ * humidity not decided, scanUsableForOrder) is listed but can never be chosen. `choice` (a key) keeps the user's pick
+ * while it is selectable; otherwise the first selectable scan is chosen, or none.
+ */
+export function stepScanChoice<T extends { key: string; ts: number; unusable: string | null }>(
+  o: OrderLike | null | undefined, step: "preShip" | "receipt" | null, scans: T[], choice: string,
+): { offered: T[]; chosen: T | undefined; olderHidden: number; undecided: number } {
+  const offered = o && step ? scans.filter((s) => scanFitsStep(o, step, s.ts)) : [];
+  const usable = offered.filter((s) => s.unusable === null);
+  return {
+    offered,
+    chosen: usable.find((s) => s.key === choice) ?? usable[0],
+    olderHidden: scans.length - offered.length,
+    undecided: offered.length - usable.length,
+  };
+}
+
 /**
  * What only the escrow admin can settle for the buyer of a SHIPPED order: the parcel did not arrive (the buyer cannot
  * record a receipt scan without the bottle, and after the receipt deadline anyone may pay the seller), or the seal

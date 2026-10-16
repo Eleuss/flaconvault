@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventType, Grade } from "@flaconvault/proof";
 import type { PassportEvent } from "./api";
-import { MAX_REPORTS_SHOWN, PASSPORT_DISCRIMINATOR, decodePassportAccount, effectiveVerdict, eventLine, liveCheckVerdict, passportHref, tapLanding, visibleEvents } from "./format";
+import { MAX_REPORTS_SHOWN, PASSPORT_DISCRIMINATOR, decodePassportAccount, effectiveVerdict, eventLine, isSeedEvent, liveCheckVerdict, passportHref, tapLanding, visibleEvents } from "./format";
 
 const ev = (o: Partial<PassportEvent>): PassportEvent => ({
   id: 1, type: EventType.SCAN, ts: 1000, actor: null, actorLabel: null, txSig: null, status: "confirmed", sealUidHash: null,
@@ -97,4 +97,27 @@ test("verified scan tier wins over the claim; reserve shows the escrowed price",
   assert.equal(scan.title, "Sighting");
   assert.deepEqual(eventLine(ev({ type: EventType.RESERVE, payload: { priceUsdc: 390, currency: "USDC" } })).details, ["390 USDC in escrow"]);
   assert.equal(eventLine(ev({ type: EventType.DISPUTE, payload: { reason: "not shipped within the deadline" } })).details[0], "not shipped within the deadline");
+});
+
+test("a pending scan's claimed certification is not shown as one (anyone may name a partner at /api/verify)", () => {
+  const claim = { attester: { pubkey: "Partner1111", tier: 4, role: 4 }, indicators: { heat: 0, humidity: 0 }, counter: 7 };
+  const pending = eventLine(ev({ status: "pending", payload: claim }));
+  assert.equal(pending.title, "Scan · certification claimed");
+  assert.equal(pending.details[0], "Partner (claimed)");
+  // once confirmed, payload.tier/role are the chain's values
+  const confirmed = eventLine(ev({ status: "confirmed", payload: { ...claim, tier: 4, role: 4 } }));
+  assert.equal(confirmed.title, "Birth scan");
+  assert.equal(confirmed.details[0], "Partner");
+  // an owner's pending scan is unchanged
+  const owner = eventLine(ev({ status: "pending", payload: { attester: { tier: 2, role: 0 }, indicators: { heat: 0, humidity: 0 }, counter: 8 } }));
+  assert.equal(owner.title, "Scan tier 2");
+  assert.equal(owner.details[0], "Owner");
+});
+
+test("demo seed rows say so (payload.seed)", () => {
+  const seeded = ev({ txSig: "SeedSig", payload: { seed: true, tier: 2, indicators: { heat: 0, humidity: 0 }, counter: 1 } });
+  assert.equal(isSeedEvent(seeded), true);
+  assert.equal(eventLine(seeded).details.at(-1), "demo data");
+  assert.equal(isSeedEvent(ev({ payload: { seed: "true" } })), false);
+  assert.doesNotMatch(eventLine(ev({ payload: { tier: 2, indicators: {}, counter: 1 } })).details.join(), /demo/);
 });

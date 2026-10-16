@@ -9,7 +9,8 @@ In-process per-IP rate limiting (token buckets) as FastAPI dependencies.
 Client IP: the socket peer, unless the peer is the platform proxy (a non-global address: Railway's edge reaches the
 container over its private network). Only then is X-Forwarded-For used, and only its last entry — the address the
 proxy itself saw (the first hop in front of us); everything to the left of it can be written by the client.
-FV_TRUSTED_PROXY_HOPS (default 1) raises the number of trusted proxies in front of the app.
+FV_TRUSTED_PROXY_HOPS (default 1) raises the number of trusted proxies in front of the app. The limits come from
+Settings (rate_limit_per_min, report_limit_per_hour, trusted_proxy_hops); the FV_* environment variable wins when set.
 
 The buckets live in the app process (app.state), so the limit is per replica. Idle buckets are dropped.
 """
@@ -99,12 +100,19 @@ def _is_platform_proxy(peer: str) -> bool:
         return False
 
 
+def _setting(request: Request, attr: str, env: str, default: float) -> float:
+    """A limit from the environment (wins, so tests and operators can override it) or from Settings."""
+    app = getattr(request, "app", None)
+    settings = getattr(getattr(app, "state", None), "settings", None)
+    return _env_float(env, float(getattr(settings, attr, None) or default))
+
+
 def client_ip(request: Request) -> str:
     peer = request.client.host if request.client else ""
     xff = request.headers.get("x-forwarded-for")
     if xff and _is_platform_proxy(peer):
         hops = [h.strip() for h in xff.split(",") if h.strip()]
-        n = int(_env_float("FV_TRUSTED_PROXY_HOPS", 1))
+        n = int(_setting(request, "trusted_proxy_hops", "FV_TRUSTED_PROXY_HOPS", 1))
         if hops:
             return hops[-min(n, len(hops))]
     return peer or "unknown"
@@ -128,13 +136,11 @@ def _limiter(request: Request, name: str) -> RateLimiter:
         with _INIT_LOCK:
             lim = limiters.get(name)
             if lim is None:
-                settings = getattr(state, "settings", None)
                 if name == "report":
-                    n = getattr(settings, "report_limit_per_hour", None) or _env_float("FV_REPORT_LIMIT_PER_HOUR", DEFAULT_REPORTS_PER_HOUR)
-                    lim = RateLimiter.per_hour(n)
+                    lim = RateLimiter.per_hour(_setting(request, "report_limit_per_hour", "FV_REPORT_LIMIT_PER_HOUR",
+                                                        DEFAULT_REPORTS_PER_HOUR))
                 else:
-                    n = getattr(settings, "rate_limit_per_min", None) or _env_float("FV_RATE_LIMIT_PER_MIN", DEFAULT_PER_MIN)
-                    lim = RateLimiter.per_minute(n)
+                    lim = RateLimiter.per_minute(_setting(request, "rate_limit_per_min", "FV_RATE_LIMIT_PER_MIN", DEFAULT_PER_MIN))
                 limiters[name] = lim
     return lim
 

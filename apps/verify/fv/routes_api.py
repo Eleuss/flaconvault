@@ -131,7 +131,8 @@ class EventBody(BaseModel):
 @router.get("/health")
 def health(settings: Settings = Depends(get_settings)):
     return {"ok": True, "keyId": settings.server_key_id, "pubkeyHex": proof.public_key(settings.server_seed).hex(),
-            "simulator": settings.dev_simulator, "programId": settings.program_id or None}
+            "simulator": settings.dev_simulator, "programId": settings.program_id or None,
+            "build": getattr(settings, "build_sha", "") or None, "arweave": arweave.health(settings)}
 
 
 @router.post("/api/session", dependencies=[Depends(rate_limit)])
@@ -433,7 +434,12 @@ async def media(request: Request, conn=Depends(get_conn), settings: Settings = D
 MAX_PAYLOAD_BYTES = 16 * 1024
 REPORT_WINDOW_S = 24 * 3600
 REPORT_SOURCES = ("nfc", "manual", "simulator", "t")
-DISPUTE_REASONS = {0: "admin", 1: "no receipt scan within the deadline", 2: "Seal not responding", 3: "scans disagree"}
+# escrow DISPUTE_REASON_* (programs/escrow/src/constants.rs): TIMEOUT = the seller did not ship within the window
+DISPUTE_REASONS = {0: "admin", 1: "not shipped within the deadline", 2: "Seal not responding", 3: "scans disagree"}
+DISPUTE_REASON_MISMATCH = 3
+RESOLVED_TO_SELLER = "scans disagree · resolved by the escrow admin"
+RESOLVED_TO_BUYER = "scans disagree · refunded by the escrow admin"
+RELEASED_AFTER_TIMEOUT = "no receipt scan within the deadline"
 USDC_DECIMALS = 6
 
 
@@ -473,8 +479,9 @@ def _expectation(conn, settings: Settings, etype: int, serial: str, *, seal_uid_
     if not settings.escrow_program_id:
         raise HTTPException(503, "chain_not_configured")
     sellers = tuple(event_actors(conn, serial, EventType.LIST))
+    to_seller = True if etype == EventType.RELEASE else False if etype == EventType.DISPUTE else None
     return txverify.Expectation(program=settings.escrow_program_id, instructions=txverify.ESCROW_IX[etype],
-                                passport=passport_pda, escrow=True, known_sellers=sellers)
+                                passport=passport_pda, escrow=True, known_sellers=sellers, resolve_to_seller=to_seller)
 
 
 def _verify_tx(rpc, tx_sig: str, actor: str, exp: txverify.Expectation) -> txverify.VerifiedTx:
@@ -555,6 +562,9 @@ def _tx_payload(etype: int, vt: txverify.VerifiedTx, client: dict, *, serial: st
     if etype == EventType.MINT:
         if args.get("serialHash") != proof.serial_hash(serial).hex():
             raise HTTPException(403, "tx_mismatch")
+        core_asset = vt.account("core_asset")     # programs since the Core-asset check: account 4 = the asset arg
+        if core_asset is not None and core_asset != args.get("asset"):
+            raise HTTPException(403, "tx_mismatch")
         out: dict[str, Any] = {"brand": _text(client.get("brand"), 200), "name": _text(client.get("name"), 200),
                                "batch": _text(client.get("batch"), 200), "asset": args.get("asset"),
                                "bindingHash": "0x" + args["bindingHash"] if args.get("bindingHash") else None}
@@ -595,13 +605,27 @@ def _tx_payload(etype: int, vt: txverify.VerifiedTx, client: dict, *, serial: st
             out.update(receiptScanCounter=buyer_scan["counter"] if buyer_scan else None, match=None, fillDelta=None)
         return out
     if etype == EventType.RELEASE:
+        if vt.name == "resolve":                  # admin settled a MISMATCH order for the seller (OrderResolved)
+            rv = vt.event("OrderResolved") or {}
+            amount = rv.get("amount") or order.get("price")
+            out = {**base, "price": amount, "priceUsdc": _usdc(amount), "to": order.get("seller") or vt.account("seller"),
+                   "reason": RESOLVED_TO_SELLER}
+            if rv.get("assetTransferred"):
+                out["passportTo"] = order.get("buyer") or vt.account("buyer")
+            return out
         ev = vt.event("OrderReleased") or {}
         amount = ev.get("amount") or order.get("price")
         out = {**base, "price": amount, "priceUsdc": _usdc(amount), "to": ev.get("seller") or order.get("seller")}
+        if vt.name == "release_after_timeout":
+            out["reason"] = RELEASED_AFTER_TIMEOUT
         if ev.get("assetTransferred"):
             out["passportTo"] = ev.get("buyer")
         return out
     if etype == EventType.DISPUTE:
+        if vt.name == "resolve":                  # admin refunded the buyer of a MISMATCH order (OrderResolved)
+            rv = vt.event("OrderResolved") or {}
+            return {**base, "reason": RESOLVED_TO_BUYER, "reasonCode": DISPUTE_REASON_MISMATCH,
+                    "refunded": rv.get("amount"), "refundedUsdc": _usdc(rv.get("amount"))}
         ev = vt.event("OrderDisputed") or {}
         code = ev.get("reason")
         return {**base, "reason": DISPUTE_REASONS.get(code) if code is not None else None, "reasonCode": code,

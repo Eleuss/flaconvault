@@ -64,15 +64,15 @@ ESCROW_IX: dict[int, tuple[str, ...]] = {
     EventType.RESERVE: ("reserve",),
     EventType.SHIP: ("ship",),
     EventType.RECEIVE: ("record_receipt_scan",),
-    EventType.RELEASE: ("release",),
-    EventType.DISPUTE: ("dispute",),
+    EventType.RELEASE: ("release", "release_after_timeout", "resolve"),   # resolve only with to_seller = true
+    EventType.DISPUTE: ("dispute", "resolve"),                            # resolve only with to_seller = false
 }
 # Event types that can only be created with a verified transaction (SEAL_DEAD may also be *reported* without one).
 TX_REQUIRED: frozenset[int] = frozenset({EventType.MINT, EventType.SEAL_ATTACH, *ESCROW_IX})
 
 # Account positions in the instructions (packages/proof/src/idl/*.json). New accounts must be appended, never inserted.
 IX_ACCOUNTS: dict[str, dict[str, int]] = {
-    "mint_passport": {"passport": 1, "signer": 2},
+    "mint_passport": {"passport": 1, "signer": 2, "core_asset": 4},
     "attach_seal": {"passport": 1, "seal": 2, "signer": 3},
     "mark_seal_dead": {"passport": 1, "seal": 2, "signer": 3},
     "record_scan": {"passport": 1, "seal": 2, "scan": 3, "signer": 4},
@@ -82,7 +82,9 @@ IX_ACCOUNTS: dict[str, dict[str, int]] = {
     "record_pre_ship_scan": {"order": 0, "signer": 1, "scan": 2},
     "record_receipt_scan": {"order": 0, "signer": 1, "scan": 2, "seal": 3, "seller_scan": 4},
     "release": {"order": 1, "buyer": 4, "signer": 5},
+    "release_after_timeout": {"order": 1, "buyer": 4, "signer": 5},
     "dispute": {"order": 1, "buyer": 4, "seller": 5, "signer": 6, "seal": 7},
+    "resolve": {"order": 1, "buyer": 4, "seller": 5, "signer": 6},
 }
 
 
@@ -278,7 +280,8 @@ _ARG_LAYOUTS: dict[str, list[tuple[str, str]]] = {
                     ("heat", "u8"), ("heatLevels", "u8"), ("fill", "u8"), ("siteId", "u16"), ("mediaHash", "h32"),
                     ("bundleHash", "h32"), ("nonce", "h32"), ("ts", "i64"), ("serverKeyId", "u8")],
     "list": [("price", "u64")],
-    "reserve": [("expectedPrice", "u64")],        # reserve(expected_price) once the escrow program takes it
+    "reserve": [("expectedPrice", "u64")],        # reserve(expected_price); older reserve txs carry no args
+    "resolve": [("toSeller", "b")],
 }
 
 _EVENT_LAYOUTS: dict[str, list[tuple[str, str]]] = {
@@ -294,6 +297,8 @@ _EVENT_LAYOUTS: dict[str, list[tuple[str, str]]] = {
                       ("ts", "i64")],
     "OrderDisputed": [("order", "pk"), ("by", "pk"), ("reason", "u8"), ("previousState", "u8"), ("refunded", "u64"),
                       ("assetReturned", "b"), ("ts", "i64")],
+    "OrderResolved": [("order", "pk"), ("admin", "pk"), ("toSeller", "b"), ("amount", "u64"), ("assetTransferred", "b"),
+                      ("ts", "i64")],
 }
 _EVENT_BY_DISC = {event_discriminator(n): n for n in _EVENT_LAYOUTS}
 
@@ -354,6 +359,7 @@ class Expectation:
     scan: str | None = None                       # ScanProof PDA (SCAN)
     escrow: bool = False                          # escrow program: bind through the Order account
     known_sellers: tuple[str, ...] = ()           # sellers of earlier LIST events (Order PDAs to try without RPC)
+    resolve_to_seller: bool | None = None         # escrow `resolve`: the to_seller arg this event needs (None = refuse)
 
 
 @dataclass
@@ -492,6 +498,10 @@ def verify_transaction(rpc, signature: str, actor: str, exp: Expectation) -> Ver
             continue
         if actor not in ix.accounts:
             continue
+        if name == "resolve":                     # one instruction, two outcomes: RELEASE (to seller) or DISPUTE (to buyer)
+            resolved = decode_ix_args(name, ix.data)
+            if not resolved or exp.resolve_to_seller is None or resolved["toSeller"] != exp.resolve_to_seller:
+                continue
         order_addr, order, data = None, None, {}
         if exp.escrow:
             order_addr = ix.accounts[IX_ACCOUNTS[name]["order"]]

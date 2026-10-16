@@ -229,12 +229,14 @@ class FakeRpc:
         return sig
 
     def mint_tx(self, sig: str, serial: str, issuer: str, *, asset: str = DEFAULT_ASSET, binding: bytes = b"\x0b" * 32,
-                serial_for_args: str | None = None, **kw) -> str:
+                serial_for_args: str | None = None, core_asset: str | None = None, **kw) -> str:
         from fv import proof
         from solders.pubkey import Pubkey
         args = proof.serial_hash(serial_for_args or serial) + binding + bytes(Pubkey.from_string(asset))
-        return self.add_tx(sig, signers=[issuer], instructions=[
-            (PROGRAM_ID, "mint_passport", [registry_pda(), passport_pda(serial), issuer, SYSTEM_PROGRAM], args)], **kw)
+        accounts = [registry_pda(), passport_pda(serial), issuer, SYSTEM_PROGRAM]
+        if core_asset is not None:                # programs with the Core-asset check append it (account 4)
+            accounts.append(core_asset)
+        return self.add_tx(sig, signers=[issuer], instructions=[(PROGRAM_ID, "mint_passport", accounts, args)], **kw)
 
     def attach_tx(self, sig: str, serial: str, uid_hex: str, signer: str, *, kind: int = 1, **kw) -> str:
         from fv import proof
@@ -269,7 +271,8 @@ class FakeRpc:
 
     def escrow_tx(self, sig: str, ix: str, serial: str, actor: str, *, seller: str | None = None, buyer: str | None = None,
                   price: int = 480_000_000, scan_proof: str | None = None, seal: str | None = None,
-                  seller_scan: str | None = None, signers: list[str] | None = None, **kw) -> str:
+                  seller_scan: str | None = None, signers: list[str] | None = None, to_seller: bool = True,
+                  expected_price: int | None = None, **kw) -> str:
         """An escrow instruction with the IDL account order; the Order PDA is (passport, seller)."""
         seller = seller or actor
         buyer = buyer or actor
@@ -277,14 +280,20 @@ class FakeRpc:
         f = fake_key
         accounts, args = {
             "list": ([f("config"), passport_pda(serial), order, actor, SYSTEM_PROGRAM], struct.pack("<Q", price)),
-            "reserve": ([f("config"), order, actor, f("buyer_token"), f("usdc_mint"), f("vault"), f("token_program"), SYSTEM_PROGRAM], b""),
+            "reserve": ([f("config"), order, actor, f("buyer_token"), f("usdc_mint"), f("vault"), f("token_program"), SYSTEM_PROGRAM,
+                         *([passport_pda(serial)] if expected_price is not None else [])],
+                        struct.pack("<Q", expected_price) if expected_price is not None else b""),
             "ship": ([order, actor], b""),
             "record_pre_ship_scan": ([order, actor, scan_proof or f("scan"), seal or f("seal")], b""),
             "record_receipt_scan": ([order, actor, scan_proof or f("scan"), seal or f("seal"), seller_scan or f("seller_scan")], b""),
             "release": ([f("config"), order, f("vault"), f("seller_token"), buyer, actor, ESCROW_ID, ESCROW_ID, f("token_program"),
                          SYSTEM_PROGRAM], b""),
+            "release_after_timeout": ([f("config"), order, f("vault"), f("seller_token"), buyer, actor, ESCROW_ID, ESCROW_ID,
+                                       f("token_program"), SYSTEM_PROGRAM], b""),
             "dispute": ([f("config"), order, f("vault"), f("buyer_token"), buyer, seller, actor, ESCROW_ID, ESCROW_ID, ESCROW_ID,
                          f("token_program"), SYSTEM_PROGRAM], b""),
+            "resolve": ([f("config"), order, f("vault"), f("recipient_token"), buyer, seller, actor, ESCROW_ID, ESCROW_ID,
+                         f("token_program"), SYSTEM_PROGRAM], bytes([1 if to_seller else 0])),
         }[ix]
         return self.add_tx(sig, signers=signers or [actor], instructions=[(ESCROW_ID, ix, accounts, args)], **kw)
 

@@ -34,6 +34,7 @@ from fv.config import Settings
 from fv.db import transaction
 from fv.deps import get_db, get_rpc, get_settings, require_admin
 from fv.enums import EventType, Grade
+from fv.ratelimit import rate_limit
 from fv.seed import seed_nonce
 
 log = logging.getLogger("fv.admin")
@@ -262,7 +263,7 @@ def _apply(conn, settings: Settings, seed: dict, plan: dict[str, Any]) -> dict[s
     return res
 
 
-@router.post("/api/admin/purge-seed")
+@router.post("/api/admin/purge-seed", dependencies=[Depends(rate_limit)])
 def purge_seed(dry_run: bool = True, db=Depends(get_db), settings: Settings = Depends(get_settings), rpc=Depends(get_rpc)):
     if not settings.program_id:
         raise HTTPException(503, "chain_not_configured")     # nothing is deleted without checking the chain first

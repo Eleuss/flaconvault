@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS events (
   ar_media      TEXT,
   grade_after   INTEGER,
   country       TEXT,
-  city          TEXT
+  city          TEXT,
+  resume_hash   TEXT                  -- sha256 hex of the one-time resume token of a pending signed scan (GET /api/verify/{id})
 );
 CREATE INDEX IF NOT EXISTS events_serial_ts ON events(serial, ts);
 CREATE INDEX IF NOT EXISTS events_actor ON events(actor_pubkey);
@@ -63,7 +64,8 @@ CREATE TABLE IF NOT EXISTS nonces (
   nonce_hex     TEXT PRIMARY KEY,     -- 64 hex chars
   issued_at     INTEGER NOT NULL,
   expires_at    INTEGER NOT NULL,
-  used_at       INTEGER
+  used_at       INTEGER,
+  media_files   INTEGER NOT NULL DEFAULT 0   -- files uploaded to /api/media under this nonce (at most 6)
 );
 
 -- Every /t hit, every /api/verify tap and every simulator no-response; the web /t page reads these by id.

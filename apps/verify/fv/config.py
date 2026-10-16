@@ -59,6 +59,12 @@ class Settings:
     arweave_timeout_s: int = 60                            # FV_ARWEAVE_TIMEOUT_S — sidecar subprocess timeout
     irys_network: str = "devnet"                           # FV_IRYS_NETWORK — devnet | mainnet
     node_bin: str = ""                                     # FV_NODE_BIN — node binary for the sidecar (default ~/.local/node/bin/node or PATH)
+    sdm_lrp: bool = False                                  # FV_SDM_LRP — accept 24-byte (LRP) picc_data; production stickers are AES
+    rate_limit_per_min: int = 60                           # FV_RATE_LIMIT_PER_MIN — POST routes and GET /t, per client IP
+    report_limit_per_hour: int = 3                         # FV_REPORT_LIMIT_PER_HOUR — unverified SEAL_DEAD reports per client IP
+    trusted_proxy_hops: int = 1                            # FV_TRUSTED_PROXY_HOPS — proxies in front of the app (X-Forwarded-For)
+    max_json_body: int = 64 * 1024                         # FV_MAX_JSON_BODY — request body limit in bytes (not /api/media)
+    build_sha: str = ""                                    # FV_BUILD_SHA (or RAILWAY_GIT_COMMIT_SHA) — commit shown by GET /health
 
     def __post_init__(self) -> None:
         self.key_mode = self.key_mode.strip().lower()
@@ -91,6 +97,10 @@ class Settings:
         self.db_path = _resolve(self.db_path)
         self.media_dir = _resolve(self.media_dir)
         self.seed_path = Path(self.seed_path)
+        for name in ("rate_limit_per_min", "report_limit_per_hour", "trusted_proxy_hops", "max_json_body"):
+            if int(getattr(self, name)) < 1:
+                raise ValueError(f"FV_{name.upper()} must be a positive integer")
+        self.build_sha = (self.build_sha or "").strip()[:40]
 
     @property
     def solana_rpc_public(self) -> str:
@@ -177,4 +187,10 @@ def settings_from_env() -> Settings:
         arweave_timeout_s=int(e("FV_ARWEAVE_TIMEOUT_S") or 60),
         irys_network=(e("FV_IRYS_NETWORK") or "devnet").strip().lower(),
         node_bin=e("FV_NODE_BIN") or "",
+        sdm_lrp=_bool(e("FV_SDM_LRP"), False),
+        rate_limit_per_min=int(e("FV_RATE_LIMIT_PER_MIN") or 60),
+        report_limit_per_hour=int(e("FV_REPORT_LIMIT_PER_HOUR") or 3),
+        trusted_proxy_hops=int(e("FV_TRUSTED_PROXY_HOPS") or 1),
+        max_json_body=int(e("FV_MAX_JSON_BODY") or 64 * 1024),
+        build_sha=e("FV_BUILD_SHA") or e("RAILWAY_GIT_COMMIT_SHA") or "",
     )

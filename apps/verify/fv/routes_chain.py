@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Request
 
 from fv.chain import DecodeError, RpcError, decode_registry, pda_registry
 from fv.config import Settings
-from fv.db import partner_pubkeys
+from fv.db import get_chain_state, now as wall_now, partner_pubkeys
 from fv.deps import get_conn, get_db, get_rpc, get_settings, require_admin
 from fv.ratelimit import rate_limit
 from fv.reconcile import reconcile_once
@@ -33,6 +33,18 @@ def _read_registry(conn, settings: Settings, rpc) -> dict | None:
     except (RpcError, DecodeError) as exc:
         log.warning("registry read failed: %s", exc)
     return None
+
+
+def _stored_registry(conn, settings: Settings) -> dict | None:
+    """The registry the reconcile job decoded last (chain_state), while it is younger than REGISTRY_STALE_S."""
+    try:
+        st = get_chain_state(conn, "registry")
+    except Exception:  # noqa: BLE001 — an old database without chain_state
+        return None
+    if not st or (st["value"] or {}).get("programId") != settings.program_id or wall_now() - int(st["updatedAt"]) >= REGISTRY_STALE_S:
+        return None
+    reg = st["value"]
+    return {**reg, "sites": reg.get("sites") or FALLBACK_SITES, "source": "chain"}
 
 
 def _fallback(conn, settings: Settings) -> dict:
@@ -59,12 +71,13 @@ def registry_info(conn, settings: Settings, rpc, *, cache_holder=None, now: floa
     """
     Registry PDA from chain when FV_PROGRAM_ID is set and the RPC answers; otherwise the seed fallback. With a
     `cache_holder` (app.state) a chain read is reused for REGISTRY_TTL_S, and a failing RPC keeps the last chain read
-    for REGISTRY_STALE_S before falling back.
+    for REGISTRY_STALE_S. Without one, the registry the reconcile job stored (chain_state, at most REGISTRY_STALE_S old)
+    is used before falling back.
     """
     if not settings.program_id:
         return _fallback(conn, settings)
     if cache_holder is None:
-        return _read_registry(conn, settings, rpc) or _fallback(conn, settings)
+        return _read_registry(conn, settings, rpc) or _stored_registry(conn, settings) or _fallback(conn, settings)
     c = _cache(cache_holder)
     now = time.monotonic() if now is None else now
     with c.lock:
@@ -77,7 +90,7 @@ def registry_info(conn, settings: Settings, rpc, *, cache_holder=None, now: floa
             return fresh
         if c.value is not None and now - c.at < REGISTRY_STALE_S:
             return c.value
-    return _fallback(conn, settings)
+    return _stored_registry(conn, settings) or _fallback(conn, settings)
 
 
 def registry_partners(request: Request, conn, settings: Settings, rpc) -> set[str] | None:

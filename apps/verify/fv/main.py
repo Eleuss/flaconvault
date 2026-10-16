@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from fv import arweave, routes_admin, routes_api, routes_chain, routes_dev, routes_tag
+from fv.bodylimit import BodySizeLimit
 from fv.chain import Rpc
 from fv.config import Settings, settings_from_env
 from fv.db import Database
@@ -95,6 +96,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.rpc = Rpc(settings.solana_rpc)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
                        allow_methods=["*"], allow_headers=["*"])
+    app.add_middleware(BodySizeLimit, max_bytes=settings.max_json_body)   # outermost: refuses before anything is parsed
     app.include_router(routes_api.router)
     app.include_router(routes_tag.router)
     app.include_router(routes_chain.router)

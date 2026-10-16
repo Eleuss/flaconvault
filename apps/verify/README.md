@@ -60,6 +60,12 @@ uv run uvicorn fv.main:app --port 8787 --reload
 | `FV_ARWEAVE_TIMEOUT_S` | `60` | sidecar subprocess timeout |
 | `FV_IRYS_NETWORK` | `devnet` | `devnet` \| `mainnet` |
 | `FV_NODE_BIN` | auto | node binary for the sidecar (`~/.local/node/bin/node`, else `PATH`) |
+| `FV_SDM_LRP` | `false` | accept 24-byte (LRP) `picc_data`; production stickers are AES, so LRP input is refused by default |
+| `FV_RATE_LIMIT_PER_MIN` | `60` | requests per minute and client IP for every POST route, `GET /t` and the resume `GET` (429 `rate_limited`) |
+| `FV_REPORT_LIMIT_PER_HOUR` | `3` | unverified SEAL_DEAD reports per hour and client IP (429 `report_limited`) |
+| `FV_TRUSTED_PROXY_HOPS` | `1` | proxies in front of the app; the client IP is taken from `X-Forwarded-For` only when the socket peer is a private (platform proxy) address |
+| `FV_MAX_JSON_BODY` | `65536` | request body limit in bytes for every route except `POST /api/media` (413 `request_too_large`) |
+| `FV_BUILD_SHA` | `RAILWAY_GIT_COMMIT_SHA` | commit shown as `build` by `GET /health` |
 
 Comments must be on their own lines (python-dotenv treats an inline `# …` after an empty value as the value).
 
@@ -74,22 +80,24 @@ Hashes in responses are `0x` + lowercase hex (32 bytes); in the DB they are stor
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | `{ok, keyId, pubkeyHex, simulator, programId}` (Arweave status: `fv.arweave.health()`, full detail in `/api/admin/status`) |
-| GET | `/t?uid&ctr&cmac` or `/t?picc_data&cmac[&enc]` | Real tag landing (plain mirror, or encrypted SUN from the NFC Developer App — `enc` is decrypted and ignored). Checks CMAC + counter (**consumes**: advances `seals.last_counter`), logs a Tier-0 SCAN event when VALID and a `taps` row for every hit. A VALID tap gets a one-time adoption token (`secrets.token_urlsafe(16)`, only its sha256 is stored). `Accept: application/json` or `&format=json` → tap JSON (+ `tapToken` when VALID); otherwise `302 → ${FV_WEB_URL}/t?tap=<tapId>&k=<token>` (no `k` unless VALID) |
+| GET | `/health` | `{ok, keyId, pubkeyHex, simulator, programId, build, arweave:{enabled, ok, problem, lastOkAt, lastErrorAt, lastErrorCode, failures, balanceSol, balanceOk}}` (full Arweave detail in `/api/admin/status`) |
+| GET | `/t?uid&ctr&cmac` or `/t?picc_data&cmac[&enc]` | Real tag landing (plain mirror, or encrypted SUN from the NFC Developer App — `enc` is decrypted and ignored). Checks CMAC + counter (**consumes**: advances `seals.last_counter`), logs a Tier-0 SCAN event when VALID and a `taps` row (random id in [2^32, 2^53), so ids cannot be enumerated) for every hit with a parsable chip UID; hits without one are not stored (`tapId` null). INVALID taps are deleted after 24 h. A VALID tap on a dead seal is answered and stored as `NO_RESPONSE` (no token, no sighting). A VALID tap gets a one-time adoption token (`secrets.token_urlsafe(16)`, only its sha256 is stored). `Accept: application/json` or `&format=json` → tap JSON (+ `tapToken` when VALID); otherwise `302 → ${FV_WEB_URL}/t?tap=<tapId>&k=<token>` (no `k` unless VALID) |
 | GET | `/api/tap/<tapId>` | Stored tap `{tapId, ts, verdict, counter, uid, serial, serialHash, uidHash, sealKind, sealDead, message}` — `uid` only when the verdict is `UNREGISTERED` (else `null`); never the token |
 | POST | `/api/session` | `{}` → `{nonce: "0x…", issuedAt, expiresAt, ttl}` (32 random bytes, single use) |
 | POST | `/api/preview` | `{uid, ctr, cmac}` → non-consuming check `{verdict, counter, serial, serialHash, uidHash, sealKind, sealDead, message}` |
 | POST | `/api/verify` | Scan flow step 7 — see below |
-| POST | `/api/media` | multipart `file` (or `files`), at most 6 files of ≤ 8 MB each (413), only `image/jpeg`, `image/png`, `image/webp` (415) → `{sha256: "0x…", ar, url, arPreview, bytes, files}`; stored at `data/media/<sha256>.bin`. Several files are hashed as one concatenation in upload order. With `FV_ARWEAVE=true` the stored file is uploaded (`ar`/`url`); several image frames additionally upload the first frame alone as `arPreview` (viewable thumbnail); a single image is its own preview. Same bytes twice → the stored links, no second upload |
+| GET | `/api/verify/<eventId>?token=<resumeToken>` | The same JSON as the VALID `/api/verify` answer while that SCAN is still `pending` (constant-time token compare); anything else → 404 `resume_not_found`. Used by the wallet-app resume link `/scan?resume=<eventId>.<token>` |
+| POST | `/api/media` | multipart `file` (or `files`) plus the field `nonce` = the current session nonce (unexpired and not yet used by `/api/verify`, else 403 `media_nonce_invalid`). `Content-Length` is required (411) and checked before the body is read. At most 6 files per upload and per nonce (413), ≤ 8 MB each (413), only `image/jpeg`, `image/png`, `image/webp` (415) → `{sha256: "0x…", ar, url, arPreview, bytes, files}`; stored at `data/media/<sha256>.bin`. Several files are hashed as one concatenation in upload order. With `FV_ARWEAVE=true` the stored file is uploaded (`ar`/`url`); several image frames additionally upload the first frame alone as `arPreview` (viewable thumbnail); a single image is its own preview. Same bytes twice → the stored links, no second upload |
 | POST | `/api/events` | Client-reported events — verified against the chain, see [`POST /api/events`](#post-apievents) below |
-| GET | `/api/passport/<serial>` | Passport + timeline (shape below), 404 if unknown |
-| GET | `/api/passports` | `[{serial, brand, name, grade, void, scanCount, lastEventTs}]` |
+| GET | `/api/passport/<serial>` | Passport + timeline (shape below), 404 if unknown or not a valid serial |
+| GET | `/api/passport/<serial>/metadata.json` | Metaplex-style metadata for the passport's Core asset `uri`: `{name, symbol, description, image, external_url, attributes, properties}` |
+| GET | `/api/passports` | `[{serial, brand, name, grade, void, scanCount, lastEventTs}]` (confirmed events only; `lastEventTs` ignores pending events) |
 | POST | `/api/reconcile` | Header `x-admin-token: $FV_ADMIN_TOKEN` (403 otherwise / when unset). Run one reconcile cycle now (§10) → `{checked, confirmed, recovered, failed, pending, mismatched, ignoredAccounts, refreshed:{passports, seals}, registry, escrow, arweave, enabled}` |
 | GET | `/api/admin/status` | Admin token. Key mode, simulator/seed flags, program ids and the full Arweave status `{enabled, configured, problem, uploads, failures, consecutiveFailures, lastOkAt, lastErrorAt, lastErrorCode, lastError, probe}` |
 | POST | `/api/admin/purge-seed?dry_run=true` | Admin token. Report (default) or, with `dry_run=false`, delete what the demo seed put into this database — see [Removing seed data](#removing-seed-data-from-a-deployed-database) |
 | GET | `/api/registry` | Registry PDA `{programId, authority, partners:[base58], serverKeys:[{keyId, pubkeyHex, validFrom, validTo}], sites:[{siteId, label}], source:"chain"\|"fallback"}` — fallback (no program id / RPC down / PDA missing): `authority null`, `serverKeys []`, `partners` = partner attesters from the DB, seed sites |
 | GET | `/api/sites` | `[{siteId, label}]` for the certification console (registry sites, else the two seed sites) |
-| GET | `/api/attester/<pubkey>` | `{pubkey, label, isPartner, firstSeen, scanCount, certifiedCount, agreeCount, compareCount, agreeRate, escrowsOk, escrowsDisputed, recentSerials}` |
+| GET | `/api/attester/<pubkey>` | `{pubkey, label, isPartner, firstSeen, scanCount, certifiedCount, agreeCount, compareCount, agreeRate, escrowsOk, escrowsDisputed, recentSerials}` — `isPartner` from the on-chain registry, escrow counters from confirmed RELEASE/DISPUTE events and Order accounts, `recentSerials` from confirmed events |
 | POST | `/api/dev/tag` | `{uid?, serial?, kind?}` → virtual tag (random `04…` UID if omitted); with `serial` also attaches the seal. 409 for the uid of a registered seal that has no virtual tag (never a CMAC oracle for real chips) |
 | POST | `/api/dev/tap` | `{uid}` → `{responds: true, uid, ctr, ctrHex, cmac, url}` or, if killed, `{responds: false, uid, tapId, url}` (a `NO_RESPONSE` tap row) |
 | POST | `/api/dev/kill` · `/api/dev/revive` | tag stops / resumes responding (does **not** touch `seals.dead` — that happens on-chain via `mark_seal_dead`) |
@@ -107,7 +115,10 @@ Request:
   "attester": "<base58 pubkey>", "platform": "ANDROID_WEB" }
 ```
 
-`ctr` may be the 3-byte hex from the URL or an int. Instead of tag parameters a session may adopt the tap that
+`ctr` may be the 3-byte hex from the URL or an int. `piccData` is at most 48 hex characters (24-byte LRP input only
+with `FV_SDM_LRP=true`), `enc` at most 64; `serial` must match `^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$` (422); `attester`
+must be a base58 pubkey. A tier ≥ 3 or a VAULT/PARTNER role is signed only for an attester in the on-chain registry
+partner list (403 `not_partner`; the registry is cached 60 s). Extra fields such as `tamper` are ignored. Instead of tag parameters a session may adopt the tap that
 landed on `/t` moments before: `{"tapId": <id>, "tapToken": "<k from the /t redirect>"}` — accepted once, within
 180 s, only for a VALID `/t` tap; a wrong or missing token → `INVALID`, a second use or an older tap → `REPLAY`. Encrypted tags send `piccData` (+ optional `enc`) and `cmac` instead of `uid`/`ctr` (same for `/api/preview`); the response then carries the decrypted `uid` and `counter`. `indicators.uv` is signed as sent (frame mode reads it). `indicators.heat`
 must equal `heatLevels[4]` when it is 0/1 (2 UNREADABLE / 3 MISSING are trusted as sent). `mediaHash` is
@@ -116,9 +127,10 @@ Optional: `note`.
 
 Order of checks (briefing §5): nonce → key by mode → CMAC (`INVALID`) → `ctr > last_counter` (`REPLAY`, then
 advance) → seal lookup (`UNREGISTERED`; dead seal → `NO_RESPONSE`) → build message, sign, consume nonce, insert
-`events` SCAN `pending` with the full bundle. Passport grade and attester statistics are **not** touched here — they
-change only when the scan is confirmed (`POST /api/events` with the verified `record_scan` tx, or the reconcile job),
-using the verified signer as attester. **Signed only when VALID**; otherwise
+`events` SCAN `pending` with the full bundle; the claimed attester lives only in the signed bundle (the event's actor
+and label stay empty). Passport grade and attester statistics are **not** touched here — they change only when the
+scan is confirmed (`POST /api/events` with the verified `record_scan` tx, or the reconcile job), using the verified
+signer as attester and the tier/role/site the program recorded (`payload.confirmed`, `payload.tier`, `payload.role`). **Signed only when VALID**; otherwise
 `serverSig`, `msgHex`, `bundle`, `bundleHash`, `eventId` are `null`. The nonce is consumed only on VALID.
 A `serial` that does not match the tag's passport → 409.
 
@@ -128,8 +140,13 @@ Response:
 { "verdict": "VALID", "counter": 14, "serial": "SN-2026-000001", "serialHash": "0x…", "uidHash": "0x…",
   "sealKind": 1, "sealDead": false, "heatMask": 3, "grade": 0, "reviewRecommended": false,
   "serverSig": "0x…(64 bytes)", "serverPubkey": "<hex 32 bytes>", "keyId": 1, "ts": 1790000012, "msgHex": "<152 bytes>",
-  "bundle": { …§4.4 with server.sig filled… }, "bundleHash": "0x…", "eventId": 36, "message": "Seal genuine · tap 14" }
+  "bundle": { …§4.4 with server.sig filled… }, "bundleHash": "0x…", "eventId": 36, "message": "Seal genuine · tap 14",
+  "resumeToken": "<secrets.token_urlsafe(16)>" }
 ```
+
+`resumeToken` is returned once; the server stores only its sha256 on the pending SCAN event. Public views
+(`/api/passport`, `/api/passports`, `/api/attester` and event responses) never contain `msgHex`, `server.sig` or
+`session.nonce` for an event that is not `confirmed`, so nobody can anchor someone else's pending scan.
 
 `msgHex` is the exact 152-byte message for `Ed25519Program.createInstructionWithPublicKey`; `eventId` goes back
 to `POST /api/events` with the `txSig` after confirmation.
@@ -139,25 +156,46 @@ to `POST /api/events` with the `txSig` after confirmation.
 The server never trusts the client here: `ts` and `status` in the body are ignored.
 
 * **Tx-backed event** `{serial, type, txSig, actor, payload?, sealUidHash?, location?}` for `MINT`, `SEAL_ATTACH`,
-  `LIST`, `RESERVE`, `SHIP`, `RECEIVE`, `RELEASE`, `DISPUTE` and `SEAL_DEAD` with a `txSig` (`txSig` and `actor`
-  required, 422 otherwise). The tx is fetched with `getTransaction` (commitment `confirmed`, v0 allowed) and must:
-  exist, have `actor` among its signers, contain an instruction of the expected program (flacon: `mint_passport`,
-  `attach_seal`, `mark_seal_dead`, `record_scan`; escrow: `list`, `reserve`, `ship`/`record_pre_ship_scan`,
-  `record_receipt_scan`, `release`, `dispute` — matched by Anchor discriminator, top-level or CPI) whose accounts include
-  the actor and the passport PDA `["passport", sha256(serial)]` (escrow: the passport or its Order PDA
-  `["order", passport, seller]`, sellers = keys of the tx + earlier LIST actors), for `SEAL_ATTACH` / `SEAL_DEAD` also
-  the seal PDA `["seal", uid_hash]`, and `meta.err` must be null. Stored `confirmed` with `ts` = block time (else now).
-  One tx backs one event (a repeat returns the same event). `MINT` creates/renames a passport only while no MINT exists
-  for the serial or when `actor` is its issuer (else 403 `not_issuer`); MINT and SEAL_ATTACH stay idempotent per serial /
-  seal, and a confirmed event is never changed. A verified `SEAL_DEAD` marks the seal dead and voids the passport.
-* **SCAN confirmation** `{eventId, txSig, actor?}` (`actor` defaults to the attester given at `/api/verify` and must match
-  it): the `record_scan` tx must also reference the seal and the ScanProof PDA of that scan. On success the event turns
-  `confirmed` and the passport grade / attester stats are applied once. The same `txSig` again → 200 (idempotent); any
+  `LIST`, `RESERVE`, `SHIP`, `RECEIVE`, `RELEASE`, `DISPUTE` and `SEAL_DEAD` with a `txSig` (`txSig` — a base58
+  64-byte signature — and `actor` required, 422 otherwise). The tx is fetched with `getTransaction` (commitment
+  `confirmed`, v0 allowed; results cached, at most 8 lookups in flight, else 429 `rate_limited`) and must: exist, have
+  `actor` among its signers, contain an instruction of the expected program (flacon: `mint_passport`, `attach_seal`,
+  `mark_seal_dead`, `record_scan`; escrow: `list`, `reserve`, `ship`, `record_receipt_scan`, `release` /
+  `release_after_timeout` / `resolve(to_seller=true)` for RELEASE, `dispute` / `resolve(to_seller=false)` for DISPUTE —
+  matched by Anchor discriminator, top-level or CPI) whose accounts include the actor and whose accounts **at their
+  IDL positions** are the passport PDA `["passport", sha256(serial)]` (escrow: the Order account at its position, read
+  from chain, whose `passport` field is that PDA and whose address is `["order", passport, seller]`; known LIST sellers
+  are a fallback for closed orders), for `SEAL_ATTACH` / `SEAL_DEAD` also the seal PDA `["seal", uid_hash]`, and
+  `meta.err` must be null. Stored `confirmed` with `ts` = block time (else now). One tx backs one event (a repeat
+  returns the same event). A MINT or SEAL_ATTACH that already exists is returned as stored before any RPC: a passport
+  is never renamed or re-pointed and a seal never changes its kind. A MINT by someone other than the issuer of an
+  existing passport → 403 `not_issuer`. A verified `SEAL_DEAD` marks the seal dead and voids the passport.
+* **Payloads are fixed by the server**: tx-backed facts come from the decoded instruction args, its accounts, the
+  program's Anchor events and the Order/ScanProof accounts; the client only supplies what the chain cannot know, and
+  client labels (`actorLabel`, `issuerLabel`) are ignored.
+
+  | Type | Stored payload |
+  |---|---|
+  | MINT | `{brand, name, batch, asset, bindingHash, siteId?, issuerLabel?}` — brand/name/batch from the client, `issuerLabel` only from a registry site |
+  | SEAL_ATTACH | `{uidHash, uidTail, kind, kindName}` — kind from `attach_seal` (BOX or NECK); the raw UID is never published |
+  | LIST / RESERVE | `{order, currency, price, priceUsdc, seller \| buyer}` |
+  | SHIP | `{order, carrier, preShipScanCounter}` — `carrier` from the client |
+  | RECEIVE | `{order, preShipScanCounter, receiptScanCounter, match, fillDelta}` |
+  | RELEASE | `{order, currency, price, priceUsdc, to, passportTo?, reason?}` — `passportTo` only when the Core asset moved |
+  | DISPUTE | `{order, currency, reason, reasonCode, refunded, refundedUsdc}` |
+  | SEAL_DEAD (report) | `{source, note?, uidTail?, reportedBy?}` |
+
+* **SCAN confirmation** `{eventId, txSig, actor?}` (`actor` defaults to the attester given at `/api/verify`): the
+  `record_scan` tx must reference the seal and the ScanProof PDA of that scan, and its attester (account 4) must be the
+  signer. On success the event turns `confirmed`, attester, tier, role and site are taken from the `record_scan` args
+  (`payload.confirmed = {attester, tier, role, siteId, source, mismatch}`), and the passport grade / attester stats
+  are applied once. The same `txSig` again → 200 (idempotent); any
   other change of a confirmed event → 409 `event_confirmed`.
 * **SEAL_DEAD report** without `txSig`: `{serial, type: "SEAL_DEAD", nonce, sealUidHash?, payload?}` with an unused,
   unexpired `/api/session` nonce (consumed; 403 `nonce_invalid`). Stored with status `reported` — it does not void the
   passport, does not mark the seal dead and does not affect `sealStatus`; the claimed reporter is kept as
-  `payload.reportedBy`.
+  `payload.reportedBy`. One open report per seal (or per passport when no seal is named) per 24 h, and at most
+  `FV_REPORT_LIMIT_PER_HOUR` per client IP (429 `report_limited`).
 * `SCAN` events cannot be created here (422). `payload` is limited to 16 KiB (413).
 
 | Status | `detail` | Meaning |
@@ -169,6 +207,12 @@ The server never trusts the client here: `ts` and `status` in the body are ignor
 | 403 | `nonce_invalid` | SEAL_DEAD report with a missing/used/expired nonce |
 | 409 | `event_confirmed` | the event is already confirmed with another tx |
 | 503 | `chain_not_configured` | `FV_PROGRAM_ID` (or the escrow id) is not set |
+| 429 | `rate_limited` | too many requests from this IP, or too many transaction lookups in flight (`Retry-After`) |
+| 429 | `report_limited` | a SEAL_DEAD report for this seal is already open, or the IP's report budget is used up |
+| 413 | `request_too_large` | request body above `FV_MAX_JSON_BODY` |
+
+Other codes the web maps: 403 `not_partner` (`/api/verify`), 403 `media_nonce_invalid` (`/api/media`), 404
+`resume_not_found` (`GET /api/verify/<id>`).
 
 ### Passport response
 
@@ -348,6 +392,7 @@ fv/seed.py        docs/seed/passports.json → DB                          fv/ro
 fv/arweave.py     Irys sidecar wrapper, bundle archiving                    irys/             Node sidecar (upload.mjs, fund.mjs)
 fv/chain.py       PDAs (solders), Anchor account decoders, JSON-RPC       fv/reconcile.py   §10 reconcile cycle
 fv/txverify.py    getTransaction checks behind POST /api/events          fv/routes_admin.py /api/admin/status, /api/admin/purge-seed
+fv/ratelimit.py   per-IP token buckets (FV_RATE_LIMIT_PER_MIN …)          fv/bodylimit.py   request body size limit (ASGI)
 config.py         SDMMAC_PARAM for libsdm                                libsdm/           vendored icedevml/sdm-backend (MIT)
                                                                          tests/            pytest suite
 ```

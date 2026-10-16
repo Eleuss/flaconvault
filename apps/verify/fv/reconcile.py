@@ -214,7 +214,8 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
                 cur = conn.execute("SELECT grade, void FROM passports WHERE serial=?", (p["serial"],)).fetchone()
                 if not cur:
                     continue
-                new_void = bool(cur["void"]) or c["void"]                      # void is sticky: MAX(db, chain)
+                # void is sticky: MAX(db, chain); a VOID grade on chain counts as void (record_scan: Passport::is_voided)
+                new_void = bool(cur["void"]) or bool(c["void"]) or int(c["grade"]) >= Grade.VOID
                 new_grade = Grade.VOID if new_void else max(int(cur["grade"]), int(c["grade"]))   # the worse grade wins
                 if new_grade != int(cur["grade"]) or new_void != bool(cur["void"]):
                     conn.execute("UPDATE passports SET grade=?, void=? WHERE serial=?", (new_grade, int(new_void), p["serial"]))

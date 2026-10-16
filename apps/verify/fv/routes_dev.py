@@ -11,6 +11,7 @@ from fv.config import Settings
 from fv.db import (get_passport, get_seal_by_uid, get_sim_tag, insert_tap, list_sim_tags, now, transaction,
                    update_sim_tag, upsert_seal, upsert_sim_tag)
 from fv.deps import admin_token_ok, get_conn, get_db, get_settings
+from fv.ratelimit import rate_limit
 from fv.enums import NO_RESPONSE, SealKind
 from fv.sdm import TagParamError, ctr_hex, key_for_uid, parse_uid, sdm_cmac, tag_url
 from fv.seed import run_seed
@@ -43,7 +44,7 @@ def _tag(conn, uid: str) -> dict:
     return t
 
 
-@router.post("/tag")
+@router.post("/tag", dependencies=[Depends(rate_limit)])
 def create_tag(body: TagBody, conn=Depends(get_conn), settings: Settings = Depends(get_settings)):
     ts = now()
     try:
@@ -67,7 +68,7 @@ def create_tag(body: TagBody, conn=Depends(get_conn), settings: Settings = Depen
     return sim_tag_view(t, seal)
 
 
-@router.post("/tap")
+@router.post("/tap", dependencies=[Depends(rate_limit)])
 def tap(body: UidBody, conn=Depends(get_conn), settings: Settings = Depends(get_settings)):
     with transaction(conn):
         t = _tag(conn, body.uid)
@@ -86,7 +87,7 @@ def tap(body: UidBody, conn=Depends(get_conn), settings: Settings = Depends(get_
     return {"responds": True, "uid": t["uid_hex"], "ctr": ctr, "ctrHex": ctr_hex(ctr), "cmac": cmac.hex().upper(), "url": url}
 
 
-@router.post("/kill")
+@router.post("/kill", dependencies=[Depends(rate_limit)])
 def kill(body: UidBody, conn=Depends(get_conn)):
     with transaction(conn):
         t = _tag(conn, body.uid)
@@ -94,7 +95,7 @@ def kill(body: UidBody, conn=Depends(get_conn)):
     return sim_tag_view(t, get_seal_by_uid(conn, t["uid_hex"]))
 
 
-@router.post("/revive")
+@router.post("/revive", dependencies=[Depends(rate_limit)])
 def revive(body: UidBody, conn=Depends(get_conn)):
     with transaction(conn):
         t = _tag(conn, body.uid)
@@ -107,7 +108,7 @@ def tags(conn=Depends(get_conn)):
     return [sim_tag_view(t, get_seal_by_uid(conn, t["uid_hex"])) for t in list_sim_tags(conn)]
 
 
-@router.post("/reset")
+@router.post("/reset", dependencies=[Depends(rate_limit)])
 def reset(request: Request, db=Depends(get_db), settings: Settings = Depends(get_settings)):
     if settings.admin_token and not admin_token_ok(settings, request.headers.get("x-admin-token")):
         raise HTTPException(403, "admin token required")

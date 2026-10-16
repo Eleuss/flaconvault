@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from fv import routes_api, routes_chain, routes_dev, routes_tag
+from fv import arweave, routes_admin, routes_api, routes_chain, routes_dev, routes_tag
 from fv.chain import Rpc
 from fv.config import Settings, settings_from_env
 from fv.db import Database
@@ -20,6 +20,7 @@ from fv.reconcile import reconcile_once
 from fv.seed import run_seed
 
 log = logging.getLogger("fv")
+ARWEAVE_PROBE_S = 3600          # Irys balance probe interval of the background loop
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -31,10 +32,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def reconcile_loop(app: FastAPI) -> None:
         interval = settings.reconcile_interval_s
         await asyncio.sleep(min(5, interval))
+        last_probe = 0.0
         while True:
+            if arweave.enabled(settings) and asyncio.get_running_loop().time() - last_probe >= ARWEAVE_PROBE_S:
+                last_probe = asyncio.get_running_loop().time()
+                try:   # Irys balance (read-only) → /health, so an unfunded or drained wallet is visible before uploads fail
+                    await asyncio.to_thread(arweave.probe, settings)
+                except Exception:  # noqa: BLE001
+                    log.exception("arweave probe failed")
             try:
                 summary = await asyncio.to_thread(reconcile_once, db, settings, app.state.rpc)
-                if summary["checked"] or summary["refreshed"]["passports"] or summary["refreshed"]["seals"]:
+                if summary["checked"] or summary["failed"] or summary["refreshed"]["passports"] or summary["refreshed"]["seals"]:
                     log.info("reconcile: %s", summary)
             except Exception:  # noqa: BLE001 — keep the loop alive (validator down, RPC error, …)
                 log.exception("reconcile cycle failed")
@@ -47,6 +55,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.info("FV_ADMIN_TOKEN not set: POST /api/reconcile is disabled (the background loop still runs)")
         db.init()
         settings.media_dir.mkdir(parents=True, exist_ok=True)
+        problem = arweave.config_problem(settings)
+        if problem:
+            log.error("arweave archiving will not work: %s", problem)
+        elif arweave.enabled(settings):
+            log.info("arweave archiving on (Irys %s); failures are reported in /health and GET /api/admin/status", settings.irys_network)
         if db.is_empty() and settings.seed_path.exists():
             if settings.seed_enabled:
                 counts = run_seed(db, settings)
@@ -79,6 +92,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(routes_tag.router)
     app.include_router(routes_chain.router)
     app.include_router(routes_dev.router)
+    app.include_router(routes_admin.router)
     return app
 
 

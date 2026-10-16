@@ -17,7 +17,7 @@ from fv.chain import Rpc
 from fv.config import Settings, settings_from_env
 from fv.db import Database
 from fv.reconcile import reconcile_once
-from fv.seed import run_seed
+from fv.seed import count_seed_rows, run_seed
 
 log = logging.getLogger("fv")
 ARWEAVE_PROBE_S = 3600          # Irys balance probe interval of the background loop
@@ -59,13 +59,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if problem:
             log.error("arweave archiving will not work: %s", problem)
         elif arweave.enabled(settings):
-            log.info("arweave archiving on (Irys %s); failures are reported in /health and GET /api/admin/status", settings.irys_network)
+            log.info("arweave archiving on (Irys %s); failures are reported by GET /api/admin/status", settings.irys_network)
         if db.is_empty() and settings.seed_path.exists():
             if settings.seed_enabled:
                 counts = run_seed(db, settings)
                 log.info("seeded empty database from %s (demo data, signed with a throwaway key): %s", settings.seed_path, counts)
             else:
                 log.info("empty database: demo seed not loaded (FV_DEV_SIMULATOR and FV_SEED_DEMO are off)")
+        elif not settings.seed_enabled and settings.seed_path.exists():
+            with db.connect() as conn:
+                leftover = count_seed_rows(conn, settings.seed_path)
+            if leftover:
+                log.warning("database holds %s events from the demo seed (fake txSigs / seed-signed scans) although this is "
+                            "not a demo deployment — review POST /api/admin/purge-seed (dry run), then apply it", leftover)
         task = None
         if settings.program_id and settings.reconcile_interval_s > 0:
             task = asyncio.create_task(reconcile_loop(app))

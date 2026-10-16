@@ -185,6 +185,15 @@ def run_seed(db: Database, settings: Settings, path: Path | None = None, *, wipe
     return counts
 
 
+def count_seed_rows(conn, path: Path) -> int:
+    """Events that came from the demo seed: marked payload.seed, or carrying one of the seed file's (fake) txSigs."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    sigs = sorted({ev["txSig"] for p in data.get("passports", []) for ev in p.get("events", []) if ev.get("txSig")})
+    marks = ",".join("?" * len(sigs)) or "NULL"
+    return int(conn.execute(f"""SELECT COUNT(*) FROM events WHERE tx_sig IN ({marks})
+                                OR COALESCE(json_extract(payload_json, '$.seed'), 0) = 1""", sigs).fetchone()[0])
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     settings = settings_from_env()

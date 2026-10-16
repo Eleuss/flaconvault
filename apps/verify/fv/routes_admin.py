@@ -205,6 +205,9 @@ def _apply(conn, settings: Settings, seed: dict, plan: dict[str, Any]) -> dict[s
             conn.execute("DELETE FROM attesters WHERE pubkey=?", (pk,))
             res["attesters"]["deleted"].append(pk)
             continue
+        if not ids:
+            continue      # seed rows were already purged earlier: the seeded counters are gone, never subtract twice
+        # the seed wrote absolute counters; everything above them was earned later (bumps on confirmed events)
         sets = {col: max(0, int(row[col]) - int(a.get(key) or 0)) for key, col in SEED_COUNTERS.items()}
         sets["is_partner"] = int(is_partner)
         label = row["label"]

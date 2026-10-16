@@ -118,9 +118,14 @@ def test_purge_keeps_on_chain_evidence_and_removes_the_rest(chain_client):
     # virtual tags of the seed are gone, the one created in this session stays (simulator on)
     tags = {t["uid"] for t in c.get("/api/dev/tags").json()}
     assert tags == {tag["uid"]}
-    # idempotent
+    # idempotent: a second run deletes nothing and never subtracts the seeded counters twice
+    with c.app.state.db.connect() as conn:
+        conn.execute("UPDATE attesters SET scan_count=2, label='Real Shop' WHERE pubkey=?", (SEED_PARTNER,))   # earned later
+    before = _counts(c)
     again = c.post("/api/admin/purge-seed?dry_run=false", headers=ADMIN).json()
-    assert again["events"]["delete"] == [] and again["applied"]["events"] == 0
+    assert again["events"]["delete"] == [] and again["applied"]["events"] == 0 and _counts(c) == before
+    a = c.get(f"/api/attester/{SEED_PARTNER}").json()
+    assert a["scanCount"] == 2 and a["label"] == "Real Shop"
 
 
 def test_purge_on_a_production_database(settings, tmp_path):

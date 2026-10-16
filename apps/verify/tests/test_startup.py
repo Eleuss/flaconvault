@@ -128,3 +128,18 @@ def test_seed_cli_refuses_on_production_settings(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv("FV_SEED_DEMO", raising=False)
     assert seed_main([]) == 2
     assert "refusing to seed" in capsys.readouterr().err and not (tmp_path / "prod.db").exists()
+
+
+def test_production_start_warns_about_leftover_seed_rows(settings, caplog):
+    """A production database that an older build auto-seeded: startup points the operator at purge-seed."""
+    from fv.db import Database
+    from fv.seed import count_seed_rows
+    db = Database(settings.db_path)
+    run_seed(db, settings)
+    with db.connect() as conn:
+        conn.execute("UPDATE events SET payload_json=json_remove(payload_json, '$.seed')")    # what old builds wrote
+        assert count_seed_rows(conn, settings.seed_path) >= 20                                # found by the fake txSigs
+    caplog.set_level("WARNING", logger="fv")
+    with TestClient(create_app(_production(settings))):
+        pass
+    assert any("purge-seed" in r.getMessage() for r in caplog.records)

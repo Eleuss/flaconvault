@@ -1,7 +1,7 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { ZERO32, buildScanMessage, bytesToHex, serialHash } from "@flaconvault/proof";
-import { ApiError } from "./errors";
+import { ADMIN_TOKEN_TEXT, ApiError, friendly } from "./errors";
 import { EVENT_RETRIES, api, attesterMismatch, eventRetryDelay, signedAttester, signedScanSummary, uploadMediaOnce, verifyBody, type VerifyInput } from "./verify-api";
 
 const realFetch = globalThis.fetch;
@@ -62,6 +62,20 @@ test("resume fetches the pending scan by id + token", async () => {
   assert.match(url, /\/api\/verify\/42\?token=tok_en-1$/);
   globalThis.fetch = (async () => new Response(JSON.stringify({ detail: "resume_not_found" }), { status: 404 })) as typeof fetch;
   await assert.rejects(api.resume(42, "x"), (e: { code?: string }) => e.code === "resume_not_found");
+});
+
+test("the simulator reset carries the admin token, and a refused token reads as text", async () => {
+  let url = "", init: RequestInit | undefined;
+  globalThis.fetch = (async (u: string, i?: RequestInit) => { url = u; init = i; return new Response(JSON.stringify({ ok: true, seeded: {} }), { status: 200 }); }) as typeof fetch;
+  assert.deepEqual(await api.simReset("  s3cret \n"), { ok: true, seeded: {} });
+  assert.match(url, /\/api\/dev\/reset$/);
+  assert.equal(init?.method, "POST");
+  const headers = new Headers(init?.headers);
+  assert.equal(headers.get("x-admin-token"), "s3cret");
+  assert.equal(headers.get("content-type"), "application/json");
+  // the verifier's 403 (no token configured, or a wrong one) becomes an ApiError with a readable text
+  globalThis.fetch = (async () => new Response(JSON.stringify({ detail: "admin token required" }), { status: 403 })) as typeof fetch;
+  await assert.rejects(api.simReset("wrong"), (e: unknown) => e instanceof ApiError && e.status === 403 && friendly(e) === ADMIN_TOKEN_TEXT);
 });
 
 test("the anchor step shows what the signed message commits to (resume link, M3)", () => {

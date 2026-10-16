@@ -155,6 +155,9 @@ function programError(m: string): string | null {
 
 const sentence = (s: string) => { const t = s.trim().replace(/\s+/g, " "); return t ? t[0].toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? "" : ".") : t; };
 
+/** 403 "admin token required" (the verifier's admin and simulator-reset routes). */
+export const ADMIN_TOKEN_TEXT = "The verification server refused the admin token. Enter the FV_ADMIN_TOKEN of this verifier; a verifier without FV_ADMIN_TOKEN set refuses this action.";
+
 function fromApi(e: ApiError): string {
   if (e.code && CODES[e.code]) {
     const t = CODES[e.code];
@@ -185,6 +188,8 @@ function fromApi(e: ApiError): string {
     }
     if (e.status === 415) return "The photo format was not accepted (JPEG, PNG or WebP only). Photograph the card again.";
   }
+  // /api/dev/reset, /api/reconcile, /api/admin/*: no x-admin-token, a wrong one, or no FV_ADMIN_TOKEN on the verifier
+  if (e.status === 403 && /^admin token required$/i.test(d.trim())) return ADMIN_TOKEN_TEXT;
   if (e.status === 404) return d ? sentence(d) : "Not found.";
   if (e.status === 429) return "Too many requests. Wait a few seconds, then try again.";
   if (e.status >= 500) return `The verification server had a problem (HTTP ${e.status}). Try again in a moment.`;

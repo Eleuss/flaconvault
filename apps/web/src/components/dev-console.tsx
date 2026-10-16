@@ -5,7 +5,9 @@ import { Loader2, Plus, RotateCcw, Skull, Sparkles, Zap } from "lucide-react";
 import { PUBLIC_VERIFY_URL } from "@/lib/config";
 import type { PassportListItem } from "@/lib/api";
 import { demoMode, setDemoMode } from "@/lib/demo";
+import { apiError, friendly } from "@/lib/errors";
 import { passportHref } from "@/lib/format";
+import { api as verifyApi } from "@/lib/verify-api";
 import { Lamp } from "./badges";
 
 /**
@@ -48,7 +50,7 @@ async function api<T>(path: string, body?: unknown): Promise<T> {
     method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", accept: "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  if (!r.ok) throw await apiError(path, r);
   return r.json() as Promise<T>;
 }
 
@@ -61,24 +63,27 @@ export function DevConsole() {
   const [busy, setBusy] = useState<string | null>(null);
   const [log, setLog] = useState<Array<{ t: number; text: string; url?: string | null; tone: "ok" | "bad" | "none" }>>([]);
   const [error, setError] = useState<string | null>(null);
+  // Reset needs the verifier's FV_ADMIN_TOKEN. It lives in this component's memory only (gone on reload), never in storage.
+  const [resetOpen, setResetOpen] = useState(false);
+  const [adminToken, setAdminToken] = useState("");
 
   const push = (text: string, tone: "ok" | "bad" | "none" = "none", url?: string | null) => setLog((l) => [{ t: Date.now(), text, url, tone }, ...l].slice(0, 30));
 
   const refresh = useCallback(async () => {
     let h: Health;
-    try { h = await api<Health>("/health"); } catch (e) { setHealth(null); setError((e as Error).message); return; }
+    try { h = await api<Health>("/health"); } catch (e) { setHealth(null); setError(friendly(e)); return; }
     setHealth(h);
     if (!h.simulator) return; // /api/dev/* only exists with FV_DEV_SIMULATOR=true
     try {
       const [t, p] = await Promise.all([api<SimTag[]>("/api/dev/tags"), api<PassportListItem[]>("/api/passports")]);
       setTags(t); setPassports(p); setError(null);
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { setError(friendly(e)); }
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
 
   async function run(label: string, fn: () => Promise<void>) {
     setBusy(label);
-    try { await fn(); } catch (e) { push(`Error: ${(e as Error).message}`, "bad"); } finally { setBusy(null); await refresh(); }
+    try { await fn(); } catch (e) { push(`Error: ${friendly(e)}`, "bad"); } finally { setBusy(null); await refresh(); }
   }
   const createTag = () => run("create", async () => {
     const t = await api<SimTag>("/api/dev/tag", { serial: serial || undefined, kind });
@@ -91,7 +96,10 @@ export function DevConsole() {
   });
   const kill = (uid: string) => run(`kill-${uid}`, async () => { await api("/api/dev/kill", { uid }); push(`Antenna of ${uid} separated`, "bad"); });
   const revive = (uid: string) => run(`revive-${uid}`, async () => { await api("/api/dev/revive", { uid }); push(`${uid} responds again`, "ok"); });
-  const reset = () => run("reset", async () => { await api("/api/dev/reset", {}); setLog([]); push("Database reset and re-seeded", "none"); });
+  const reset = () => run("reset", async () => {
+    await verifyApi.simReset(adminToken);
+    setResetOpen(false); setLog([]); push("Database reset and re-seeded", "none");
+  });
 
   if (health === undefined) return <p className="mt-8 flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Connecting to {PUBLIC_VERIFY_URL} …</p>;
   if (health === null) return (
@@ -146,8 +154,21 @@ export function DevConsole() {
         </ul>
         <div className="mt-4 flex items-center justify-between text-xs text-muted">
           <span>Server-Key #{health.keyId} · <span className="mono">{health.pubkeyHex.slice(0, 16)}…</span> · program {health.programId ? <span className="mono">{health.programId.slice(0, 8)}…</span> : "not set"}</span>
-          <button onClick={reset} disabled={busy !== null} className="btn-outline btn-sm"><RotateCcw className="h-3.5 w-3.5" aria-hidden /> Reset + Seed</button>
+          {!resetOpen && <button onClick={() => setResetOpen(true)} disabled={busy !== null} className="btn-outline btn-sm"><RotateCcw className="h-3.5 w-3.5" aria-hidden /> Reset + Seed</button>}
         </div>
+        {resetOpen && (
+          <div className="card mt-3 p-4 text-sm">
+            <p className="font-medium">Wipe the database and load the demo seed again</p>
+            <p className="mt-1 text-muted">The verifier asks for its admin token (FV_ADMIN_TOKEN) and refuses every reset while none is set. The token stays in this page only and is gone on reload.</p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <input type="password" value={adminToken} onChange={(e) => setAdminToken(e.target.value)} placeholder="Admin token" aria-label="Admin token (FV_ADMIN_TOKEN)"
+                autoComplete="off" spellCheck={false} className="min-w-0 flex-1 rounded-full border border-line bg-surface px-3 py-1.5 text-sm" />
+              <button onClick={reset} disabled={busy !== null || !adminToken.trim()} className="btn btn-sm"><RotateCcw className="h-3.5 w-3.5" aria-hidden /> Reset + Seed</button>
+              <button onClick={() => setResetOpen(false)} disabled={busy !== null} className="btn-outline btn-sm">Cancel</button>
+            </div>
+            <p className="mt-2 text-xs text-muted">From a shell: <code className="mono break-all">curl -X POST {PUBLIC_VERIFY_URL}/api/dev/reset -H &quot;x-admin-token: $FV_ADMIN_TOKEN&quot;</code></p>
+          </div>
+        )}
       </div>
 
       <aside>

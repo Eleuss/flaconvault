@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ApiError, CODES, PROGRAM_ERRORS, TxFailedError, apiError, friendly, retryAfterSeconds, waitText } from "./errors";
+import { ADMIN_TOKEN_TEXT, ApiError, CODES, PROGRAM_ERRORS, TxFailedError, apiError, friendly, retryAfterSeconds, waitText } from "./errors";
 
 const res = (status: number, body: unknown) => new Response(typeof body === "string" ? body : JSON.stringify(body), { status });
 
@@ -119,6 +119,17 @@ test("the new verifier codes read clearly", async () => {
     assert.match(friendly(e), re, code);
     assert.doesNotMatch(friendly(e), /HTTP \d/, `${code} is not a generic server error`);
   }
+});
+
+test("403 admin token required (dev reset, reconcile, admin routes) reads as text, other 403s keep their detail", async () => {
+  for (const path of ["/api/dev/reset", "/api/reconcile", "/api/admin/purge-seed"]) {
+    const e = await apiError(path, new Response(JSON.stringify({ detail: "admin token required" }), { status: 403 }));
+    assert.equal(e.code, null);
+    assert.equal(friendly(e), ADMIN_TOKEN_TEXT, path);
+  }
+  assert.match(ADMIN_TOKEN_TEXT, /FV_ADMIN_TOKEN/);
+  assert.doesNotMatch(ADMIN_TOKEN_TEXT, /admin token required|HTTP \d/);
+  assert.equal(friendly(new ApiError("/api/dev/reset", 403, "forbidden", "forbidden")), "The server refused this: forbidden.");
 });
 
 test("Retry-After is kept on the error and shown for the waiting codes only", async () => {

@@ -24,7 +24,7 @@ Solana (`NEXT_PUBLIC_SOLANA_RPC`, `NEXT_PUBLIC_PROGRAM_ID`, `NEXT_PUBLIC_ESCROW_
 | `/certify` | partner console: Metaplex Core asset (`uri` = the verifier's `/api/passport/<serial>/metadata.json`), `mint_passport`, `attach_seal`, printable card |
 | `/market`, `/market/[serial]`, `/market/o/[order]` | escrow market: listings, the orders of one passport, one order by its PDA (reserve with the agreed price, ship, receipt scan, release, timeouts, disputes, admin resolve) |
 | `/wallet/[pubkey]` | attester page (scans, partner badge from the on-chain registry, escrow counters) |
-| `/dev`, `/dev/vision` | simulator console (only with `NEXT_PUBLIC_DEV_SIMULATOR=true`; `/dev?demo=1` / `?demo=0` switches demo mode for this browser) and the card-reader lab |
+| `/dev`, `/dev/vision` | simulator console (only with `NEXT_PUBLIC_DEV_SIMULATOR=true`; `/dev?demo=1` / `?demo=0` switches demo mode for this browser; Reset + Seed asks for the verifier's `FV_ADMIN_TOKEN`, keeps it in page memory only, and is refused while the verifier has none set) and the card-reader lab |
 | `/privacy` | what is stored where (chain, Arweave, verifier, hosting) |
 | `/actions.json`, `/api/actions/verify-buy` | Solana Action (Blink) for buying a listed bottle: `?order=<pda>&price=<base units>`; the chained `/confirm` callback posts the RESERVE event |
 

@@ -6,8 +6,8 @@ import type { VerifyResponse } from "./flacon";
 
 /** Abort a hung request (AbortSignal.timeout is missing on older Safari: no timeout there). */
 const timeout = (ms: number): AbortSignal | undefined => (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(ms) : undefined);
-async function post<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(`${PUBLIC_VERIFY_URL}${path}`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify(body), signal: timeout(30_000) });
+async function post<T>(path: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
+  const r = await fetch(`${PUBLIC_VERIFY_URL}${path}`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json", ...headers }, body: JSON.stringify(body), signal: timeout(30_000) });
   if (!r.ok) throw await apiError(path, r);
   return r.json() as Promise<T>;
 }
@@ -63,6 +63,12 @@ export const api = {
   simNewTag: (kind: number) => post<SimTag>("/api/dev/tag", { kind }),
   tap: (id: number | string) => get<TapView>(`/api/tap/${encodeURIComponent(String(id))}`),
   simTap: (uid: string) => post<TapResult>("/api/dev/tap", { uid }),
+  /**
+   * Wipe the simulator database and load the demo seed again. The verifier always wants its FV_ADMIN_TOKEN as
+   * `x-admin-token` (403 "admin token required" without it, also on a local simulator). The caller keeps the token in
+   * memory only; it is never stored in the browser.
+   */
+  simReset: (adminToken: string) => post<{ ok: boolean; seeded: Record<string, unknown> }>("/api/dev/reset", {}, { "x-admin-token": adminToken.trim() }),
   preview: (t: TagParams) => post<Preview>("/api/preview", { uid: t.uid || undefined, ctr: t.ctr || undefined, cmac: t.cmac, piccData: t.piccData, enc: t.enc }),
   verify: (body: Record<string, unknown>) => post<VerifyResult>("/api/verify", body),
   /** Brand and name of a passport, for the anchor step (the full passport view; only these fields are used). */

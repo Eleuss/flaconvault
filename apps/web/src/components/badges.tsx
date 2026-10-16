@@ -20,9 +20,9 @@ export function Pill({ tone, children, className }: { tone: Tone; children: Reac
  * The verification server did not answer (timeout, 5xx, network). Shown instead of "does not exist": a genuine
  * passport must never look like a fake because the server was redeploying.
  *
- * `retry` is the URL already on screen, so "Try again" is a plain link with a full page load: a client-side <Link> to
- * the same URL is answered from the router cache (Next 14 seeds it with the first page load and keeps it for 30 s),
- * which sends nothing to the server and shows this outage page again.
+ * `retry` is the URL already on screen, so "Try again" is a plain link with a full page load on purpose: it always
+ * reaches the server and never reuses a client router payload of this outage page (Next 15 keeps none for dynamic
+ * pages by default, but back/forward navigation, a configured staleTimes.dynamic and older Next versions do).
  */
 export function Unavailable({ what, retry }: { what: string; retry: string }) {
   return (

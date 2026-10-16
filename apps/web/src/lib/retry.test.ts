@@ -20,7 +20,7 @@ test("the outage page's 'Try again' is a full page load, not a cached client nav
     const tree = Unavailable({ what: "Passport", retry });
     const again = find(tree, (el) => text(el.props.children as ReactNode) === "Try again");
     assert.ok(again, "a Try again control");
-    // a next/link <Link> to the URL on screen is served from the router cache for 30 s: no request reaches the verifier
+    // a full page load always reaches the server; a next/link <Link> could reuse a client router payload of this page
     assert.equal(again.type, "a", "a plain <a>, never next/link");
     assert.equal(again.props.href, retry);
   }

@@ -357,12 +357,39 @@ def test_reset_reseeds(client):
     assert len(client.get("/api/dev/tags").json()) == 4
 
 
-def test_reset_without_admin_token_env(settings):
+def test_reset_without_admin_token_env_is_refused(settings):
     from fastapi.testclient import TestClient
     from fv.main import create_app
     settings.admin_token = ""
     with TestClient(create_app(settings)) as c:
-        assert c.post("/api/dev/reset").json()["ok"]                                           # simulator-only dev box
+        n = len(c.get("/api/dev/tags").json())
+        c.post("/api/dev/tag", json={"kind": 1})
+        for headers in ({}, {"x-admin-token": ""}, {"x-admin-token": "anything"}):
+            r = c.post("/api/dev/reset", headers=headers)                 # no token configured: never open to anyone
+            assert r.status_code == 403 and r.json()["detail"] == "admin token required", headers
+        assert len(c.get("/api/dev/tags").json()) == n + 1               # nothing was wiped
+
+
+def test_every_simulator_post_is_rate_limited_and_reset_needs_the_admin_token():
+    from fastapi.routing import APIRoute
+    from fv import routes_dev
+    from fv.deps import require_admin
+    from fv.ratelimit import rate_limit
+    posts = [r for r in routes_dev.router.routes if isinstance(r, APIRoute) and "POST" in r.methods]
+    assert {r.path for r in posts} >= {"/api/dev/tag", "/api/dev/tap", "/api/dev/kill", "/api/dev/revive", "/api/dev/reset"}
+    for r in posts:
+        deps = [d.call for d in r.dependant.dependencies]
+        assert rate_limit in deps, r.path
+        assert (require_admin in deps) == (r.path == "/api/dev/reset"), r.path
+
+
+def test_reset_is_rate_limited(settings, monkeypatch):
+    from fastapi.testclient import TestClient
+    from fv.main import create_app
+    monkeypatch.setenv("FV_RATE_LIMIT_PER_MIN", "2")
+    with TestClient(create_app(settings)) as c:
+        codes = [c.post("/api/dev/reset", headers={"x-admin-token": "wrong"}).status_code for _ in range(3)]
+        assert codes == [403, 403, 429]                                  # token guessing is rate-limited too
 
 
 def test_certify_console_mint_and_seal_attach_idempotent(chain_client):

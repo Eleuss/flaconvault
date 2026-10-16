@@ -188,11 +188,12 @@ def test_seed_passports(client):
     tags = {t["uid"]: t for t in client.get("/api/dev/tags").json()}
     assert set(tags) == {"04A1B2C3D4E5F6", "04DE5F1EACC040", "041E3C8A2D6B80", "04FFEEDDCCBBAA"}
     assert tags["041E3C8A2D6B80"]["alive"] is False and tags["04FFEEDDCCBBAA"]["serial"] is None
-    # seeded scan bundles verify against the server key
+    # seeded scan bundles are signed with a throwaway key (keyId 0), never with the server key
     pub = bytes.fromhex(client.get("/health").json()["pubkeyHex"])
-    for e in p1["events"]:
-        if e["type"] == 2 and "msgHex" in e["payload"]:
-            VerifyKey(pub).verify(bytes.fromhex(e["payload"]["msgHex"]), bytes.fromhex(e["payload"]["server"]["sig"][2:]))
+    seeded = [e for e in p1["events"] if e["type"] == 2 and "msgHex" in e["payload"]]
+    assert seeded and all(e["payload"]["seed"] is True and e["payload"]["server"]["keyId"] == 0 for e in seeded)
+    for e in seeded:
+        assert not proof.verify(pub, bytes.fromhex(e["payload"]["msgHex"]), bytes.fromhex(e["payload"]["server"]["sig"][2:]))
 
 
 def test_seeded_tag_taps_after_seed_counter(client):
@@ -275,7 +276,8 @@ def test_dev_routes_404_when_simulator_off(settings):
     from fastapi.testclient import TestClient
     from fv.main import create_app
     settings.dev_simulator = False
-    settings.master_key_hex = "0123456789ABCDEF0123456789ABCDEF"     # a real deployment has a non-zero master key
+    settings.key_mode = "sdmbackend"                                  # a real deployment: real key mode ...
+    settings.master_key_hex = "0123456789ABCDEF0123456789ABCDEF"     # ... and a non-zero master key
     with TestClient(create_app(settings)) as c:
         assert c.get("/health").json()["simulator"] is False
         assert c.get("/api/dev/tags").status_code == 404

@@ -37,6 +37,8 @@ class Settings:
     server_seed_hex: str = ""                              # 32 byte hex, REQUIRED
     server_key_id: int = 1
     dev_simulator: bool = False                            # FV_DEV_SIMULATOR — /api/dev/* (off unless explicitly enabled)
+    seed_demo: bool = False                                # FV_SEED_DEMO — load docs/seed into an empty DB even with the simulator off
+    allow_sim_with_real_keys: bool = False                 # FV_ALLOW_SIM_WITH_REAL_KEYS — local tests only (see check_startup)
     admin_token: str = ""                                  # FV_ADMIN_TOKEN — x-admin-token for POST /api/reconcile and /api/dev/reset
     nonce_ttl_s: int = 90
     irys_key: str = ""                                     # FV_IRYS_KEY — path to a Solana keypair json, or "default"
@@ -97,15 +99,42 @@ class Settings:
             return "https://api.devnet.solana.com" if self.irys_network == "devnet" else "https://api.mainnet-beta.solana.com"
         return self.solana_rpc
 
+    @property
+    def seed_enabled(self) -> bool:
+        """The demo seed (docs/seed) is loaded into an empty database only on simulator / explicit demo deployments."""
+        return self.dev_simulator or self.seed_demo
+
+    def startup_problems(self) -> list[str]:
+        """Configurations that must never serve taps (empty list = fine). See check_startup."""
+        problems = []
+        if not self.dev_simulator:
+            if self.master_key == bytes(16):
+                problems.append(
+                    "FV_DEV_SIMULATOR is off and FV_MASTER_KEY is all zeros — set FV_MASTER_KEY to the secret 16-byte SDM "
+                    "master key of your tags (or FV_DEV_SIMULATOR=true for local development only)")
+            if self.key_mode == "factory":
+                problems.append(
+                    "FV_KEY_MODE=factory with FV_DEV_SIMULATOR off — factory mode checks taps with the public NXP null keys "
+                    "(FV_MASTER_KEY is ignored), so anyone can forge a valid tap. Use FV_KEY_MODE=sdmbackend with "
+                    "FV_SDM_DERIVE=legacy (stickers written with the NFC Developer App) or FV_KEY_MODE=diversified, together "
+                    "with the secret FV_MASTER_KEY")
+        elif self.key_mode != "factory" and not self.allow_sim_with_real_keys:
+            problems.append(
+                f"FV_DEV_SIMULATOR=true with FV_KEY_MODE={self.key_mode} — the simulator mints valid taps for any UID with "
+                "these keys, and a verifier that shares FV_MASTER_KEY would accept them. Run the simulator with "
+                "FV_KEY_MODE=factory, a dev-only FV_MASTER_KEY and a dev-only FV_SERVER_ED25519_SEED (never the production "
+                "values), or set FV_ALLOW_SIM_WITH_REAL_KEYS=true for local tests only")
+        return problems
+
     def check_startup(self) -> None:
         """
-        Refuse to serve real taps with a key anyone can compute. Called from the app lifespan (startup), so a
-        misconfigured deployment fails loudly instead of accepting forged SUN URLs.
+        Refuse to serve real taps with a key anyone can compute, and refuse a simulator that mints taps with real tag
+        keys. Called from the app lifespan (startup), so a misconfigured deployment fails loudly instead of accepting
+        forged SUN URLs.
         """
-        if not self.dev_simulator and self.master_key == bytes(16):
-            raise RuntimeError(
-                "refusing to start: FV_DEV_SIMULATOR is off and FV_MASTER_KEY is all zeros — set FV_MASTER_KEY to the "
-                "16-byte SDM master key of your tags (or FV_DEV_SIMULATOR=true for local development only)")
+        problems = self.startup_problems()
+        if problems:
+            raise RuntimeError("refusing to start: " + " | ".join(problems))
 
     @property
     def master_key(self) -> bytes:
@@ -126,6 +155,8 @@ def settings_from_env() -> Settings:
         server_seed_hex=e("FV_SERVER_ED25519_SEED") or "",
         server_key_id=int(e("FV_SERVER_KEY_ID") or 1),
         dev_simulator=_bool(e("FV_DEV_SIMULATOR"), False),
+        seed_demo=_bool(e("FV_SEED_DEMO"), False),
+        allow_sim_with_real_keys=_bool(e("FV_ALLOW_SIM_WITH_REAL_KEYS"), False),
         admin_token=e("FV_ADMIN_TOKEN") or "",
         nonce_ttl_s=int(e("FV_NONCE_TTL_S") or 90),
         irys_key=e("FV_IRYS_KEY") or "",

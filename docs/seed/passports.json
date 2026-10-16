@@ -1,6 +1,6 @@
 {
   "schema": "flaconvault.seed.v1",
-  "note": "Demo seed for apps/verify (uv run python -m fv.seed). Timestamps are ISO-8601 (Europe/Berlin) and become unix seconds in the DB. Pubkeys and tx signatures are well-formed base58 but FAKE (devnet reconcile will not find them). SCAN events with a `scan` block get a full §4.4 bundle signed by the configured server key; `sighting` blocks are Tier-0 /t taps.",
+  "note": "Demo seed for apps/verify (uv run python -m fv.seed). Loaded into an empty database only when FV_DEV_SIMULATOR=true or FV_SEED_DEMO=true, never on a production verifier. Timestamps are ISO-8601 (Europe/Berlin) and become unix seconds in the DB. Pubkeys and tx signatures are well-formed base58 but FAKE (devnet reconcile will not find them). SCAN events with a `scan` block get a full §4.4 bundle signed with a throwaway key generated per seeding run (server.keyId 0, never registered on chain); `sighting` blocks are Tier-0 /t taps. Every seeded event carries payload.seed = true; POST /api/admin/purge-seed removes seed rows that have no on-chain evidence.",
   "attesters": [
     { "pubkey": "PxPGKQsGTYE2ti3awtEae4Yjk64NF2tcxQN1oDchhyR", "label": "Parfümerie X, Düsseldorf", "isPartner": true,
       "firstSeen": "2026-09-15T10:00:00+02:00", "scanCount": 3, "certifiedCount": 3, "agreeCount": 2, "compareCount": 3, "escrowsOk": 0, "escrowsDisputed": 0 },

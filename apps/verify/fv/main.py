@@ -42,16 +42,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        settings.check_startup()      # simulator off + all-zero master key → refuse to start
-        if not settings.dev_simulator and settings.key_mode == "factory":
-            log.warning("FV_KEY_MODE=factory with the simulator off: tags with factory (null) keys can be forged by anyone")
+        settings.check_startup()      # forgeable keys (factory / all-zero master without the simulator), simulator with real keys
         if not settings.admin_token:
             log.info("FV_ADMIN_TOKEN not set: POST /api/reconcile is disabled (the background loop still runs)")
         db.init()
         settings.media_dir.mkdir(parents=True, exist_ok=True)
         if db.is_empty() and settings.seed_path.exists():
-            counts = run_seed(db, settings)
-            log.info("seeded empty database from %s: %s", settings.seed_path, counts)
+            if settings.seed_enabled:
+                counts = run_seed(db, settings)
+                log.info("seeded empty database from %s (demo data, signed with a throwaway key): %s", settings.seed_path, counts)
+            else:
+                log.info("empty database: demo seed not loaded (FV_DEV_SIMULATOR and FV_SEED_DEMO are off)")
         task = None
         if settings.program_id and settings.reconcile_interval_s > 0:
             task = asyncio.create_task(reconcile_loop(app))

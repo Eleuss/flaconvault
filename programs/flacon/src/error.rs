@@ -77,4 +77,26 @@ pub enum FlaconError {
     // ---- record_scan step 4 ----
     #[msg("Passport scan_count overflow")]
     ScanCountOverflow,
+
+    // ---- appended (keep the codes above stable) ----
+    #[msg("Signer is neither the passport issuer (a current partner) nor the registry authority")]
+    NotIssuerOrAuthority,
+    #[msg("Passport already holds the maximum number of seals")]
+    TooManySeals,
+    #[msg("Server key is not valid at the current cluster time (expired or revoked)")]
+    ServerKeyNotValidNow,
+    #[msg("Signed ts is more than MAX_SCAN_TS_SKEW_S away from the cluster clock")]
+    StaleScanTimestamp,
+    #[msg("counter is above the 24-bit NTAG counter range")]
+    CounterOutOfRange,
+    #[msg("Partner is not registered")]
+    PartnerNotFound,
+    #[msg("Server key is already expired or revoked")]
+    ServerKeyAlreadyRevoked,
+    #[msg("Signer is not the program's upgrade authority")]
+    NotUpgradeAuthority,
+    #[msg("Asset account does not match the asset argument")]
+    AssetMismatch,
+    #[msg("Asset account is not a Metaplex Core asset")]
+    InvalidAsset,
 }

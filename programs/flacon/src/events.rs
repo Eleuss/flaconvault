@@ -15,8 +15,26 @@ pub struct ServerKeyAdded {
 }
 
 #[event]
+pub struct ServerKeyRevoked {
+    pub key_id: u8,
+    /// New `valid_to` (one second before the revocation's cluster time).
+    pub valid_to: i64,
+}
+
+#[event]
 pub struct PartnerAdded {
     pub partner: Pubkey,
+}
+
+#[event]
+pub struct PartnerRemoved {
+    pub partner: Pubkey,
+}
+
+#[event]
+pub struct AuthorityTransferred {
+    pub previous: Pubkey,
+    pub new_authority: Pubkey,
 }
 
 #[event]

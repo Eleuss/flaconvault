@@ -11,6 +11,13 @@ pub struct ServerKey {
     pub valid_to: i64,
 }
 
+impl ServerKey {
+    /// `valid_from <= t` and (`valid_to == 0` or `t <= valid_to`).
+    pub fn is_valid_at(&self, t: i64) -> bool {
+        t >= self.valid_from && (self.valid_to == 0 || t <= self.valid_to)
+    }
+}
+
 /// A physical location (vault, partner shop). `label` is UTF-8, zero padded.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace, Debug, PartialEq, Eq)]
 pub struct Site {
@@ -45,6 +52,14 @@ impl Registry {
     pub fn server_key(&self, key_id: u8) -> Option<&ServerKey> {
         self.server_keys.iter().find(|k| k.key_id == key_id)
     }
+    pub fn server_key_mut(&mut self, key_id: u8) -> Option<&mut ServerKey> {
+        self.server_keys.iter_mut().find(|k| k.key_id == key_id)
+    }
+    /// The passport's issuer while it is still a partner, or the registry authority. Removing a partner
+    /// therefore also removes its power over the passports it issued.
+    pub fn may_manage_passport(&self, key: &Pubkey, passport: &Passport) -> bool {
+        self.is_authority(key) || (&passport.issuer == key && self.is_partner(key))
+    }
     pub fn has_site(&self, site_id: u16) -> bool {
         self.sites.iter().any(|s| s.site_id == site_id)
     }
@@ -68,6 +83,13 @@ pub struct Passport {
     pub void: bool,
     pub created_at: i64,
     pub bump: u8,
+}
+
+impl Passport {
+    /// VOID either through the flag (dead seal, opened tamper loop) or through the grade.
+    pub fn is_voided(&self) -> bool {
+        self.void || self.grade == GRADE_VOID
+    }
 }
 
 /// Seeds: `["seal", uid_hash]` — one NFC seal (box or neck) pointing at a passport.
@@ -119,4 +141,14 @@ const _ASSERT_CAPS: () = {
     assert!(MAX_SERVER_KEYS == 8);
     assert!(MAX_PARTNERS == 16);
     assert!(MAX_SITES == 16);
+};
+
+// Account layouts are frozen (devnet accounts exist): any change here breaks the upgrade.
+const _ASSERT_LAYOUTS: () = {
+    assert!(ServerKey::INIT_SPACE == 49);
+    assert!(Site::INIT_SPACE == 34);
+    assert!(Registry::INIT_SPACE == 32 + (4 + 8 * 49) + (4 + 16 * 32) + (4 + 16 * 34) + 1);
+    assert!(Passport::INIT_SPACE == 32 + 32 + 32 + 32 + 1 + 4 + 1 + 1 + 8 + 1);
+    assert!(Seal::INIT_SPACE == 32 + 1 + 32 + 4 + 1 + 8 + 1);
+    assert!(ScanProof::INIT_SPACE == 32 + 4 + 8 + 2 + 32 + 32 + 32 + 1 + 8 + 1);
 };

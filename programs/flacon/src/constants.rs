@@ -36,6 +36,9 @@ pub const MAX_SERVER_KEYS: u8 = 8;
 pub const MAX_PARTNERS: u8 = 16;
 #[constant]
 pub const MAX_SITES: u8 = 16;
+/// A passport carries at most one BOX and one NECK seal.
+#[constant]
+pub const MAX_SEALS_PER_PASSPORT: u8 = 2;
 
 // ---- Enums (u8) — docs/enums.json ------------------------------------------
 
@@ -136,3 +139,20 @@ pub const HEAT_LEVELS_BITS: u8 = 6;
 #[constant]
 pub const HEAT_DECISIVE_INDEX: u8 = 4;
 pub const MAX_FILL: u8 = 100;
+
+// ---- Freshness ----------------------------------------------------------------
+
+/// `record_scan` accepts a signed message only while |msg.ts − cluster clock| ≤ this (seconds).
+#[constant]
+pub const MAX_SCAN_TS_SKEW_S: i64 = 600;
+/// NTAG 424 DNA SUN counters are 24 bit; anything above cannot come from a real tap.
+#[constant]
+pub const MAX_COUNTER: u32 = 0x00FF_FFFF;
+
+// ---- External programs ----------------------------------------------------------
+
+/// Metaplex Core: `mint_passport` only accepts an asset account owned by this program.
+#[constant]
+pub const MPL_CORE_PROGRAM_ID: Pubkey = pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
+/// First byte (`Key`) of a Metaplex Core `AssetV1` account.
+pub const MPL_CORE_KEY_ASSET_V1: u8 = 1;

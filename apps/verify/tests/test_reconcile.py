@@ -149,12 +149,22 @@ def test_registry_and_sites(chain_client):
     assert r == {"programId": PROGRAM_ID, "authority": str(ISSUER), "serverKeys": [key], "partners": [str(ISSUER)],
                  "sites": [{"siteId": 1, "label": "Parfümerie X, Düsseldorf"}, {"siteId": 7, "label": "Lager Nord"}], "source": "chain"}
     assert c.get("/api/sites").json() == r["sites"]
+    # a chain read is reused for a minute: no RPC call per request
+    n = rpc.calls.count("getAccountInfo")
+    for _ in range(5):
+        assert c.get("/api/registry").json()["source"] == "chain"
+    assert rpc.calls.count("getAccountInfo") == n
 
-    # RPC failure → fallback, not a 500
+    # RPC failure → the last chain read while it is recent, then the fallback — never a 500
     def boom(_pk):
         from fv.chain import RpcError
         raise RpcError("connection refused")
     rpc.get_account_info = boom
+    import fv.routes_chain as rch
+    cache = c.app.state.registry_cache
+    cache.at -= rch.REGISTRY_TTL_S + 1                          # TTL over: the next request tries the chain again
+    assert c.get("/api/registry").json()["source"] == "chain"   # stale but recent: still served
+    cache.at -= rch.REGISTRY_STALE_S
     assert c.get("/api/sites").json()[0]["siteId"] == 1 and c.get("/api/registry").json()["source"] == "fallback"
 
 

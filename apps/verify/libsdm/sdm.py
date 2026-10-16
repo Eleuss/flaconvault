@@ -180,6 +180,9 @@ def validate_plain_sun(uid: bytes, read_ctr: bytes, sdmmac: bytes, sdm_file_read
     }
 
 
+MAX_ENC_FILE_DATA = 128   # bytes (FlaconVault addition, see decrypt_sun_message)
+
+
 def get_encryption_mode(picc_enc_data: bytes):
     if len(picc_enc_data) == 16:
         return EncMode.AES
@@ -209,6 +212,10 @@ def decrypt_sun_message(param_mode: ParamMode,
     :raises:
         InvalidMessage: if SUN message is invalid
     """
+    # FlaconVault: SDMENCFileData lives in the 256-byte NDEF file, so anything longer is not from a tag — refuse it before
+    # any (LRP-)CMAC work, which costs time linear in its length.
+    if enc_file_data is not None and len(enc_file_data) > MAX_ENC_FILE_DATA:
+        raise InvalidMessage("SDMENCFileData too long")
     mode = get_encryption_mode(picc_enc_data)
 
     if mode == EncMode.AES:

@@ -84,6 +84,7 @@ def migrate(conn: sqlite3.Connection, schema: str) -> None:
             conn.execute("ROLLBACK")
             raise
         conn.execute("COMMIT")
+    migrate_trust_columns(conn)
 
 
 @contextmanager
@@ -426,3 +427,117 @@ def upsert_media(conn, *, sha256_hex: str, bytes_: int, files: int, content_type
 
 def set_event_arweave(conn, event_id: int, ar_bundle: str | None, ar_media: str | None) -> None:
     conn.execute("UPDATE events SET ar_bundle=COALESCE(?, ar_bundle), ar_media=COALESCE(?, ar_media) WHERE id=?", (ar_bundle, ar_media, event_id))
+
+
+# ---------- verifier trust (resume tokens, media budget, confirmed-only stats, reports, taps) ----------
+
+def migrate_trust_columns(conn) -> None:
+    """
+    Columns added by the verifier trust hardening (idempotent, called from migrate()):
+      * events.resume_hash — sha256 of the one-time resume token of a pending signed scan (GET /api/verify/{id}),
+      * nonces.media_files — files uploaded to /api/media under this session nonce (at most 6).
+    """
+    for table, col, decl in (("events", "resume_hash", "TEXT"), ("nonces", "media_files", "INTEGER NOT NULL DEFAULT 0")):
+        if col not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+
+
+def set_event_resume_hash(conn, event_id: int, resume_hash: str | None) -> None:
+    conn.execute("UPDATE events SET resume_hash=? WHERE id=?", (resume_hash, event_id))
+
+
+# Certified = the verified tier (payload.tier, written on confirmation) or, for rows confirmed before that existed, the
+# tier in the bundle. A signed scan counts on chain (Passport.scan_count, one per record_scan) — Tier-0 /t sightings
+# carry neither a msgHex nor a txSig and never reach the chain.
+_CERTIFIED_SQL = "COALESCE(json_extract(payload_json, '$.tier'), json_extract(payload_json, '$.attester.tier'), 0) >= 3"
+_ON_CHAIN_SQL = "(tx_sig IS NOT NULL OR json_extract(payload_json, '$.msgHex') IS NOT NULL)"
+
+
+def passport_stats_confirmed(conn, serial: str) -> dict:
+    """Passport stats over *confirmed* SCAN events only (pending and failed claims never count)."""
+    r = conn.execute(
+        f"""SELECT COUNT(*) AS scan_count,
+                   COUNT(DISTINCT actor_pubkey) AS attester_count,
+                   SUM(CASE WHEN {_CERTIFIED_SQL} THEN 1 ELSE 0 END) AS certified_count,
+                   SUM(CASE WHEN {_ON_CHAIN_SQL} THEN 1 ELSE 0 END) AS on_chain
+            FROM events WHERE serial=? AND type=2 AND status='confirmed'""", (serial,)).fetchone()
+    return {"scanCount": int(r["scan_count"] or 0), "attesterCount": int(r["attester_count"] or 0),
+            "certifiedCount": int(r["certified_count"] or 0), "onChainScanCount": int(r["on_chain"] or 0)}
+
+
+def list_passports_confirmed(conn) -> list[dict]:
+    return _rows(conn.execute(
+        """SELECT p.serial, p.brand, p.name, p.grade, p.void,
+                  (SELECT COUNT(*) FROM events e WHERE e.serial=p.serial AND e.type=2 AND e.status='confirmed') AS scan_count,
+                  (SELECT MAX(ts) FROM events e WHERE e.serial=p.serial AND e.status IN ('confirmed','reported')) AS last_event_ts
+           FROM passports p ORDER BY p.serial""").fetchall())
+
+
+def recent_confirmed_serials_for(conn, pubkey: str, limit: int = 10) -> list[str]:
+    return [r[0] for r in conn.execute(
+        "SELECT serial FROM events WHERE actor_pubkey=? AND status='confirmed' GROUP BY serial ORDER BY MAX(ts) DESC LIMIT ?",
+        (pubkey, limit)).fetchall()]
+
+
+def drop_superseded_sighting(conn, serial: str, seal_uid_hash: str, counter: int, keep_id: int) -> int:
+    """A confirmed signed scan replaces the Tier-0 /t sighting of the same physical tap (same seal, same counter)."""
+    return conn.execute(
+        """DELETE FROM events WHERE serial=? AND type=2 AND id!=? AND tx_sig IS NULL AND seal_uid_hash=?
+             AND json_extract(payload_json, '$.counter')=? AND json_extract(payload_json, '$.indicators') IS NULL
+             AND COALESCE(json_extract(payload_json, '$.tier'), 0)=0""",
+        (serial, keep_id, seal_uid_hash.lower(), counter)).rowcount
+
+
+def reserve_nonce_media(conn, nonce_hex: str, files: int, max_files: int, now_ts: int) -> str:
+    """
+    Count `files` uploads against an unexpired, unused session nonce: 'ok', 'full' (would exceed max_files) or
+    'invalid' (unknown, expired or already consumed by /api/verify).
+    """
+    cur = conn.execute("""UPDATE nonces SET media_files=media_files+? WHERE nonce_hex=? AND used_at IS NULL AND expires_at>=?
+                          AND media_files+?<=?""", (files, nonce_hex.lower(), now_ts, files, max_files))
+    if cur.rowcount == 1:
+        return "ok"
+    n = get_nonce(conn, nonce_hex)
+    if n and n["used_at"] is None and n["expires_at"] >= now_ts:
+        return "full"
+    return "invalid"
+
+
+def open_seal_dead_report(conn, serial: str, seal_uid_hash: str | None, since: int) -> bool:
+    """An unverified SEAL_DEAD report for this seal (or one without a seal) of this passport since `since`."""
+    h = seal_uid_hash.lower() if seal_uid_hash else None
+    return conn.execute(
+        """SELECT 1 FROM events WHERE serial=? AND type=9 AND status='reported' AND ts>=?
+             AND (? IS NULL OR seal_uid_hash IS NULL OR seal_uid_hash=?) LIMIT 1""",
+        (serial, since, h, h)).fetchone() is not None
+
+
+def bump_escrow_counts(conn, pubkey: str, ts: int, *, ok: int = 0, disputed: int = 0) -> None:
+    conn.execute("INSERT INTO attesters(pubkey, first_seen) VALUES(?,?) ON CONFLICT(pubkey) DO NOTHING", (pubkey, ts))
+    conn.execute("UPDATE attesters SET escrows_ok=escrows_ok+?, escrows_disputed=escrows_disputed+? WHERE pubkey=?",
+                 (ok, disputed, pubkey))
+
+
+TAP_ID_MIN, TAP_ID_MAX = 1 << 32, (1 << 53) - 1      # random, unguessable and still exact as a JavaScript number
+
+
+def insert_tap_random_id(conn, *, ts: int, source: str, uid_hex: str | None, ctr: int | None, cmac: str | None,
+                         verdict: str, serial: str | None, message: str, adopt_hash: str | None = None) -> dict:
+    """insert_tap with a random id, so taps cannot be enumerated through GET /api/tap/{id}."""
+    import secrets
+    for _ in range(8):
+        tap_id = TAP_ID_MIN + secrets.randbelow(TAP_ID_MAX - TAP_ID_MIN)
+        try:
+            conn.execute("""INSERT INTO taps(id, ts, source, uid_hex, ctr, cmac, verdict, serial, message, adopt_hash)
+                            VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                         (tap_id, ts, source, uid_hex.upper() if uid_hex else None, ctr, cmac.upper() if cmac else None,
+                          verdict, serial, message, adopt_hash))
+        except sqlite3.IntegrityError:
+            continue
+        return get_tap(conn, tap_id)  # type: ignore[return-value]
+    raise RuntimeError("could not allocate a tap id")
+
+
+def purge_invalid_taps(conn, before: int) -> int:
+    """INVALID taps are kept only briefly (the web /t page reads them right after the redirect); they hold no replay state."""
+    return conn.execute("DELETE FROM taps WHERE verdict='INVALID' AND ts<?", (before,)).rowcount

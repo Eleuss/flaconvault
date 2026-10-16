@@ -123,6 +123,18 @@ CREATE TABLE IF NOT EXISTS escrow_orders (
 CREATE INDEX IF NOT EXISTS escrow_orders_seller ON escrow_orders(seller);
 CREATE INDEX IF NOT EXISTS escrow_orders_buyer ON escrow_orders(buyer);
 
+-- Arweave archiving queue (reconcile backfill): per confirmed SCAN, failed attempts and when to try again, so one row
+-- that keeps failing (e.g. media the Irys balance cannot pay for) never blocks the bundles of the others. done = nothing
+-- left to archive (bundle uploaded, media uploaded or not available). No row = never tried.
+CREATE TABLE IF NOT EXISTS arweave_queue (
+  event_id      INTEGER PRIMARY KEY,  -- events.id (AUTOINCREMENT: never reused)
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  next_at       INTEGER NOT NULL DEFAULT 0,
+  done          INTEGER NOT NULL DEFAULT 0,
+  last_error    TEXT,                 -- error code of the last failed upload (insufficient_balance, timeout, …)
+  updated_at    INTEGER NOT NULL
+);
+
 -- Decoded chain state cached by the reconcile job (key 'registry': authority, server keys, partners, sites).
 CREATE TABLE IF NOT EXISTS chain_state (
   key           TEXT PRIMARY KEY,

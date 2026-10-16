@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-TABLES = ("passports", "seals", "events", "attesters", "nonces", "taps", "sim_tags", "media", "escrow_orders", "chain_state")
+TABLES = ("passports", "seals", "events", "attesters", "nonces", "taps", "sim_tags", "media", "escrow_orders", "chain_state",
+          "arweave_queue")
 GRADE_VOID = 4          # enums.json grade.VOID
 ORDER_RELEASED, ORDER_DISPUTE = 5, 7   # escrow ORDER_STATE_*
 
@@ -569,6 +570,30 @@ def upsert_media(conn, *, sha256_hex: str, bytes_: int, files: int, content_type
 
 def set_event_arweave(conn, event_id: int, ar_bundle: str | None, ar_media: str | None) -> None:
     conn.execute("UPDATE events SET ar_bundle=COALESCE(?, ar_bundle), ar_media=COALESCE(?, ar_media) WHERE id=?", (ar_bundle, ar_media, event_id))
+
+
+def arweave_queue(conn, now_ts: int, limit: int) -> list[dict]:
+    """
+    Confirmed SCANs (not seeded, with a bundle) that still need an upload — no ar_bundle yet, or media that is not
+    archived — and are due (never tried, or their retry time has come). Fewest failed attempts first, then newest, so a
+    row that keeps failing goes to the back of the queue and never blocks the others.
+    """
+    return _rows(conn.execute(
+        """SELECT e.*, COALESCE(q.attempts, 0) AS ar_attempts FROM events e LEFT JOIN arweave_queue q ON q.event_id = e.id
+           WHERE e.type=2 AND e.status='confirmed' AND json_extract(e.payload_json, '$.indicators') IS NOT NULL
+             AND COALESCE(json_extract(e.payload_json, '$.seed'), 0) = 0 AND COALESCE(q.done, 0) = 0
+             AND COALESCE(q.next_at, 0) <= ?
+             AND (e.ar_bundle IS NULL OR (e.ar_media IS NULL AND json_extract(e.payload_json, '$.media[0].sha256') IS NOT NULL))
+           ORDER BY COALESCE(q.attempts, 0) ASC, e.id DESC LIMIT ?""", (now_ts, limit)).fetchall())
+
+
+def set_arweave_attempt(conn, event_id: int, *, done: bool, error: str | None, next_at: int, ts: int) -> None:
+    """Record one archiving attempt of a SCAN: done (nothing left), or failed (`error`) and due again at `next_at`."""
+    conn.execute(
+        """INSERT INTO arweave_queue(event_id, attempts, next_at, done, last_error, updated_at) VALUES(?,?,?,?,?,?)
+           ON CONFLICT(event_id) DO UPDATE SET attempts=arweave_queue.attempts + excluded.attempts, next_at=excluded.next_at,
+             done=excluded.done, last_error=excluded.last_error, updated_at=excluded.updated_at""",
+        (event_id, 0 if done else 1, next_at, int(done), error, ts))
 
 
 # ---------- verifier trust (resume tokens, media budget, confirmed-only stats, reports, taps) ----------

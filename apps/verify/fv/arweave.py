@@ -27,7 +27,7 @@ from typing import Any
 
 from fv import proof
 from fv.config import APP_DIR, Settings
-from fv.db import get_media, set_event_arweave, upsert_media
+from fv.db import arweave_queue, get_media, set_arweave_attempt, set_event_arweave, upsert_media
 from fv.enums import EventType
 
 log = logging.getLogger("fv.arweave")
@@ -43,7 +43,13 @@ SIDECAR_ENV_PASSTHROUGH = ("PATH", "LANG", "LC_ALL", "TZ", "SSL_CERT_FILE", "SSL
                            "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy")
 BACKOFF_BASE_S = 60          # after consecutive failures the backfill waits 60 s, 120 s, … up to BACKOFF_MAX_S
 BACKOFF_MAX_S = 3600
-BACKFILL_PER_CYCLE = 3       # confirmed SCANs archived per reconcile cycle (each may run the sidecar twice)
+BACKFILL_PER_CYCLE = 5       # confirmed SCANs archived per reconcile cycle (each may run the sidecar up to three times)
+ROW_BACKOFF_BASE_S = 300     # a SCAN whose upload failed is due again after 5 min, 10, 20, … up to ROW_BACKOFF_MAX_S
+ROW_BACKOFF_MAX_S = 6 * 3600
+# failures that would hit every other upload too: the cycle stops (and the global backoff applies). Anything else —
+# e.g. insufficient_balance for a paid media upload while ~2 KB bundles are free on Irys devnet — is row-specific: the
+# row goes to the back of the queue and the cycle continues with the next one.
+GLOBAL_ERROR_CODES = frozenset({"sidecar_unavailable", "key_invalid", "timeout"})
 
 
 class ArweaveError(RuntimeError):
@@ -98,7 +104,10 @@ def _record_error(exc: ArweaveError) -> None:
 
 
 def in_backoff(now_ts: int | None = None) -> bool:
-    """True while the backfill should not try again (after consecutive failures, exponential up to an hour)."""
+    """
+    True within the wait after consecutive failures (exponential up to an hour). The backfill skips whole cycles only
+    while the last failure was a global one (GLOBAL_ERROR_CODES); row-specific failures have their own per-row wait.
+    """
     with _LOCK:
         n, last = _STATE["consecutiveFailures"], _STATE["lastErrorAt"]
     if not n or last is None:
@@ -299,7 +308,7 @@ def probe(settings: Settings) -> dict | None:
 
 def archive_media(conn, settings: Settings, sha256_hex: str) -> bool | None:
     """
-    Upload a stored media blob that has no Arweave link yet (POST /api/media failed or archiving was off then).
+    Upload a stored media blob that has no Arweave link yet (its scan is confirmed; called from the backfill queue).
     True = archived (or already), None = nothing to do (no row / no file / disabled), False = upload failed.
     """
     row = get_media(conn, sha256_hex)
@@ -355,32 +364,60 @@ def archive_scan_event(conn, settings: Settings, event: dict) -> tuple[str | Non
     return ar_bundle, ar_media
 
 
-def backfill(conn, settings: Settings, *, limit: int = BACKFILL_PER_CYCLE, skip_ids: frozenset[int] = frozenset()) -> dict:
+def _failures() -> tuple[int, str | None]:
+    with _LOCK:
+        return _STATE["failures"], _STATE["lastErrorCode"]
+
+
+def row_backoff_s(attempts: int) -> int:
+    """Wait before a SCAN whose archiving failed `attempts` times is tried again."""
+    return min(ROW_BACKOFF_MAX_S, ROW_BACKOFF_BASE_S * 2 ** max(0, attempts - 1))
+
+
+def backfill(conn, settings: Settings, *, limit: int = BACKFILL_PER_CYCLE, now_ts: int | None = None) -> dict:
     """
-    Archive confirmed SCANs that have no Arweave bundle yet (the confirm request's upload failed, the sidecar was down,
-    archiving was switched on later), media first, newest first, at most `limit` per call. Stops at the first failure
-    and waits (in_backoff) before the next attempt, so a broken Irys setup is not hammered every cycle.
+    The archiving queue, run by the reconcile job after its write transaction (the only place uploads happen — never a
+    request): confirmed SCANs without an Arweave bundle, or whose media is not archived yet, at most `limit` per call,
+    fewest failed attempts first, then newest (db.arweave_queue). Per row the media is uploaded first (its link goes
+    into ar_media), then the bundle — the bundle's canonical bytes and hash do not depend on the media upload, so it is
+    archived even when the media upload fails. A row that fails is recorded in arweave_queue (attempts, last error code)
+    and due again after row_backoff_s; the cycle goes on with the next row, unless the failure would hit every upload
+    (GLOBAL_ERROR_CODES). After such a global failure whole cycles wait (in_backoff), so a broken sidecar or Irys setup
+    is not hammered; row-specific failures (an unpaid media upload, a rejected file) never hold up the other rows.
     """
-    out = {"attempted": 0, "archived": 0, "failed": 0, "skipped": None}
+    out = {"attempted": 0, "archived": 0, "failed": 0, "mediaFailed": 0, "skipped": None}
     if not enabled(settings):
         out["skipped"] = "disabled"
         return out
-    if in_backoff():
-        out["skipped"] = "backoff"
+    now_ts = int(now_ts if now_ts is not None else time.time())
+    with _LOCK:
+        last_code = _STATE["lastErrorCode"]
+    if last_code in GLOBAL_ERROR_CODES and in_backoff(now_ts):
+        out["skipped"] = "backoff"          # the sidecar / key / Irys itself is down: no upload would get through
         return out
-    rows = conn.execute(
-        """SELECT * FROM events WHERE type=2 AND status='confirmed' AND ar_bundle IS NULL
-             AND json_extract(payload_json, '$.indicators') IS NOT NULL AND COALESCE(json_extract(payload_json, '$.seed'), 0) = 0
-           ORDER BY id DESC LIMIT ?""", (limit + len(skip_ids),)).fetchall()
-    for r in [dict(r) for r in rows if r["id"] not in skip_ids][:limit]:
+    for r in arweave_queue(conn, now_ts, limit):
         out["attempted"] += 1
+        failures, _ = _failures()
         media = json.loads(r["payload_json"] or "{}").get("media") or []
-        if media and archive_media(conn, settings, proof.strip0x(media[0]["sha256"]).lower()) is False:
+        sha = media[0].get("sha256") if media and isinstance(media[0], dict) else None
+        media_res = archive_media(conn, settings, proof.strip0x(sha).lower()) if sha and not r["ar_media"] else None
+        ar_bundle, _ar_media = archive_scan_event(conn, settings, r)
+        if ar_bundle:
+            out["archived"] += 1
+        else:
             out["failed"] += 1
+        if media_res is False:
+            out["mediaFailed"] += 1
+        after, code = _failures()
+        code = code if after > failures else None          # the error code of THIS row's failure, if it had one
+        failed = not ar_bundle or media_res is False
+        attempts = int(r["ar_attempts"]) + (1 if failed else 0)
+        set_arweave_attempt(conn, r["id"], done=not failed, error=(code or "upload_failed") if failed else None,
+                            next_at=now_ts + row_backoff_s(attempts) if failed else 0, ts=now_ts)
+        if failed:
+            log.warning("arweave backfill: event %s %s (attempt %s, next in %ss)", r["id"],
+                        "media upload failed, bundle archived" if ar_bundle else "bundle upload failed", attempts,
+                        row_backoff_s(attempts))
+        if code in GLOBAL_ERROR_CODES:
             break
-        ar_bundle, _ = archive_scan_event(conn, settings, r)
-        if not ar_bundle:
-            out["failed"] += 1
-            break
-        out["archived"] += 1
     return out

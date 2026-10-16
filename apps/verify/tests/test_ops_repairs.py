@@ -1,7 +1,20 @@
 """Verifier operations repairs (second review round): confirmation order and the grade (M6), the reconcile job's
 creating signature (S8/M10), the Arweave queue (S8/S15), purge-seed and the leftover-seed warning (M1/M2), the
 simulator escape hatch (M11) and the escrow counters after close_order (S10)."""
-from tests.conftest import sig
+import io
+
+import pytest
+from fastapi.testclient import TestClient
+
+import fv.arweave as aw
+import fv.reconcile as rc
+from fv import proof
+from fv.config import Settings, is_local_rpc
+from fv.main import create_app
+from tests.conftest import PROGRAM_ID, SYSTEM_PROGRAM, TEST_SEED_HEX, FakeRpc, fake_key, post_media, registry_pda, sig
+from tests.test_chain import registry_bytes
+from tests.test_reconcile import _account_for, _scan
+from tests.test_reconcile_robust import _event, _reconcile, _scan_pda
 from tests.test_stats_grade import MEDIA, SERIAL, _confirm, _verify
 
 
@@ -24,14 +37,6 @@ def test_an_older_c_scan_confirmed_after_a_newer_clean_scan_still_lowers_the_gra
 
 # ---------- M11: the simulator escape hatch and the registered signing key ----------
 
-import pytest  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-
-from fv import proof  # noqa: E402
-from fv.config import Settings, is_local_rpc  # noqa: E402
-from fv.main import create_app  # noqa: E402
-from tests.conftest import PROGRAM_ID, TEST_SEED_HEX, FakeRpc, registry_pda  # noqa: E402
-from tests.test_chain import registry_bytes  # noqa: E402
 
 REAL_MASTER = "00112233445566778899aabbccddeeff"      # obviously fake test value, non-zero
 
@@ -127,9 +132,6 @@ def test_simulator_key_check_falls_back_to_the_cached_registry(settings, caplog)
 
 # ---------- S8 / M10: the creating signature the reconcile job stores is verified ----------
 
-from tests.conftest import SYSTEM_PROGRAM, fake_key  # noqa: E402
-from tests.test_reconcile import _account_for, _scan  # noqa: E402
-from tests.test_reconcile_robust import _event, _reconcile, _scan_pda  # noqa: E402
 
 ATTACKER = fake_key("prefunder")
 
@@ -204,3 +206,133 @@ def test_a_record_scan_signed_by_someone_else_is_not_the_creator(chain_client):
     rpc.signatures[_scan_pda(v)] = [sig("foreign")]
     _reconcile(c)
     assert _event(c, v["eventId"])["txSig"] is None
+
+
+# ---------- S8 / S15: the Arweave queue never blocks on one row, and no request uploads ----------
+
+
+FRAMES = [b"\xff\xd8ops-frame-1" * 40, b"\xff\xd8ops-frame-2" * 40]
+
+
+class SelectiveSidecar:
+    """`node upload.mjs` stand-in that refuses the uploads `refuse(tags)` returns an ArweaveError for."""
+
+    def __init__(self, refuse=lambda tags: None):
+        self.calls: list[dict] = []
+        self.refuse = refuse
+
+    def __call__(self, args, settings):
+        tags = dict(a.split("=", 1) for i, a in enumerate(args) if i and args[i - 1] == "--tag")
+        self.calls.append(tags)
+        err = self.refuse(tags)
+        if err:
+            raise err
+        id_ = f"OPS{len(self.calls):03d}" + "y" * 37
+        return {"id": id_, "url": f"https://gateway.irys.xyz/{id_}", "ar": f"ar://{id_}", "bytes": 1}
+
+
+def _unpaid_media(tags):
+    if tags.get("App-Type") in ("seal-frames", "seal-frame-preview"):     # paid uploads fail, ~2 KB bundles are free
+        return aw.ArweaveError("irys-sidecar: insufficient Irys balance: have 0 SOL", "insufficient_balance")
+    return None
+
+
+@pytest.fixture()
+def ar_on(chain_client, settings, monkeypatch):
+    aw.reset_status()
+    settings.arweave, settings.irys_key = True, "default"
+    yield chain_client
+    aw.reset_status()
+
+
+def _confirmed(c, uid, s, *, media: bool):
+    """A scan confirmed through POST /api/events (with uploaded media under its session nonce, or tier 1 without)."""
+    nonce = c.post("/api/session", json={}).json()["nonce"]
+    over = {"nonce": nonce, "tier": 1, "mediaHash": None}
+    if media:
+        files = [("files", (f"f{i}.jpg", io.BytesIO(b + s.encode()), "image/jpeg")) for i, b in enumerate(FRAMES)]
+        over.update(tier=2, mediaHash=post_media(c, files=files, nonce=nonce).json()["sha256"])
+    v = _scan(c, uid, **over)
+    c.rpc.scan_tx(sig(s), v, v["bundle"]["attester"]["pubkey"])
+    assert c.post("/api/events", json={"eventId": v["eventId"], "txSig": sig(s)}).json()["status"] == "confirmed"
+    return v
+
+
+def _ar(c, v):
+    e = _event(c, v["eventId"])
+    return e["arBundle"], e["arMedia"]
+
+
+def test_unpayable_media_never_blocks_the_bundles(ar_on, monkeypatch):
+    c = ar_on
+    sidecar = SelectiveSidecar(_unpaid_media)
+    monkeypatch.setattr(aw, "_run_sidecar", sidecar)
+    tag = c.post("/api/dev/tag", json={"serial": SERIAL, "kind": 1}).json()
+    older = _confirmed(c, tag["uid"], "hol-old", media=False)
+    newer = _confirmed(c, tag["uid"], "hol-new", media=True)                 # the newest row of the queue
+    assert sidecar.calls == []                                               # confirm requests never upload
+    s = _reconcile(c)["arweave"]
+    assert s == {"attempted": 2, "archived": 2, "failed": 0, "mediaFailed": 1, "skipped": None}
+    assert _ar(c, newer)[0].startswith("ar://OPS") and _ar(c, newer)[1] is None   # bundle archived, media not (yet)
+    assert _ar(c, older)[0].startswith("ar://OPS")
+    real_now = rc.now
+    for k in range(1, 4):                                                    # later cycles: only the media is retried
+        monkeypatch.setattr(rc, "now", lambda k=k: real_now() + k * aw.ROW_BACKOFF_MAX_S)
+        n = len(sidecar.calls)
+        s = _reconcile(c)["arweave"]
+        assert s["attempted"] == 1 and s["mediaFailed"] == 1 and s["skipped"] is None
+        assert [t["App-Type"] for t in sidecar.calls[n:]] == ["seal-frames"]  # never the archived bundles again
+    # the balance gets topped up: the media goes through, nothing is left
+    sidecar.refuse = lambda tags: None
+    monkeypatch.setattr(rc, "now", lambda: real_now() + 5 * aw.ROW_BACKOFF_MAX_S)
+    assert _reconcile(c)["arweave"]["mediaFailed"] == 0
+    assert _ar(c, newer)[1].startswith("https://gateway.irys.xyz/OPS")
+    monkeypatch.setattr(rc, "now", lambda: real_now() + 6 * aw.ROW_BACKOFF_MAX_S)
+    assert _reconcile(c)["arweave"]["attempted"] == 0
+
+
+def test_a_row_that_keeps_failing_goes_to_the_back_of_the_queue(ar_on, monkeypatch, settings):
+    c = ar_on
+    tag = c.post("/api/dev/tag", json={"serial": SERIAL, "kind": 1}).json()
+    bad = _confirmed(c, tag["uid"], "bad", media=False)
+    bad_hash = bad["bundleHash"][2:]
+    sidecar = SelectiveSidecar(lambda t: aw.ArweaveError("irys: 400 bad request") if t.get("FV-Bundle-Hash") == bad_hash else None)
+    monkeypatch.setattr(aw, "_run_sidecar", sidecar)
+    good = _confirmed(c, tag["uid"], "good", media=False)
+    with c.app.state.db.connect() as conn:
+        t0 = 1_800_000_000
+        assert aw.backfill(conn, settings, limit=1, now_ts=t0)["archived"] == 1            # newest first: good
+        assert aw.backfill(conn, settings, limit=5, now_ts=t0)["failed"] == 1              # bad fails, recorded
+        assert conn.execute("SELECT attempts, last_error FROM arweave_queue WHERE event_id=?", (bad["eventId"],)).fetchone()[:] == (1, "upload_failed")
+        assert aw.backfill(conn, settings, limit=5, now_ts=t0 + 1)["attempted"] == 0       # not due yet
+    newest = _confirmed(c, tag["uid"], "newest", media=False)
+    with c.app.state.db.connect() as conn:
+        due = t0 + aw.row_backoff_s(1)
+        assert aw.backfill(conn, settings, limit=1, now_ts=due) == {"attempted": 1, "archived": 1, "failed": 0,
+                                                                     "mediaFailed": 0, "skipped": None}
+    assert _ar(c, newest)[0] and _ar(c, good)[0] and _ar(c, bad)[0] is None   # the fresh row went before the failing one
+    assert aw.row_backoff_s(1) < aw.row_backoff_s(2) < aw.row_backoff_s(30) == aw.ROW_BACKOFF_MAX_S
+
+
+def test_a_global_failure_stops_the_cycle_and_backs_off(ar_on, monkeypatch):
+    c = ar_on
+    sidecar = SelectiveSidecar(lambda t: aw.ArweaveError("sidecar timed out after 60s", "timeout"))
+    monkeypatch.setattr(aw, "_run_sidecar", sidecar)
+    tag = c.post("/api/dev/tag", json={"serial": SERIAL, "kind": 1}).json()
+    for k in range(3):
+        _confirmed(c, tag["uid"], f"down{k}", media=False)
+    s = _reconcile(c)["arweave"]
+    assert s["attempted"] == 1 and s["failed"] == 1 and len(sidecar.calls) == 1   # nothing else would get through either
+    assert _reconcile(c)["arweave"]["skipped"] == "backoff" and len(sidecar.calls) == 1
+
+
+def test_scans_the_reconcile_job_confirms_wait_while_arweave_is_in_backoff(ar_on, monkeypatch):
+    c = ar_on
+    sidecar = SelectiveSidecar()
+    monkeypatch.setattr(aw, "_run_sidecar", sidecar)
+    aw._record_error(aw.ArweaveError("sidecar timed out after 60s", "timeout"))   # Irys was down a moment ago
+    v = _anchored(c)
+    s = _reconcile(c)
+    assert s["confirmed"] == 1 and s["arweave"]["skipped"] == "backoff" and sidecar.calls == []
+    aw.reset_status()
+    assert _reconcile(c)["arweave"]["archived"] == 1 and _ar(c, v)[0].startswith("ar://OPS")

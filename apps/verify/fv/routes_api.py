@@ -946,13 +946,8 @@ def _confirm_event(event_id: int, tx_sig: str | None, actor: str | None, conn, s
             seal_uid_hash = cur["seal_uid_hash"] or _seal_in_tx(conn, settings, cur["serial"], vt)
             _apply_seal_dead(conn, cur["serial"], seal_uid_hash)
             conn.execute("UPDATE events SET grade_after=?, seal_uid_hash=? WHERE id=?", (Grade.VOID, seal_uid_hash, event_id))
-    if etype == EventType.SCAN:
-        # media (only now that the scan is confirmed — never at upload), then bundle → ar_bundle and the media preview →
-        # ar_media (sidecar subprocess; no-op when disabled) — after the commit
-        media_list = payload.get("media") or []
-        if media_list and arweave.enabled(settings) and isinstance(media_list[0], dict) and media_list[0].get("sha256"):
-            arweave.archive_media(conn, settings, proof.strip0x(media_list[0]["sha256"]).lower())
-        arweave.archive_scan_event(conn, settings, get_event(conn, event_id))
+    # Arweave (media, then the bundle) is archived by the reconcile job's queue (arweave.backfill), never here: a confirm
+    # request must not hold a worker thread for up to FV_ARWEAVE_TIMEOUT_S per sidecar call while Irys is slow or down
     return event_view(get_event(conn, event_id))  # type: ignore[arg-type]
 
 

@@ -94,7 +94,7 @@ Hashes in responses are `0x` + lowercase hex (32 bytes); in the DB they are stor
 | POST | `/api/preview` | `{uid, ctr, cmac}` → non-consuming check `{verdict, counter, serial, serialHash, uidHash, sealKind, sealDead, message}` |
 | POST | `/api/verify` | Scan flow step 7 — see below |
 | GET | `/api/verify/<eventId>?token=<resumeToken>` | The same JSON as the VALID `/api/verify` answer while that SCAN is still `pending` (constant-time token compare); anything else → 404 `resume_not_found`. Used by the wallet-app resume link `/scan?resume=<eventId>.<token>` |
-| POST | `/api/media` | multipart `file` (or `files`) plus the field `nonce` = the current session nonce (unexpired and not yet used by `/api/verify`, else 403 `media_nonce_invalid`). `Content-Length` is required (411) and checked before the body is read. At most 6 files per upload and per nonce (413), ≤ 8 MB each (413), only `image/jpeg`, `image/png`, `image/webp` (415) → `{sha256: "0x…", ar, url, arPreview, bytes, files}`; stored at `data/media/<sha256>.bin`. Several files are hashed as one concatenation in upload order. With `FV_ARWEAVE=true` the stored file is uploaded (`ar`/`url`); several image frames additionally upload the first frame alone as `arPreview` (viewable thumbnail); a single image is its own preview. Same bytes twice → the stored links, no second upload |
+| POST | `/api/media` | multipart `file` (or `files`) plus the field `nonce` = the current session nonce (unexpired and not yet used by `/api/verify`, else 403 `media_nonce_invalid`). `Content-Length` is required (411) and checked before the body is read. At most 6 files per upload and per nonce (413), ≤ 8 MB each (413), only `image/jpeg`, `image/png`, `image/webp` (415) → `{sha256: "0x…", ar, url, arPreview, bytes, files}`; stored at `data/media/<sha256>.bin`. Several files are hashed as one concatenation in upload order. Nothing is uploaded to Arweave here: with `FV_ARWEAVE=true` the reconcile job's archiving queue uploads the file (`ar`/`url`) once its scan is confirmed; several image frames additionally upload the first frame alone as `arPreview` (viewable thumbnail); a single image is its own preview. Same bytes twice → the stored links (once archived), no second upload |
 | POST | `/api/events` | Client-reported events — verified against the chain, see [`POST /api/events`](#post-apievents) below |
 | GET | `/api/passport/<serial>` | Passport + timeline (shape below), 404 if unknown or not a valid serial |
 | GET | `/api/passport/<serial>/metadata.json` | Metaplex-style metadata for the passport's Core asset `uri`: `{name, symbol, description, image, external_url, attributes, properties}` |
@@ -287,16 +287,23 @@ logged as errors, classified (`insufficient_balance`, `timeout`, `sidecar_unavai
 Irys balance hourly (`fund.mjs --dry-run`, read-only). The sidecar gets a minimal environment (no `FV_*` variable, no
 secret; the key only as a 0600 file path).
 
-* `POST /api/media` → stored file (`ar`, `url`) and, for image frames, a viewable first frame (`arPreview`); links are
-  kept in the `media` table (sha256 → links).
-* `POST /api/verify` → `bundle.media[0].ar` is filled from the `media` table, so the `bundleHash` covers the link.
-  The web app must use the `bundleHash` from the response for `record_scan`.
-* `POST /api/events {eventId, txSig}` for a SCAN → the canonical bundle (exactly the bytes whose sha256 is
-  `bundleHash`, tags `App-Type=scanproof-bundle`, `FV-Serial`, `FV-Bundle-Hash`) is uploaded as
-  `application/json` → `events.ar_bundle`; the media preview/url is copied to `events.ar_media`. The passport
-  timeline exposes them as `arBundle` / `arMedia`. The reconcile job does the same when it confirms a scan, and
-  backfills confirmed scans whose bundle (and media) were never archived — at most 3 per cycle, with exponential
-  backoff (1 min … 1 h) after failures.
+Uploads happen in one place only: the **archiving queue** the reconcile job runs after each cycle's write
+transaction (`arweave.backfill`). No request waits for the sidecar — `POST /api/media` and the confirming
+`POST /api/events` never upload.
+
+* Queue: confirmed SCANs (not seeded) whose bundle is not archived, or whose media is not, at most 5 per cycle — fewest
+  failed attempts first, then newest. Newly confirmed scans (by `POST /api/events` or by the reconcile job) are picked
+  up by the next cycle.
+* Per scan the media blob goes first (tags `App-Type=seal-frames`, `FV-Sha256`; for several frames also the first frame
+  as `seal-frame-preview`; links kept in the `media` table), then the canonical bundle (exactly the bytes whose sha256
+  is `bundleHash`, tags `App-Type=scanproof-bundle`, `FV-Serial`, `FV-Bundle-Hash`) as `application/json` →
+  `events.ar_bundle`; the media preview/url is copied to `events.ar_media`. The passport timeline exposes them as
+  `arBundle` / `arMedia`. The bundle does not depend on the media upload, so it is archived even when the media fails.
+* A scan whose upload fails is recorded in `arweave_queue` (attempts, last error code) and due again after 5 min,
+  10 min, … up to 6 h; the queue goes on with the next scan, so one failing row (e.g. media the Irys balance cannot
+  pay for, while small bundles are free) never blocks the others. A failure that would hit every upload (`timeout`,
+  `sidecar_unavailable`, `key_invalid`) ends the cycle, and the following cycles wait (1 min … 1 h, exponential).
+* With `FV_RECONCILE_INTERVAL_S=0` nothing is archived until `POST /api/reconcile` runs a cycle.
 
 The sidecar is handed the public devnet RPC when `FV_SOLANA_RPC` points at a local validator (a local validator
 cannot pay the Irys devnet node). **Irys devnet uploads are pruned after ~60 days**; uploads under ~100 KiB are
@@ -314,8 +321,11 @@ cycle, which re-checks each event's status (a parallel `POST /api/events` confir
    * a valid ScanProof (Anchor discriminator, this seal and counter) → `confirmed`. Actor, label, tier, role and site
      come from the proof (`payload.chain`), never from the client's claim; `counter, tamper, uv, hum, heat, fill,
      media_hash, bundle_hash, tier, role, site_id` (+ `heatLevels`, `attester`) are compared and differences recorded in
-     `payload.reconcile.mismatch`. `tx_sig` = the oldest successful of the newest 10 signatures on the PDA (the creating
-     `record_scan`; for a recovered failed scan it replaces the client's failed tx);
+     `payload.reconcile.mismatch`. `tx_sig` = the creating `record_scan`: the newest 50 successful signatures on the
+     PDA are checked oldest first with `getTransaction`, and only a successful flacon `record_scan` with this ScanProof
+     and seal PDA at their account positions, signed by the proof's attester, qualifies — a SOL transfer that
+     pre-funded the PDA, dust or an escrow tx never does. Nothing qualifies → `tx_sig` stays empty (the client can
+     still post the real one). A recovered failed scan never keeps the client's failed tx;
    * anything else at the address — no data (a plain SOL transfer to the PDA), another account type, a proof for
      another counter — counts as "not created" (`payload.reconcile.ignoredAccount`) and never aborts the cycle;
    * no ScanProof and a pending event older than `FV_RECONCILE_TIMEOUT_S` → `failed` (`payload.reconcile.reason`).
@@ -325,9 +335,11 @@ cycle, which re-checks each event's status (a parallel `POST /api/events` confir
    pending, once the chain has recorded a scan or a void. Nothing sticky is ever lowered: `void` and `dead` are OR-ed,
    the grade is the worse of DB and chain, counters only rise (a raised seal counter pulls the simulator tag along).
 4. **Registry** partners → `attesters.is_partner` (the decoded registry is cached in `chain_state`); **escrow** Order
-   accounts (`getProgramAccounts`, one row per listing in `escrow_orders`, kept after `close_order`) →
-   `escrows_ok` (RELEASED) / `escrows_disputed` (DISPUTE) for seller and buyer.
-5. **Arweave**: newly confirmed scans, then the bounded backfill.
+   accounts (`getProgramAccounts`, one row per listing in `escrow_orders`, kept after `close_order`; a confirmed
+   RELEASE / DISPUTE event writes its listing's final state there too, so an order closed before the job ever saw it
+   still counts, and a final state is never moved back) → `escrows_ok` (RELEASED) / `escrows_disputed` (DISPUTE) for
+   seller and buyer, recomputed from that one table.
+5. **Arweave**: the archiving queue (see [Arweave](#arweave-irys-devnet)), nothing while a global failure backs off.
 
 `events` are sorted by `ts` ascending. SCAN payloads of tier ≥ 1 are the full §4.4 bundle plus `grade`,
 `reviewRecommended`, `msgHex`, `bundleHash` (and `reconcile` / `chain` once checked); Tier-0 sightings carry

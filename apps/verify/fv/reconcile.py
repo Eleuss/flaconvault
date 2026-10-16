@@ -16,7 +16,9 @@ Reconcile job (briefing §10). One cycle:
      and chain, counters only rise (the simulator tag follows a raised seal counter).
   4. Registry partners → attesters.is_partner (the decoded registry is cached in chain_state); escrow Order accounts →
      escrow_orders → attesters.escrows_ok / escrows_disputed.
-  5. Arweave: newly confirmed scans first, then a bounded backfill of confirmed scans without an archived bundle.
+  5. Arweave: the archiving queue (arweave.backfill) — confirmed scans whose bundle or media is not archived yet, a
+     bounded number per cycle, a failing row retried later without blocking the others, nothing while in backoff.
+     This is the only place uploads happen; a confirm request never waits for the Irys sidecar.
 
 All RPC reads happen before the write transaction (a slow RPC must never hold the SQLite write lock).
 """
@@ -202,7 +204,6 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
                 log.warning("reconcile: escrow orders lookup failed: %s", exc)
 
         # ---- 3. apply ----
-        newly_confirmed: list[int] = []
         with transaction(conn):
             for (ev, payload, _seal, counter, scan_pda), (acct, why) in zip(work, proofs):
                 cur = conn.execute("SELECT status FROM events WHERE id=?", (ev["id"],)).fetchone()
@@ -218,7 +219,6 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
                 if acct is not None:
                     tx_sig = sigs.get(ev["id"]) if ev["status"] == "failed" else (ev["tx_sig"] or sigs.get(ev["id"]))
                     mismatch = _confirm_scan(conn, ev, payload, rec, acct, scan_pda, tx_sig, ts)
-                    newly_confirmed.append(ev["id"])
                     summary["confirmed"] += 1
                     summary["recovered"] += ev["status"] == "failed"
                     summary["mismatched"] += bool(mismatch)
@@ -314,11 +314,7 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
                     n += 1
                 summary["escrow"] = {"orders": n, "changed": sync_escrow_counters(conn, ts)}
 
-        # ---- 4. Arweave (sidecar subprocess) after the commit ----
+        # ---- 4. Arweave (sidecar subprocess) after the commit: the queue, newly confirmed scans included ----
         if arweave.enabled(settings):
-            for event_id in newly_confirmed:
-                row = get_event(conn, event_id)
-                if row:
-                    arweave.archive_scan_event(conn, settings, row)
-            summary["arweave"] = arweave.backfill(conn, settings, skip_ids=frozenset(newly_confirmed))
+            summary["arweave"] = arweave.backfill(conn, settings, now_ts=ts)
     return summary

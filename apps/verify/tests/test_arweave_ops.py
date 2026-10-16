@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import fv.arweave as aw
+import fv.reconcile as rc
 from tests.conftest import ADMIN, post_media
 from tests.test_reconcile import _account_for, _scan
 
@@ -149,20 +150,26 @@ def test_reconcile_backfills_media_and_bundles(chain_client, settings, monkeypat
     rpc.accounts[str(pda_scan(PROGRAM_ID, seal, v["counter"]))] = _account_for(v)
 
     settings.arweave, settings.irys_key = True, "default"           # switched on (or fixed) later
-    sidecar = Sidecar(fail_first=1)
+    sidecar = Sidecar(fail_first=1)                                  # the media upload fails once (e.g. unpaid)
     monkeypatch.setattr(aw, "_run_sidecar", sidecar)
-    s = c.post("/api/reconcile", headers=ADMIN).json()               # confirms; the inline archive fails
-    assert s["confirmed"] == 1 and s["arweave"]["skipped"] == "backoff"
+    s = c.post("/api/reconcile", headers=ADMIN).json()               # confirms, then the archiving queue runs
+    assert s["confirmed"] == 1
+    assert s["arweave"] == {"attempted": 1, "archived": 1, "failed": 0, "mediaFailed": 1, "skipped": None}
     e = next(x for x in c.get(f"/api/passport/{SERIAL}").json()["events"] if x["id"] == v["eventId"])
-    assert e["arBundle"] is None
-    assert c.post("/api/reconcile", headers=ADMIN).json()["arweave"]["skipped"] == "backoff"   # no hammering
-    aw.reset_status()                                                # backoff over
+    assert e["arBundle"].startswith("ar://BF02") and e["arMedia"] is None     # the bundle does not wait for the media
+    with c.app.state.db.connect() as conn:
+        q = conn.execute("SELECT attempts, done, last_error FROM arweave_queue WHERE event_id=?", (v["eventId"],)).fetchone()
+    assert tuple(q) == (1, 0, "insufficient_balance")
+    assert c.post("/api/reconcile", headers=ADMIN).json()["arweave"]["attempted"] == 0   # not due yet: no hammering
+    real_now = rc.now
+    monkeypatch.setattr(rc, "now", lambda: real_now() + aw.ROW_BACKOFF_BASE_S + 1)
     s = c.post("/api/reconcile", headers=ADMIN).json()
-    assert s["arweave"]["archived"] >= 1 and s["arweave"]["failed"] == 0
+    assert s["arweave"] == {"attempted": 1, "archived": 1, "failed": 0, "mediaFailed": 0, "skipped": None}
     e = next(x for x in c.get(f"/api/passport/{SERIAL}").json()["events"] if x["id"] == v["eventId"])
-    assert e["arBundle"].startswith("ar://BF") and e["arMedia"].startswith("https://gateway.irys.xyz/BF")
+    assert e["arBundle"].startswith("ar://BF02") and e["arMedia"].startswith("https://gateway.irys.xyz/BF")
     with c.app.state.db.connect() as conn:
         row = conn.execute("SELECT ar, url FROM media WHERE sha256=?", (m["sha256"][2:],)).fetchone()
+        assert conn.execute("SELECT done FROM arweave_queue WHERE event_id=?", (v["eventId"],)).fetchone()[0] == 1
     assert row["ar"].startswith("ar://BF")
     tags = [dict(a.split("=", 1) for i, a in enumerate(args) if i and args[i - 1] == "--tag") for args in sidecar.calls]
     assert any(t.get("App-Type") == "seal-frames" for t in tags) and any(t.get("App-Type") == "scanproof-bundle" for t in tags)

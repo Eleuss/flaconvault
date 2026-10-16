@@ -9,7 +9,7 @@ import pytest
 
 import fv.arweave as aw
 from fv import proof
-from tests.conftest import post_media, sig
+from tests.conftest import ADMIN, post_media, sig
 
 SERIAL = "SN-2026-000001"
 SELLER = "7GhXQ2fV4d1eo9yq1vQdD9Zk9sHkYd8qz2pM4hN6FaK2"
@@ -69,8 +69,19 @@ def _verify(client, uid, media_hash, nonce: str | None = None, **over):
     return v
 
 
+def _archive(client) -> dict:
+    """One reconcile cycle: the only place uploads happen (the archiving queue)."""
+    r = client.post("/api/reconcile", headers=ADMIN)
+    assert r.status_code == 200, r.text
+    return r.json()["arweave"]
+
+
+def _event(client, event_id):
+    return next(x for x in client.get(f"/api/passport/{SERIAL}").json()["events"] if x["id"] == event_id)
+
+
 def _scan_with_media(client, frames, content_type="image/jpeg", sig_tag="T"):
-    """Upload under the session nonce, sign the scan with that nonce, confirm it on chain."""
+    """Upload under the session nonce, sign the scan with that nonce, confirm it on chain, run the archiving queue."""
     nonce = client.post("/api/session", json={}).json()["nonce"]
     m = _upload(client, frames, content_type, nonce=nonce)
     tag = client.post("/api/dev/tag", json={"serial": SERIAL, "kind": 1}).json()
@@ -78,7 +89,9 @@ def _scan_with_media(client, frames, content_type="image/jpeg", sig_tag="T"):
     client.rpc.scan_tx(sig(sig_tag), v, SELLER)
     e = client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig(sig_tag)}).json()
     assert e["status"] == "confirmed", e
-    return m, v, e
+    assert client.fake.calls == []                                                    # the confirm request never uploads
+    _archive(client)
+    return m, v, _event(client, v["eventId"])
 
 
 def test_media_is_archived_only_after_its_scan_is_confirmed(ar_client, settings):
@@ -92,6 +105,9 @@ def test_media_is_archived_only_after_its_scan_is_confirmed(ar_client, settings)
     assert ar_client.fake.calls == []                                                 # signed, not yet anchored
     ar_client.rpc.scan_tx(sig("A1"), v, SELLER)
     e = ar_client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("A1")}).json()
+    assert e["status"] == "confirmed" and e["arBundle"] is None and ar_client.fake.calls == []   # not in the request
+    assert _archive(ar_client) == {"attempted": 1, "archived": 1, "failed": 0, "mediaFailed": 0, "skipped": None}
+    e = _event(ar_client, v["eventId"])
     media_call, bundle_call = ar_client.fake.calls
     assert media_call["tags"]["Content-Type"] == "image/jpeg" and media_call["tags"]["FV-Sha256"] == m["sha256"][2:]
     assert media_call["sha256"] == m["sha256"][2:] and media_call["tags"]["App-Type"] == "seal-frames"
@@ -147,6 +163,9 @@ def test_verify_bundle_and_events_archive_media_and_bundle(ar_client):
     ar_client.rpc.scan_tx(sig("T"), v, SELLER)
     e = ar_client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("T"), "serial": SERIAL, "type": 2}).json()
     assert e["status"] == "confirmed" and e["txSig"] == sig("T")
+    assert ar_client.fake.calls == []                              # archived by the reconcile job, not in the request
+    _archive(ar_client)
+    e = _event(ar_client, v["eventId"])
     assert len(ar_client.fake.calls) == 3                          # frames, first-frame preview, bundle
     call = ar_client.fake.calls[-1]
     assert call["tags"]["Content-Type"] == "application/json" and call["tags"]["App-Type"] == "scanproof-bundle"
@@ -157,9 +176,10 @@ def test_verify_bundle_and_events_archive_media_and_bundle(ar_client):
     assert e["arBundle"] == "ar://" + call["id"] and e["arMedia"] == preview_url
     ev = next(x for x in ar_client.get(f"/api/passport/{SERIAL}").json()["events"] if x["id"] == v["eventId"])
     assert ev["arBundle"] == e["arBundle"] and ev["arMedia"] == preview_url
-    # reporting the tx again is idempotent — no second upload
+    # reporting the tx again is idempotent — no second upload, and the queue has nothing left for this scan
     again = ar_client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("T")})
-    assert again.status_code == 200 and again.json()["id"] == e["id"]
+    assert again.status_code == 200 and again.json()["id"] == e["id"] and again.json()["arBundle"] == e["arBundle"]
+    assert _archive(ar_client)["attempted"] == 0
     assert len(ar_client.fake.calls) == 3
 
 
@@ -168,7 +188,9 @@ def test_tier1_scan_without_media_gets_bundle_only(ar_client):
     v = _verify(ar_client, tag["uid"], None, tier=1, mediaHash=None)
     assert v["bundle"]["media"] == []
     ar_client.rpc.scan_tx(sig("U"), v, SELLER)
-    e = ar_client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("U")}).json()
+    ar_client.post("/api/events", json={"eventId": v["eventId"], "txSig": sig("U")})
+    _archive(ar_client)
+    e = _event(ar_client, v["eventId"])
     assert e["arBundle"].startswith("ar://") and e["arMedia"] is None
 
 

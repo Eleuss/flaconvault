@@ -9,6 +9,11 @@
 //! D     otherwise
 //! UNREADABLE never lowers the grade (it only sets an off-chain "review recommended" flag).
 //! ```
+//!
+//! The passport grade is sticky: it only ever gets worse (`worst(old, scan)`, with the enum order
+//! A < B < C < D < VOID), so an irreversible indicator (heat/humidity TRIGGERED → C) or an opened seal
+//! (VOID, which also sets `passport.void`) can never be erased by a later scan — e.g. one without a
+//! photo, whose indicators are MISSING.
 
 use anchor_lang::prelude::*;
 
@@ -38,6 +43,24 @@ pub fn grade(tamper: u8, heat: u8, hum: u8, fill: u8) -> u8 {
         return GRADE_B;
     }
     GRADE_D
+}
+
+/// The worse of two grades (enum order A < B < C < D < VOID).
+pub fn worst(a: u8, b: u8) -> u8 {
+    a.max(b)
+}
+
+/// `true` when the tamper code says the seal was opened (now or before).
+pub fn is_opened(tamper: u8) -> bool {
+    tamper == TAMPER_OPENED_NOW || tamper == TAMPER_OPENED_BEFORE
+}
+
+/// Passport `(grade, void)` after accepting a scan: grade = worst(old, scan grade); an opened seal or a
+/// VOID grade makes the passport void, and void stays void.
+pub fn passport_after_scan(old_grade: u8, old_void: bool, tamper: u8, heat: u8, hum: u8, fill: u8) -> (u8, bool) {
+    let g = worst(old_grade, grade(tamper, heat, hum, fill));
+    let void = old_void || is_opened(tamper) || g == GRADE_VOID;
+    (if void { GRADE_VOID } else { g }, void)
 }
 
 /// Full rule including the off-chain flags — used by tests and off-chain readers.
@@ -137,5 +160,32 @@ mod tests {
         assert_eq!(grade(TAMPER_CLOSED, 0, 0, 100), GRADE_A);
         assert_eq!(grade_with_flags(false, false, TAMPER_UNKNOWN, 0, 0, 100), GRADE_VOID);
         assert_eq!(grade_with_flags(true, true, TAMPER_UNKNOWN, 0, 0, 100), GRADE_VOID);
+    }
+
+    #[test]
+    fn passport_grade_only_worsens() {
+        // heat TRIGGERED → C; a later scan without photo (indicators MISSING, fill 95) keeps C
+        let (g, v) = passport_after_scan(GRADE_A, false, TAMPER_UNKNOWN, INDICATOR_TRIGGERED, INDICATOR_INTACT, 95);
+        assert_eq!((g, v), (GRADE_C, false));
+        let (g, v) = passport_after_scan(g, v, TAMPER_UNKNOWN, INDICATOR_MISSING, INDICATOR_MISSING, 95);
+        assert_eq!((g, v), (GRADE_C, false));
+        // fill can only push it further down
+        assert_eq!(passport_after_scan(GRADE_C, false, TAMPER_UNKNOWN, 0, 0, 40), (GRADE_D, false));
+        assert_eq!(passport_after_scan(GRADE_B, false, TAMPER_UNKNOWN, 0, 0, 95), (GRADE_B, false));
+        assert_eq!(passport_after_scan(GRADE_A, false, TAMPER_UNKNOWN, 0, 0, 70), (GRADE_B, false));
+        assert_eq!(passport_after_scan(GRADE_A, false, TAMPER_UNKNOWN, 0, 0, 95), (GRADE_A, false));
+    }
+
+    #[test]
+    fn opened_seal_voids_for_good() {
+        for t in [TAMPER_OPENED_NOW, TAMPER_OPENED_BEFORE] {
+            assert_eq!(passport_after_scan(GRADE_A, false, t, 0, 0, 100), (GRADE_VOID, true));
+        }
+        // a legacy passport with grade VOID but void=false becomes void, and never recovers
+        assert_eq!(passport_after_scan(GRADE_VOID, false, TAMPER_CLOSED, 0, 0, 100), (GRADE_VOID, true));
+        assert_eq!(passport_after_scan(GRADE_A, true, TAMPER_CLOSED, 0, 0, 100), (GRADE_VOID, true));
+        assert_eq!(worst(GRADE_C, GRADE_A), GRADE_C);
+        assert_eq!(worst(GRADE_A, GRADE_VOID), GRADE_VOID);
+        assert!(!is_opened(TAMPER_UNKNOWN) && !is_opened(TAMPER_CLOSED));
     }
 }

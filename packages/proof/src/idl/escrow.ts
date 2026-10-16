@@ -206,7 +206,8 @@ export type Escrow = {
     {
       "name": "dispute",
       "docs": [
-        "Refund path (admin / buyer on mismatch, timeout or dead seal)."
+        "Refund path: admin (RESERVED / PRESHIP_SCANNED / SHIPPED), or the buyer when the seller did not",
+        "ship within the window after `reserve`, or with a dead seal before a matching receipt scan."
       ],
       "discriminator": [
         216,
@@ -339,7 +340,8 @@ export type Escrow = {
     {
       "name": "initConfig",
       "docs": [
-        "Singleton config; payer becomes admin. `usdc_mint` is passed as an account."
+        "Singleton config; payer becomes admin and must be the program's upgrade authority.",
+        "`usdc_mint` is passed as an account; `dispute_after_s` in 1 h ..= 60 days."
       ],
       "discriminator": [
         23,
@@ -388,6 +390,16 @@ export type Escrow = {
         {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "program",
+          "docs": [
+            "This program; only its upgrade authority may create the config (no front-running a fresh deploy)."
+          ],
+          "address": "9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL"
+        },
+        {
+          "name": "programData"
         }
       ],
       "args": [
@@ -400,7 +412,8 @@ export type Escrow = {
     {
       "name": "list",
       "docs": [
-        "Seller lists a (non-void) flacon passport for `price` USDC base units."
+        "Seller lists a (non-void) flacon passport for `price` USDC base units. The seller must own the",
+        "passport's Core asset (or be the issuer when there is no Core asset behind `passport.asset`)."
       ],
       "discriminator": [
         54,
@@ -471,6 +484,13 @@ export type Escrow = {
         {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "asset",
+          "docs": [
+            "seller must own it; otherwise (no Core asset behind the passport) the seller must be the issuer.",
+            "Appended last so the indices of the accounts above stay unchanged."
+          ]
         }
       ],
       "args": [
@@ -742,9 +762,133 @@ export type Escrow = {
       "args": []
     },
     {
+      "name": "releaseAfterTimeout",
+      "docs": [
+        "Permissionless: SHIPPED and no receipt scan within `dispute_after_s` after `ship` → USDC to the",
+        "seller (the buyer had the window to scan). Same accounts as `release`."
+      ],
+      "discriminator": [
+        102,
+        1,
+        6,
+        82,
+        208,
+        207,
+        32,
+        7
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.passport",
+                "account": "order"
+              },
+              {
+                "kind": "account",
+                "path": "order.seller",
+                "account": "order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "sellerToken",
+          "docs": [
+            "Seller's USDC token account (destination)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "buyer",
+          "writable": true
+        },
+        {
+          "name": "caller",
+          "docs": [
+            "Anyone; pays the Core CPI fee if the asset is transferred."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "asset",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "mplCoreProgram",
+          "optional": true
+        },
+        {
+          "name": "tokenProgram",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "reserve",
       "docs": [
-        "Buyer funds the vault with `price` USDC."
+        "Buyer funds the vault with `price` USDC; `expected_price` must equal `order.price`."
       ],
       "discriminator": [
         92,
@@ -853,14 +997,161 @@ export type Escrow = {
         {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "passport",
+          "docs": [
+            "flacon `Passport` of the order (a passport voided after listing cannot be bought).",
+            "Appended last so the indices of the accounts above stay unchanged."
+          ]
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "expectedPrice",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "resolve",
+      "docs": [
+        "Escrow admin only: settles a MISMATCH order. `to_seller` → USDC to the seller (RELEASED),",
+        "else → USDC back to the buyer (DISPUTE)."
+      ],
+      "discriminator": [
+        246,
+        150,
+        236,
+        206,
+        108,
+        63,
+        58,
+        10
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "order",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  111,
+                  114,
+                  100,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order.passport",
+                "account": "order"
+              },
+              {
+                "kind": "account",
+                "path": "order.seller",
+                "account": "order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "order"
+              }
+            ]
+          }
+        },
+        {
+          "name": "recipientToken",
+          "docs": [
+            "USDC account of the seller (`to_seller`) or of the buyer (otherwise)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "buyer",
+          "writable": true
+        },
+        {
+          "name": "seller"
+        },
+        {
+          "name": "admin",
+          "docs": [
+            "The escrow admin; pays the Core CPI fee if the asset moves."
+          ],
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "asset",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "mplCoreProgram",
+          "optional": true
+        },
+        {
+          "name": "tokenProgram",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "toSeller",
+          "type": "bool"
+        }
+      ]
     },
     {
       "name": "setDisputeWindow",
       "docs": [
-        "Admin only: default dispute window for future orders."
+        "Admin only: default dispute window for future orders (1 h ..= 60 days)."
       ],
       "discriminator": [
         125,
@@ -1109,6 +1400,19 @@ export type Escrow = {
       ]
     },
     {
+      "name": "orderResolved",
+      "discriminator": [
+        24,
+        66,
+        224,
+        205,
+        6,
+        30,
+        63,
+        51
+      ]
+    },
+    {
       "name": "orderShipped",
       "discriminator": [
         200,
@@ -1162,7 +1466,7 @@ export type Escrow = {
     {
       "code": 6002,
       "name": "invalidDisputeWindow",
-      "msg": "dispute_after_s must be > 0"
+      "msg": "dispute_after_s must be between MIN_DISPUTE_AFTER_S (1 h) and MAX_DISPUTE_AFTER_S (60 days)"
     },
     {
       "code": 6003,
@@ -1258,6 +1562,26 @@ export type Escrow = {
       "code": 6021,
       "name": "mathOverflow",
       "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6022,
+      "name": "priceChanged",
+      "msg": "The order's price differs from the price the buyer agreed to"
+    },
+    {
+      "code": 6023,
+      "name": "notPassportOwner",
+      "msg": "Seller is not the owner of the passport's Core asset (or, without a Core asset, its issuer)"
+    },
+    {
+      "code": 6024,
+      "name": "receiptMatched",
+      "msg": "The receipt scan matched the shipping scan: release the order instead of disputing it"
+    },
+    {
+      "code": 6025,
+      "name": "wrongTokenOwner",
+      "msg": "Token account does not belong to the expected recipient"
     }
   ],
   "types": [
@@ -1634,6 +1958,44 @@ export type Escrow = {
       }
     },
     {
+      "name": "orderResolved",
+      "docs": [
+        "`resolve`: the escrow admin settled a MISMATCH order."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order",
+            "type": "pubkey"
+          },
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "toSeller",
+            "docs": [
+              "true: USDC → seller (state RELEASED); false: USDC → buyer (state DISPUTE)."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "assetTransferred",
+            "type": "bool"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
       "name": "orderShipped",
       "type": {
         "kind": "struct",
@@ -1953,7 +2315,9 @@ export type Escrow = {
     {
       "name": "defaultDisputeAfterS",
       "docs": [
-        "Default dispute window after `ship()` without a receipt scan: 7 days."
+        "Default dispute window: 7 days. The same window applies twice: after `reserve` for the seller to",
+        "ship (else the buyer may take the USDC back) and after `ship` for the buyer to record the receipt",
+        "scan (else anyone may release the USDC to the seller)."
       ],
       "type": "i64",
       "value": "604800"
@@ -1985,6 +2349,22 @@ export type Escrow = {
       ],
       "type": "u8",
       "value": "5"
+    },
+    {
+      "name": "maxDisputeAfterS",
+      "docs": [
+        "Upper bound of the dispute window: 60 days."
+      ],
+      "type": "i64",
+      "value": "5184000"
+    },
+    {
+      "name": "minDisputeAfterS",
+      "docs": [
+        "Lower bound of the dispute window: 1 hour."
+      ],
+      "type": "i64",
+      "value": "3600"
     },
     {
       "name": "mplCoreProgramId",

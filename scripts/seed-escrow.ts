@@ -2,7 +2,8 @@
  * Idempotent seed for programs/escrow on localnet (or devnet with the real USDC mint):
  *   - USDC mint: FV_USDC_MINT if set, else the mint stored in an existing config, else a new
  *     test mint (6 dp, mint authority = wallet) — printed
- *   - init_config(admin = wallet, dispute_after_s = FV_DISPUTE_AFTER_S | 7 days) if missing
+ *   - init_config(admin = wallet, dispute_after_s = FV_DISPUTE_AFTER_S | 7 days) if missing — only the escrow
+ *     program's upgrade authority may create the config; the window must be 1 h ..= 60 days
  *   - wallet ATA topped up to 1000 test USDC (only when the wallet is the mint authority)
  *
  * Usage: npx tsx scripts/seed-escrow.ts
@@ -16,10 +17,13 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { createMint, ensureAta, mintAuthority, mintTo, tokenBalance } from "./lib/spl";
+import { programDataOf } from "./lib/cli";
 
 const ROOT = path.resolve(__dirname, "..");
 const LOCALNET = "http://127.0.0.1:8899";
 const DEFAULT_DISPUTE_AFTER_S = 7 * 24 * 60 * 60;
+const MIN_DISPUTE_AFTER_S = 60 * 60;
+const MAX_DISPUTE_AFTER_S = 60 * 24 * 60 * 60;
 const SEED_USDC = 1000n * 1_000_000n;
 
 const expandHome = (p: string) => (p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p);
@@ -48,6 +52,9 @@ async function main() {
       : "mainnet-beta";
   const explorer = (v: string) => `https://explorer.solana.com/address/${v}?cluster=${cluster}`;
   const disputeAfterS = Number(process.env.FV_DISPUTE_AFTER_S ?? DEFAULT_DISPUTE_AFTER_S);
+  if (!Number.isInteger(disputeAfterS) || disputeAfterS < MIN_DISPUTE_AFTER_S || disputeAfterS > MAX_DISPUTE_AFTER_S) {
+    throw new Error(`FV_DISPUTE_AFTER_S must be an integer between ${MIN_DISPUTE_AFTER_S} (1 h) and ${MAX_DISPUTE_AFTER_S} (60 days)`);
+  }
 
   console.log(`rpc        ${url}`);
   console.log(`wallet     ${wallet.toBase58()}  (${(await connection.getBalance(wallet)) / 1e9} SOL)`);
@@ -77,7 +84,14 @@ async function main() {
     }
     const sig = await program.methods
       .initConfig(new BN(disputeAfterS))
-      .accountsStrict({ config: configPda, admin: wallet, usdcMint: mint, systemProgram: SystemProgram.programId })
+      .accountsStrict({
+        config: configPda,
+        admin: wallet,
+        usdcMint: mint,
+        systemProgram: SystemProgram.programId,
+        program: program.programId,
+        programData: programDataOf(program.programId),
+      })
       .rpc();
     console.log(`init_config(${disputeAfterS}s)  ${sig}`);
     cfg = await configAccount.fetch(configPda);

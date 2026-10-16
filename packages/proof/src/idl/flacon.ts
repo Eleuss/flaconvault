@@ -198,7 +198,8 @@ export type Flacon = {
     {
       "name": "attachSeal",
       "docs": [
-        "Partner (or authority) only. `kind` ∈ {BOX, NECK}."
+        "The passport's issuer (while a partner) or the authority. `kind` ∈ {BOX, NECK}; at most",
+        "`MAX_SEALS_PER_PASSPORT` seals; not on a void passport."
       ],
       "discriminator": [
         61,
@@ -281,7 +282,7 @@ export type Flacon = {
         {
           "name": "signer",
           "docs": [
-            "Must be a registered partner (or the registry authority)."
+            "The passport's issuer while it is a partner, or the registry authority."
           ],
           "writable": true,
           "signer": true
@@ -310,7 +311,8 @@ export type Flacon = {
     {
       "name": "initRegistry",
       "docs": [
-        "Creates the singleton registry; the payer becomes `authority`."
+        "Creates the singleton registry; the payer becomes `authority`. Only the program's upgrade",
+        "authority (checked through the ProgramData account) may call it."
       ],
       "discriminator": [
         131,
@@ -347,7 +349,7 @@ export type Flacon = {
         {
           "name": "authority",
           "docs": [
-            "Payer becomes the registry authority."
+            "Payer becomes the registry authority; must be the program's upgrade authority."
           ],
           "writable": true,
           "signer": true
@@ -355,6 +357,16 @@ export type Flacon = {
         {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "program",
+          "docs": [
+            "This program (its ProgramData address is checked below)."
+          ],
+          "address": "7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL"
+        },
+        {
+          "name": "programData"
         }
       ],
       "args": []
@@ -362,7 +374,8 @@ export type Flacon = {
     {
       "name": "markSealDead",
       "docs": [
-        "Partner (or authority) only. Seal no longer answers → seal dead, passport void, grade VOID."
+        "The passport's issuer (while a partner) or the authority. Seal no longer answers → seal dead,",
+        "passport void, grade VOID."
       ],
       "discriminator": [
         65,
@@ -446,7 +459,7 @@ export type Flacon = {
         {
           "name": "signer",
           "docs": [
-            "Must be a registered partner (or the registry authority) — after a",
+            "The passport's issuer while it is a partner, or the registry authority — after a",
             "confirmed no-response (escrow dispute or certification)."
           ],
           "signer": true
@@ -457,7 +470,8 @@ export type Flacon = {
     {
       "name": "mintPassport",
       "docs": [
-        "Partner (or authority) only. Birth certificate of a bottle."
+        "Partner (or authority) only. Birth certificate of a bottle. `asset` must be a Metaplex Core",
+        "asset, passed again as the `core_asset` account."
       ],
       "discriminator": [
         191,
@@ -526,6 +540,13 @@ export type Flacon = {
         {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "coreAsset",
+          "docs": [
+            "that Metaplex Core owns the account and that it is an `AssetV1`. Appended last so the",
+            "indices of the accounts above stay unchanged."
+          ]
         }
       ],
       "args": [
@@ -693,6 +714,161 @@ export type Flacon = {
           }
         }
       ]
+    },
+    {
+      "name": "removePartner",
+      "docs": [
+        "Authority only. The removed wallet also loses `attach_seal` / `mark_seal_dead` on its passports."
+      ],
+      "discriminator": [
+        205,
+        64,
+        184,
+        235,
+        182,
+        107,
+        63,
+        15
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "registry"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "partner",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "revokeServerKey",
+      "docs": [
+        "Authority only. Ends the key's validity now (`valid_to = clock − 1`); the entry is kept."
+      ],
+      "discriminator": [
+        115,
+        174,
+        199,
+        96,
+        252,
+        37,
+        5,
+        67
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "registry"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "keyId",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "transferAuthority",
+      "docs": [
+        "Current and new authority both sign."
+      ],
+      "discriminator": [
+        48,
+        169,
+        76,
+        72,
+        229,
+        180,
+        55,
+        161
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "registry"
+          ]
+        },
+        {
+          "name": "newAuthority",
+          "signer": true
+        }
+      ],
+      "args": []
     }
   ],
   "accounts": [
@@ -751,6 +927,19 @@ export type Flacon = {
   ],
   "events": [
     {
+      "name": "authorityTransferred",
+      "discriminator": [
+        245,
+        109,
+        179,
+        54,
+        135,
+        92,
+        22,
+        64
+      ]
+    },
+    {
       "name": "partnerAdded",
       "discriminator": [
         118,
@@ -761,6 +950,19 @@ export type Flacon = {
         162,
         106,
         164
+      ]
+    },
+    {
+      "name": "partnerRemoved",
+      "discriminator": [
+        178,
+        6,
+        204,
+        239,
+        88,
+        105,
+        43,
+        91
       ]
     },
     {
@@ -839,6 +1041,19 @@ export type Flacon = {
         59,
         33,
         89
+      ]
+    },
+    {
+      "name": "serverKeyRevoked",
+      "discriminator": [
+        107,
+        233,
+        32,
+        172,
+        165,
+        208,
+        93,
+        46
       ]
     },
     {
@@ -1020,11 +1235,89 @@ export type Flacon = {
       "code": 6032,
       "name": "scanCountOverflow",
       "msg": "Passport scan_count overflow"
+    },
+    {
+      "code": 6033,
+      "name": "notIssuerOrAuthority",
+      "msg": "Signer is neither the passport issuer (a current partner) nor the registry authority"
+    },
+    {
+      "code": 6034,
+      "name": "tooManySeals",
+      "msg": "Passport already holds the maximum number of seals"
+    },
+    {
+      "code": 6035,
+      "name": "serverKeyNotValidNow",
+      "msg": "Server key is not valid at the current cluster time (expired or revoked)"
+    },
+    {
+      "code": 6036,
+      "name": "staleScanTimestamp",
+      "msg": "Signed ts is more than MAX_SCAN_TS_SKEW_S away from the cluster clock"
+    },
+    {
+      "code": 6037,
+      "name": "counterOutOfRange",
+      "msg": "counter is above the 24-bit NTAG counter range"
+    },
+    {
+      "code": 6038,
+      "name": "partnerNotFound",
+      "msg": "Partner is not registered"
+    },
+    {
+      "code": 6039,
+      "name": "serverKeyAlreadyRevoked",
+      "msg": "Server key is already expired or revoked"
+    },
+    {
+      "code": 6040,
+      "name": "notUpgradeAuthority",
+      "msg": "Signer is not the program's upgrade authority"
+    },
+    {
+      "code": 6041,
+      "name": "assetMismatch",
+      "msg": "Asset account does not match the asset argument"
+    },
+    {
+      "code": 6042,
+      "name": "invalidAsset",
+      "msg": "Asset account is not a Metaplex Core asset"
     }
   ],
   "types": [
     {
+      "name": "authorityTransferred",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "previous",
+            "type": "pubkey"
+          },
+          {
+            "name": "newAuthority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
       "name": "partnerAdded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "partner",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "partnerRemoved",
       "type": {
         "kind": "struct",
         "fields": [
@@ -1648,6 +1941,25 @@ export type Flacon = {
       }
     },
     {
+      "name": "serverKeyRevoked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "keyId",
+            "type": "u8"
+          },
+          {
+            "name": "validTo",
+            "docs": [
+              "New `valid_to` (one second before the revocation's cluster time)."
+            ],
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
       "name": "site",
       "docs": [
         "A physical location (vault, partner shop). `label` is UTF-8, zero padded."
@@ -1814,9 +2126,33 @@ export type Flacon = {
       "value": "2"
     },
     {
+      "name": "maxCounter",
+      "docs": [
+        "NTAG 424 DNA SUN counters are 24 bit; anything above cannot come from a real tap."
+      ],
+      "type": "u32",
+      "value": "16777215"
+    },
+    {
       "name": "maxPartners",
       "type": "u8",
       "value": "16"
+    },
+    {
+      "name": "maxScanTsSkewS",
+      "docs": [
+        "`record_scan` accepts a signed message only while |msg.ts − cluster clock| ≤ this (seconds)."
+      ],
+      "type": "i64",
+      "value": "600"
+    },
+    {
+      "name": "maxSealsPerPassport",
+      "docs": [
+        "A passport carries at most one BOX and one NECK seal."
+      ],
+      "type": "u8",
+      "value": "2"
     },
     {
       "name": "maxServerKeys",
@@ -1827,6 +2163,14 @@ export type Flacon = {
       "name": "maxSites",
       "type": "u8",
       "value": "16"
+    },
+    {
+      "name": "mplCoreProgramId",
+      "docs": [
+        "Metaplex Core: `mint_passport` only accepts an asset account owned by this program."
+      ],
+      "type": "pubkey",
+      "value": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
     },
     {
       "name": "msgLen",

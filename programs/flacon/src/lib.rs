@@ -26,7 +26,8 @@ declare_id!("7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL");
 pub mod flacon {
     use super::*;
 
-    /// Creates the singleton registry; the payer becomes `authority`.
+    /// Creates the singleton registry; the payer becomes `authority`. Only the program's upgrade
+    /// authority (checked through the ProgramData account) may call it.
     pub fn init_registry(ctx: Context<InitRegistry>) -> Result<()> {
         instructions::init_registry::handle_init_registry(ctx)
     }
@@ -42,9 +43,24 @@ pub mod flacon {
         instructions::registry_admin::handle_add_server_key(ctx, key_id, pubkey, valid_from, valid_to)
     }
 
+    /// Authority only. Ends the key's validity now (`valid_to = clock − 1`); the entry is kept.
+    pub fn revoke_server_key(ctx: Context<AdminRegistry>, key_id: u8) -> Result<()> {
+        instructions::registry_admin::handle_revoke_server_key(ctx, key_id)
+    }
+
     /// Authority only.
     pub fn add_partner(ctx: Context<AdminRegistry>, partner: Pubkey) -> Result<()> {
         instructions::registry_admin::handle_add_partner(ctx, partner)
+    }
+
+    /// Authority only. The removed wallet also loses `attach_seal` / `mark_seal_dead` on its passports.
+    pub fn remove_partner(ctx: Context<AdminRegistry>, partner: Pubkey) -> Result<()> {
+        instructions::registry_admin::handle_remove_partner(ctx, partner)
+    }
+
+    /// Current and new authority both sign.
+    pub fn transfer_authority(ctx: Context<TransferAuthority>) -> Result<()> {
+        instructions::registry_admin::handle_transfer_authority(ctx)
     }
 
     /// Authority only. `label` is UTF-8, zero padded to 32 bytes.
@@ -52,7 +68,8 @@ pub mod flacon {
         instructions::registry_admin::handle_add_site(ctx, site_id, label)
     }
 
-    /// Partner (or authority) only. Birth certificate of a bottle.
+    /// Partner (or authority) only. Birth certificate of a bottle. `asset` must be a Metaplex Core
+    /// asset, passed again as the `core_asset` account.
     pub fn mint_passport(
         ctx: Context<MintPassport>,
         serial_hash: [u8; 32],
@@ -62,12 +79,14 @@ pub mod flacon {
         instructions::mint_passport::handle_mint_passport(ctx, serial_hash, binding_hash, asset)
     }
 
-    /// Partner (or authority) only. `kind` ∈ {BOX, NECK}.
+    /// The passport's issuer (while a partner) or the authority. `kind` ∈ {BOX, NECK}; at most
+    /// `MAX_SEALS_PER_PASSPORT` seals; not on a void passport.
     pub fn attach_seal(ctx: Context<AttachSeal>, uid_hash: [u8; 32], kind: u8) -> Result<()> {
         instructions::attach_seal::handle_attach_seal(ctx, uid_hash, kind)
     }
 
-    /// Partner (or authority) only. Seal no longer answers → seal dead, passport void, grade VOID.
+    /// The passport's issuer (while a partner) or the authority. Seal no longer answers → seal dead,
+    /// passport void, grade VOID.
     pub fn mark_seal_dead(ctx: Context<MarkSealDead>) -> Result<()> {
         instructions::mark_seal_dead::handle_mark_seal_dead(ctx)
     }

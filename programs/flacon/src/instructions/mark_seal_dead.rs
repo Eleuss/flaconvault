@@ -24,7 +24,7 @@ pub struct MarkSealDead<'info> {
         constraint = seal.passport == passport.key() @ FlaconError::SealPassportMismatch
     )]
     pub seal: Account<'info, Seal>,
-    /// Must be a registered partner (or the registry authority) — after a
+    /// The passport's issuer while it is a partner, or the registry authority — after a
     /// confirmed no-response (escrow dispute or certification).
     pub signer: Signer<'info>,
 }
@@ -32,9 +32,12 @@ pub struct MarkSealDead<'info> {
 pub fn handle_mark_seal_dead(ctx: Context<MarkSealDead>) -> Result<()> {
     let signer = ctx.accounts.signer.key();
     require!(
-        ctx.accounts.registry.is_partner_or_authority(&signer),
-        FlaconError::NotPartner
+        ctx.accounts
+            .registry
+            .may_manage_passport(&signer, &ctx.accounts.passport),
+        FlaconError::NotIssuerOrAuthority
     );
+    require!(!ctx.accounts.seal.dead, FlaconError::SealDead);
     let now = Clock::get()?.unix_timestamp;
 
     let seal = &mut ctx.accounts.seal;

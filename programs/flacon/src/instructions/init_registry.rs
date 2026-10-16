@@ -1,7 +1,11 @@
 use anchor_lang::prelude::*;
 
-use crate::{constants::*, events::RegistryInitialized, state::Registry};
+use crate::{
+    constants::*, error::FlaconError, events::RegistryInitialized, program::Flacon, state::Registry,
+};
 
+/// Only the program's upgrade authority may create the registry (so a fresh deploy cannot be
+/// front-run by whoever sends `init_registry` first). It becomes the registry authority.
 #[derive(Accounts)]
 pub struct InitRegistry<'info> {
     #[account(
@@ -12,10 +16,21 @@ pub struct InitRegistry<'info> {
         bump
     )]
     pub registry: Account<'info, Registry>,
-    /// Payer becomes the registry authority.
+    /// Payer becomes the registry authority; must be the program's upgrade authority.
     #[account(mut)]
     pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
+    /// This program (its ProgramData address is checked below).
+    #[account(
+        constraint = program.programdata_address()? == Some(program_data.key())
+            @ FlaconError::NotUpgradeAuthority
+    )]
+    pub program: Program<'info, Flacon>,
+    #[account(
+        constraint = program_data.upgrade_authority_address == Some(authority.key())
+            @ FlaconError::NotUpgradeAuthority
+    )]
+    pub program_data: Account<'info, ProgramData>,
 }
 
 pub fn handle_init_registry(ctx: Context<InitRegistry>) -> Result<()> {

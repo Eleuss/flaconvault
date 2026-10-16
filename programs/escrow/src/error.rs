@@ -6,7 +6,7 @@ pub enum EscrowError {
     InvalidState,
     #[msg("price must be > 0")]
     InvalidPrice,
-    #[msg("dispute_after_s must be > 0")]
+    #[msg("dispute_after_s must be between MIN_DISPUTE_AFTER_S (1 h) and MAX_DISPUTE_AFTER_S (60 days)")]
     InvalidDisputeWindow,
     #[msg("Passport is void")]
     PassportVoid,
@@ -46,4 +46,14 @@ pub enum EscrowError {
     InvalidAsset,
     #[msg("Arithmetic overflow")]
     MathOverflow,
+
+    // ---- appended (keep the codes above stable) ----
+    #[msg("The order's price differs from the price the buyer agreed to")]
+    PriceChanged,
+    #[msg("Seller is not the owner of the passport's Core asset (or, without a Core asset, its issuer)")]
+    NotPassportOwner,
+    #[msg("The receipt scan matched the shipping scan: release the order instead of disputing it")]
+    ReceiptMatched,
+    #[msg("Token account does not belong to the expected recipient")]
+    WrongTokenOwner,
 }

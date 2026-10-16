@@ -24,6 +24,15 @@ pub struct MintPassport<'info> {
     #[account(mut)]
     pub issuer: Signer<'info>,
     pub system_program: Program<'info, System>,
+    /// CHECK: the Metaplex Core asset named by the `asset` argument; the handler checks the address,
+    /// that Metaplex Core owns the account and that it is an `AssetV1`. Appended last so the
+    /// indices of the accounts above stay unchanged.
+    pub core_asset: UncheckedAccount<'info>,
+}
+
+/// `true` when an account (owner program + data) is a Metaplex Core `AssetV1`.
+pub fn is_core_asset(owner_program: &Pubkey, data: &[u8]) -> bool {
+    owner_program == &MPL_CORE_PROGRAM_ID && data.first() == Some(&MPL_CORE_KEY_ASSET_V1)
 }
 
 pub fn handle_mint_passport(
@@ -36,6 +45,12 @@ pub fn handle_mint_passport(
     require!(
         ctx.accounts.registry.is_partner_or_authority(&issuer),
         FlaconError::NotPartner
+    );
+    let core_asset = &ctx.accounts.core_asset;
+    require_keys_eq!(core_asset.key(), asset, FlaconError::AssetMismatch);
+    require!(
+        is_core_asset(core_asset.owner, &core_asset.try_borrow_data()?),
+        FlaconError::InvalidAsset
     );
     let now = Clock::get()?.unix_timestamp;
 
@@ -60,4 +75,21 @@ pub fn handle_mint_passport(
         created_at: now,
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_asset_detection() {
+        let core = MPL_CORE_PROGRAM_ID;
+        assert!(is_core_asset(&core, &[1u8, 0, 0]));
+        // collection (Key 5), uninitialised, empty, foreign owner, system-owned placeholder
+        assert!(!is_core_asset(&core, &[5u8, 0]));
+        assert!(!is_core_asset(&core, &[0u8]));
+        assert!(!is_core_asset(&core, &[]));
+        assert!(!is_core_asset(&Pubkey::new_unique(), &[1u8]));
+        assert!(!is_core_asset(&anchor_lang::system_program::ID, &[]));
+    }
 }

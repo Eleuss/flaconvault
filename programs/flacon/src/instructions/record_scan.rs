@@ -3,13 +3,17 @@
 //!
 //! 1. The instruction right before this one is a Solana Ed25519 precompile
 //!    instruction; its pubkey is the registry server key `args.server_key_id`,
-//!    valid at `args.ts`; its 152-byte message equals the reconstruction from
-//!    `args` + `passport.serial_hash` + `seal.uid_hash` byte for byte.
-//! 2. `seal.passport == passport`, `!seal.dead`, `!passport.void`,
-//!    `args.counter > seal.last_counter`.
+//!    valid at `args.ts` AND at the cluster clock (so expiry and `revoke_server_key`
+//!    take effect immediately), `|args.ts − clock| ≤ MAX_SCAN_TS_SKEW_S`; its 152-byte
+//!    message equals the reconstruction from `args` + `passport.serial_hash` +
+//!    `seal.uid_hash` byte for byte.
+//! 2. `seal.passport == passport`, `!seal.dead`, passport not void,
+//!    `seal.last_counter < args.counter <= MAX_COUNTER` (24-bit NTAG counter).
 //! 3. Role/tier/field validation; tier ≥ 3 or role VAULT/PARTNER needs a partner attester.
-//! 4. Create the `ScanProof` PDA, bump `seal.last_counter`, `passport.scan_count`,
-//!    recompute `passport.grade`.
+//! 4. Create the `ScanProof` PDA, bump `seal.last_counter`, `passport.scan_count`
+//!    (every accepted scan counts, whatever its tier), and set
+//!    `passport.grade = worst(passport.grade, scan grade)`; an opened tamper code
+//!    (OPENED_NOW / OPENED_BEFORE) also sets `passport.void` (see `grade::passport_after_scan`).
 //!
 //! `scan_proof` uses `init_if_needed` (Anchor creates accounts before the handler
 //! runs): a re-used counter then reaches step 2 and fails with the typed
@@ -26,10 +30,23 @@ use crate::{
     ed25519::{parse_single_ed25519, ED25519_PROGRAM_ID},
     error::FlaconError,
     events::ScanRecorded,
-    grade::grade,
+    grade::passport_after_scan,
     message::{build_scan_message, ScanMessageFields},
-    state::{Passport, Registry, ScanProof, Seal},
+    state::{Passport, Registry, ScanProof, Seal, ServerKey},
 };
+
+/// Step 1 time rules: the key must be valid at the signed `ts` and at the cluster clock `now`, and the
+/// signature must be fresh (`|ts − now| ≤ MAX_SCAN_TS_SKEW_S`). Pure, so it is unit-tested below.
+pub fn check_key_and_freshness(key: &ServerKey, ts: i64, now: i64) -> Result<()> {
+    require!(key.is_valid_at(ts), FlaconError::ServerKeyNotValidAtTs);
+    require!(key.is_valid_at(now), FlaconError::ServerKeyNotValidNow);
+    let fresh = ts
+        .checked_sub(now)
+        .map(|d| d.unsigned_abs() <= MAX_SCAN_TS_SKEW_S as u64)
+        .unwrap_or(false);
+    require!(fresh, FlaconError::StaleScanTimestamp);
+    Ok(())
+}
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct RecordScanArgs {
@@ -112,11 +129,8 @@ pub fn handle_record_scan(ctx: Context<RecordScan>, args: RecordScanArgs) -> Res
         payload.pubkey == server_key.pubkey,
         FlaconError::ServerKeyMismatch
     );
-    require!(
-        args.ts >= server_key.valid_from
-            && (server_key.valid_to == 0 || args.ts <= server_key.valid_to),
-        FlaconError::ServerKeyNotValidAtTs
-    );
+    let now = Clock::get()?.unix_timestamp;
+    check_key_and_freshness(server_key, args.ts, now)?;
 
     let expected = build_scan_message(&ScanMessageFields {
         serial_hash: &ctx.accounts.passport.serial_hash,
@@ -142,11 +156,12 @@ pub fn handle_record_scan(ctx: Context<RecordScan>, args: RecordScanArgs) -> Res
         FlaconError::SealPassportMismatch
     );
     require!(!seal.dead, FlaconError::SealDead);
-    require!(!passport.void, FlaconError::PassportVoid);
+    require!(!passport.is_voided(), FlaconError::PassportVoid);
     require!(
         args.counter > seal.last_counter,
         FlaconError::CounterNotIncreasing
     );
+    require!(args.counter <= MAX_COUNTER, FlaconError::CounterOutOfRange);
 
     // ---- 3. role / tier / fields --------------------------------------------
     require!(args.role <= MAX_ROLE, FlaconError::InvalidRole);
@@ -183,7 +198,14 @@ pub fn handle_record_scan(ctx: Context<RecordScan>, args: RecordScanArgs) -> Res
     }
 
     // ---- 4. write ----------------------------------------------------------
-    let new_grade = grade(args.tamper, args.heat, args.hum, args.fill);
+    let (new_grade, new_void) = passport_after_scan(
+        passport.grade,
+        passport.void,
+        args.tamper,
+        args.heat,
+        args.hum,
+        args.fill,
+    );
     let seal_key = seal.key();
 
     let sp = &mut ctx.accounts.scan_proof;
@@ -214,6 +236,7 @@ pub fn handle_record_scan(ctx: Context<RecordScan>, args: RecordScanArgs) -> Res
         .checked_add(1)
         .ok_or(FlaconError::ScanCountOverflow)?;
     passport.grade = new_grade;
+    passport.void = new_void;
 
     emit!(ScanRecorded {
         passport: passport.key(),
@@ -230,10 +253,56 @@ pub fn handle_record_scan(ctx: Context<RecordScan>, args: RecordScanArgs) -> Res
         heat_levels: args.heat_levels,
         fill: args.fill,
         site_id: args.site_id,
+        // the passport's grade after this scan (sticky, see grade::passport_after_scan)
         grade: new_grade,
         scan_count: passport.scan_count,
         server_key_id: args.server_key_id,
         ts: args.ts,
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(valid_from: i64, valid_to: i64) -> ServerKey {
+        ServerKey { key_id: 1, pubkey: [0u8; 32], valid_from, valid_to }
+    }
+    fn code(r: Result<()>) -> Option<u32> {
+        match r {
+            Ok(()) => None,
+            Err(anchor_lang::error::Error::AnchorError(e)) => Some(e.error_code_number),
+            Err(_) => Some(0),
+        }
+    }
+    fn err(e: FlaconError) -> Option<u32> {
+        Some(anchor_lang::error::ERROR_CODE_OFFSET + e as u32)
+    }
+
+    #[test]
+    fn fresh_scan_with_open_key_passes() {
+        assert_eq!(code(check_key_and_freshness(&key(0, 0), 1_000, 1_000)), None);
+        assert_eq!(code(check_key_and_freshness(&key(0, 0), 1_000 - 600, 1_000)), None);
+        assert_eq!(code(check_key_and_freshness(&key(0, 0), 1_000 + 600, 1_000)), None);
+    }
+
+    #[test]
+    fn stale_or_future_ts_is_rejected() {
+        assert_eq!(code(check_key_and_freshness(&key(0, 0), 1_000 - 601, 1_000)), err(FlaconError::StaleScanTimestamp));
+        assert_eq!(code(check_key_and_freshness(&key(0, 0), 1_000 + 601, 1_000)), err(FlaconError::StaleScanTimestamp));
+        assert_eq!(code(check_key_and_freshness(&key(i64::MIN, 0), i64::MIN, i64::MAX)), err(FlaconError::StaleScanTimestamp));
+    }
+
+    #[test]
+    fn key_validity_is_checked_at_ts_and_now() {
+        // revoked (valid_to in the past) — a signature dated inside the window no longer helps
+        assert_eq!(code(check_key_and_freshness(&key(0, 999), 999, 1_000)), err(FlaconError::ServerKeyNotValidNow));
+        // expired at ts
+        assert_eq!(code(check_key_and_freshness(&key(0, 999), 1_000, 1_000)), err(FlaconError::ServerKeyNotValidAtTs));
+        // not yet valid
+        assert_eq!(code(check_key_and_freshness(&key(2_000, 0), 1_000, 1_000)), err(FlaconError::ServerKeyNotValidAtTs));
+        assert_eq!(code(check_key_and_freshness(&key(1_001, 0), 1_001, 1_000)), err(FlaconError::ServerKeyNotValidNow));
+        assert_eq!(code(check_key_and_freshness(&key(500, 1_500), 1_000, 1_000)), None);
+    }
 }

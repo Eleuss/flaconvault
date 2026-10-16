@@ -26,7 +26,7 @@ pub struct AttachSeal<'info> {
         bump
     )]
     pub seal: Account<'info, Seal>,
-    /// Must be a registered partner (or the registry authority).
+    /// The passport's issuer while it is a partner, or the registry authority.
     #[account(mut)]
     pub signer: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -35,12 +35,19 @@ pub struct AttachSeal<'info> {
 pub fn handle_attach_seal(ctx: Context<AttachSeal>, uid_hash: [u8; 32], kind: u8) -> Result<()> {
     let signer = ctx.accounts.signer.key();
     require!(
-        ctx.accounts.registry.is_partner_or_authority(&signer),
-        FlaconError::NotPartner
+        ctx.accounts
+            .registry
+            .may_manage_passport(&signer, &ctx.accounts.passport),
+        FlaconError::NotIssuerOrAuthority
     );
     require!(
         kind == SEAL_KIND_BOX || kind == SEAL_KIND_NECK,
         FlaconError::InvalidSealKind
+    );
+    require!(!ctx.accounts.passport.is_voided(), FlaconError::PassportVoid);
+    require!(
+        ctx.accounts.passport.seal_count < MAX_SEALS_PER_PASSPORT,
+        FlaconError::TooManySeals
     );
     let now = Clock::get()?.unix_timestamp;
 

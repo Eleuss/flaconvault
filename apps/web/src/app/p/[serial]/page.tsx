@@ -2,29 +2,36 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ExternalLink } from "lucide-react";
-import { Grade, HEAT_FIELDS_C } from "@flaconvault/proof";
+import { Grade, HEAT_FIELDS_C, Indicator } from "@flaconvault/proof";
 import { getPassport } from "@/lib/api";
 import { addrUrl, fmtDate, gradeLetter, gradeSentence, gradeTone, indicatorText, sealStatusText, short } from "@/lib/format";
-import { GradeMark, Lamp, Pill } from "@/components/badges";
+import { GradeMark, Lamp, Pill, Unavailable } from "@/components/badges";
 import { Timeline } from "@/components/timeline";
 import { LiveCheck } from "@/components/live-check";
 
 export const dynamic = "force-dynamic";
 
+/** A malformed escape (a lone "%") must not crash the page. */
+const safeDecode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
+
 export async function generateMetadata({ params }: { params: { serial: string } }): Promise<Metadata> {
-  return { title: `Passport ${decodeURIComponent(params.serial)}` };
+  return { title: `Passport ${safeDecode(params.serial)}` };
 }
 
 export default async function PassportPage({ params }: { params: { serial: string } }) {
-  const serial = decodeURIComponent(params.serial);
-  const p = await getPassport(serial);
-  if (!p) notFound();
+  const serial = safeDecode(params.serial);
+  const res = await getPassport(serial);
+  // only a 404 means "does not exist"; an unreachable verifier must never make a genuine passport look fake
+  if (res.status === "missing") notFound();
+  if (res.status === "error") return <Unavailable what={`Passport ${serial}`} retry={`/p/${encodeURIComponent(serial)}`} />;
+  const p = res.data;
   const grade = p.void ? Grade.VOID : p.grade;
   const seal = sealStatusText(p.sealStatus);
   const heat = indicatorText("heat", p.latest?.indicators.heat ?? 3);
   const hum = indicatorText("humidity", p.latest?.indicators.humidity ?? 3);
   const uv = indicatorText("uv", p.latest?.indicators.uv ?? 3);
   const sentence = gradeSentence(grade);
+  const stripRead = p.latest?.indicators.heat === Indicator.INTACT || p.latest?.indicators.heat === Indicator.TRIGGERED;
 
   return (
     <div className="page-in container-page py-10 md:py-14">
@@ -78,7 +85,8 @@ export default async function PassportPage({ params }: { params: { serial: strin
           </div>
           <div className="mt-3 grid grid-cols-6 gap-2">
             {HEAT_FIELDS_C.map((c, i) => {
-              const on = p.latest!.heatLevels[i] === 1;
+              // the field levels mean something only when the strip was read (heat INTACT or TRIGGERED)
+              const on = stripRead && p.latest!.heatLevels?.[i] === 1;
               return (
                 <div key={c} className={`rounded-lg border px-2 py-2 text-center text-xs tabular ${i === 4 ? "border-amber" : "border-line"} ${on ? "bg-ink text-bg" : "bg-surface text-muted"}`}>
                   {c} °C
@@ -86,7 +94,7 @@ export default async function PassportPage({ params }: { params: { serial: strin
               );
             })}
           </div>
-          <p className="mt-2 text-xs text-muted">Only the 40 °C field is evaluated; the others are shown for context.</p>
+          <p className="mt-2 text-xs text-muted">{stripRead ? "Only the 40 °C field is evaluated; the others are shown for context." : "The strip was not read on the last scan, so no field is shown as changed."}</p>
         </section>
       )}
 
@@ -96,7 +104,7 @@ export default async function PassportPage({ params }: { params: { serial: strin
             <p className="eyebrow">History</p>
             <h2 className="mt-2 font-serif text-3xl">Birth, sealing, every scan, every change of owner</h2>
           </div>
-          <LiveCheck serialHashHex={p.serialHash} serverGrade={grade} serverScanCount={p.stats.scanCount} />
+          <LiveCheck serialHashHex={p.serialHash} serverGrade={grade} serverOnChainScanCount={p.stats.onChainScanCount} />
         </div>
         <div className="mt-8"><Timeline events={p.events} /></div>
       </section>
@@ -122,7 +130,7 @@ export default async function PassportPage({ params }: { params: { serial: strin
           <ul className="mt-3 space-y-2 text-muted">
             <li>serial_hash <span className="mono text-ink">{short(p.serialHash, 10)}</span></li>
             <li>Asset {p.asset ? <a className="link inline-flex items-center gap-1 text-ink" href={addrUrl(p.asset)} target="_blank" rel="noreferrer">{short(p.asset)} <ExternalLink className="h-3 w-3" aria-hidden /></a> : "–"}</li>
-            <li>Issuer {p.issuer ? <Link className="link text-ink" href={`/wallet/${p.issuer}`}>{p.issuerLabel ?? short(p.issuer)}</Link> : "–"}</li>
+            <li>Issuer {p.issuer ? <Link className="link text-ink" href={`/wallet/${encodeURIComponent(p.issuer)}`}>{p.issuerLabel ?? short(p.issuer)}</Link> : "–"}</li>
           </ul>
         </div>
       </section>

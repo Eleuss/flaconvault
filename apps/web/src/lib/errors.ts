@@ -47,10 +47,19 @@ export async function apiError(path: string, r: Response): Promise<ApiError> {
   return new ApiError(path, r.status, detail, code);
 }
 
-const CODES: Record<string, string> = {
+/** Machine codes the verifier sends as `detail` (see apps/verify/fv/routes_api.py and fv/ratelimit.py). */
+export const CODES: Record<string, string> = {
   tx_not_visible: "The network has not shown the transaction yet. Try again in a few seconds.",
   tx_failed: "The transaction failed on chain.",
-  tx_mismatch: "This wallet did not sign that transaction.",
+  tx_mismatch: "The transaction does not match this action (other wallet, passport or instruction).",
+  nonce_invalid: "The scan session has expired or was already used. Start a new session.",
+  not_issuer: "Only the wallet that issued this passport can do this.",
+  event_confirmed: "This entry is already confirmed with another transaction.",
+  chain_not_configured: "The verification server has no chain connection configured, so it cannot confirm transactions right now.",
+  rate_limited: "Too many requests from this connection. Wait a minute, then try again.",
+  report_limited: "A report for this seal is already open. A partner checks it; there is no need to report it again.",
+  media_nonce_invalid: "The photo upload needs a running scan session. Restart the scan.",
+  resume_not_found: "This signed scan is no longer waiting to be anchored (already anchored or expired). Open the passport or start a new scan.",
 };
 
 const sentence = (s: string) => { const t = s.trim().replace(/\s+/g, " "); return t ? t[0].toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? "" : ".") : t; };
@@ -66,7 +75,11 @@ function fromApi(e: ApiError): string {
       return "The server rejected the scan data. Restart the scan.";
     }
   }
-  if (e.path.startsWith("/api/media") && e.status === 422) return "No photo arrived at the server. Photograph the card again.";
+  if (e.path.startsWith("/api/media")) {
+    if (e.status === 422) return "No photo arrived at the server. Photograph the card again.";
+    if (e.status === 413) return "The photos are too large or there are too many for this session. Restart the scan.";
+    if (e.status === 415) return "The photo format was not accepted. Photograph the card again.";
+  }
   if (e.status === 404) return d ? sentence(d) : "Not found.";
   if (e.status === 429) return "Too many requests. Wait a few seconds, then try again.";
   if (e.status >= 500) return `The verification server had a problem (HTTP ${e.status}). Try again in a moment.`;
@@ -81,8 +94,11 @@ export function friendly(e: unknown): string {
   const name = (e as { name?: string })?.name ?? "";
   const m = (e as Error)?.message ?? String(e);
   if (name === "NotAllowedError" && !/wallet|transaction|sign/i.test(m)) return "Permission denied by the browser. Allow it in the site settings and try again.";
-  if (/prior credit|insufficient|0x1\b/i.test(m)) return "This wallet has no SOL on devnet. Send the address (above) to the operator or press “1 SOL airdrop (test)”.";
-  if (/rejected|declined|cancel|abgelehnt/i.test(m)) return "Signature rejected or cancelled in the wallet app. Press again and confirm in Phantom.";
+  if (name === "TimeoutError") return "The server did not answer in time. Check the connection and try again.";
+  // SPL Token InsufficientFunds ("Error: insufficient funds", custom 0x1 of the token program) is a token shortfall, not SOL
+  if (/Error: insufficient funds/i.test(m)) return "This wallet does not hold enough tokens (USDC) for this payment.";
+  if (/prior credit|insufficient lamports|insufficient SOL|0x1\b/i.test(m)) return "This wallet has no SOL on devnet for the fee. Get devnet SOL (for example from faucet.solana.com), then try again.";
+  if (/rejected|declined|cancel|abgelehnt/i.test(m)) return "Signature rejected or cancelled in the wallet app. Press again and confirm in the wallet.";
   if (/not connected|wallet.*connect|No wallet/i.test(m)) return "Wallet is no longer connected. Reconnect above.";
   if (/ChunkLoadError|Loading chunk|dynamically imported module/i.test(m)) return "Page is outdated (new version online). Reload the page and retry.";
   if (/429|Too Many Requests/i.test(m)) return "Devnet RPC overloaded (429). Wait 10 seconds, then press again.";

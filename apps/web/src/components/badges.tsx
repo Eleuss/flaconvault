@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { cn } from "@/lib/cn";
 import { gradeLetter, gradeTone } from "@/lib/format";
 
@@ -15,6 +16,24 @@ export function Pill({ tone, children, className }: { tone: Tone; children: Reac
     </span>
   );
 }
+/**
+ * The verification server did not answer (timeout, 5xx, network). Shown instead of "does not exist": a genuine
+ * passport must never look like a fake because the server was redeploying. `retry` reloads the same URL.
+ */
+export function Unavailable({ what, retry }: { what: string; retry: string }) {
+  return (
+    <div className="page-in container-page py-16" role="alert">
+      <p className="eyebrow">Temporarily unavailable</p>
+      <h1 className="mt-3 font-serif text-4xl">The verification server did not answer</h1>
+      <p className="mt-3 max-w-md text-muted">{what} could not be loaded right now. This says nothing about the bottle: try again in a moment.</p>
+      <div className="mt-6 flex flex-wrap gap-3">
+        <Link href={retry} prefetch={false} className="btn">Try again</Link>
+        <Link href="/" className="btn-outline">Back to home</Link>
+      </div>
+    </div>
+  );
+}
+
 export function GradeMark({ grade, size = "lg" }: { grade: number | null | undefined; size?: "lg" | "sm" }) {
   const tone = gradeTone(grade);
   return (

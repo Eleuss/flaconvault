@@ -1,6 +1,6 @@
 # Programs on devnet
 
-Two Anchor programs: `programs/flacon` (registry, passports, seals, scan proofs) and `programs/escrow` (USDC escrow). Both are deployed on Solana devnet. The source in this repository is ahead of the devnet deployment (server-key revocation, partner removal, issuer-only seal administration, sticky VOID and C grades, issuer-owned Core assets, owner-only listing re-checked at reserve, price-bound reserve, fresh shipping and receipt scans, escrow timeouts and admin resolve): see [Upgrading devnet](#upgrading-devnet). [`programs/README.md`](../programs/README.md) lists every instruction with its signer rules.
+Three Anchor programs: `programs/flacon` (registry, passports, seals, scan proofs), `programs/escrow` (USDC escrow, the demo) and `programs/market_escrow` (non-custodial USDC / EURC escrow for marketplace orders, see [Market escrow](#market-escrow)). All three are deployed on Solana devnet. The source in this repository is ahead of the devnet deployment (server-key revocation, partner removal, issuer-only seal administration, sticky VOID and C grades, issuer-owned Core assets, owner-only listing re-checked at reserve, price-bound reserve, fresh shipping and receipt scans, escrow timeouts and admin resolve): see [Upgrading devnet](#upgrading-devnet). [`programs/README.md`](../programs/README.md) lists every instruction with its signer rules.
 
 Toolchain: Anchor CLI 1.2.0 (via `avm`), Solana CLI 4.1.x (Agave), Rust from `rust-toolchain.toml` (1.89), Node 22.18 or newer, and the npm client `@anchor-lang/core` 1.2 (`@coral-xyz/anchor` 0.32 cannot read Anchor 1.x IDLs).
 
@@ -14,6 +14,7 @@ Toolchain: Anchor CLI 1.2.0 (via `avm`), Solana CLI 4.1.x (Agave), Rust from `ru
 | Registry PDA `["registry"]` | `4JPPCBA7DpbmfDsq1oHDuiJD1zL8VhfuJSoWQyYZXZWt` |
 | Escrow config PDA `["config"]` | `CJWph4fTD2sJFZoei1x5xCjq18UEAVyHnLQSnLX7JVa7` (dispute window 7 days) |
 | Test USDC mint (6 decimals) | `FLhABVjb5dHqbZs8zpWXi4Qr9JhHJC2gx75KnHQ9AdW5`; mint authority is the deploy wallet. The escrow config has no setter for the mint, so devnet keeps this test mint. |
+| market_escrow program | `CeyUTXX5CbgUNPM1msfnp6UfLdNh8PGLm8DpvdYJsEXW` ([explorer](https://explorer.solana.com/address/CeyUTXX5CbgUNPM1msfnp6UfLdNh8PGLm8DpvdYJsEXW?cluster=devnet)), deployed 2026-10-20, upgrade authority the deploy wallet; details in [Market escrow](#market-escrow) |
 
 The program ids are fixed in `Anchor.toml` (`[programs.localnet]`, `[programs.devnet]`), in `declare_id!` in each program's `lib.rs`, in the IDLs under `packages/proof/src/idl/`, and in the apps' environment (`FV_PROGRAM_ID`, `FV_ESCROW_PROGRAM_ID`, `NEXT_PUBLIC_PROGRAM_ID`, `NEXT_PUBLIC_ESCROW_PROGRAM_ID`). The program keypairs live in `target/deploy/*-keypair.json` (git-ignored; only needed for the first deploy, upgrades are signed by the upgrade authority). Back them up.
 
@@ -160,6 +161,32 @@ accounts). Operator steps, from the upgrade/registry authority wallet:
 
 `scripts/seed-escrow.ts` env: `ANCHOR_PROVIDER_URL` (default localnet), `ANCHOR_WALLET`, `FV_USDC_MINT` (use an existing mint instead of creating one), `FV_DISPUTE_AFTER_S` (default 604800; an existing config is updated to it when the wallet is the admin). Mint more test USDC with the helpers in `scripts/lib/spl.ts` (`mintTo`, mint authority = the CLI wallet).
 
+## Market escrow
+
+`programs/market_escrow` ([`docs/market-escrow.md`](market-escrow.md)): non-custodial escrow for crypto payment in the marketplace. It has its own config and reads no flacon accounts. Devnet only: mainnet waits for the legal opinion and the audit.
+
+| What | Value |
+|---|---|
+| Program | `CeyUTXX5CbgUNPM1msfnp6UfLdNh8PGLm8DpvdYJsEXW`, ProgramData `Ak8YSDjV3vTYBao8NB1BMSpJ8cVfV53enNqwJA9tcAiG`, 438,984 bytes |
+| Deployed | 2026-10-20, slot 513005780, [tx](https://explorer.solana.com/tx/3bMS1RGKhHTVYK7vmBnPvJAyHz8jXX5SPS3ffTsAaVcbCKF13KuThyrqEvvhS9zSA19kwyqgJjk4ovn6seUvMqCw?cluster=devnet), from commit `65cd081` (branch `market-escrow`), binary sha256 `be3239e1afd100eaa4de002f8405add2a15572a57ce1564ea4b550cee6c0f56d` (`solana program dump` returns the same bytes) |
+| Build | plain `anchor build`, not the verifiable Docker build (no Docker on the build machine). Before any further use beyond testing, rebuild with `anchor build --verifiable` and redeploy, as for the other programs |
+| Upgrade authority | the deploy wallet `Bsy5DFxtugs5PGqjF8ADrPYm7kt89dFpwEe9hTZokpFy` (blueprint §7.3: a timelocked Squads multisig before mainnet, then frozen) |
+| IDL | `packages/proof/src/idl/market_escrow.json` (not uploaded on chain) |
+| Config PDA `["config"]` | `57NSgReYwG8PZgdtugo6Vf3LGR4aqcdJUCSGSjMSaEAr`, [init_config tx](https://explorer.solana.com/tx/sdPoCbV6yj47KuMkcQPmDrtFGeiPobkiRQwDm3z2trEWqzmYAguEvXTZTdvKQ2sMh9W7sdZR2oxU1b4sFriY9s5?cluster=devnet); it has no setter |
+| Offer key | `Efi9LQnThi5tM4EtDsJaqntDAummVCpvHsH5eJtbVFvv` (devnet only; secret in `~/.config/flaconvault/market-offer-devnet.json` on the deploy machine, never in the repository) |
+| Arbiter | `Gy1ETUMVQd8d1nSEwSwZJRMvMXJxt8Viwrdwdkg2kFK4` (devnet only, single key; secret in `~/.config/flaconvault/market-arbiter-devnet.json`) |
+| Fee recipient | the deploy wallet |
+| USDC (test mint) | `FLhABVjb5dHqbZs8zpWXi4Qr9JhHJC2gx75KnHQ9AdW5` (the escrow's test USDC), fee vault `4YTXXU2p2ddHsoLtfzv6oaxhc2Hg5UHstF6ZJ1YZZvg9` |
+| EURC (test mint, 6 decimals) | `4nj12LzxnkypZfaJoM86TX9d7iR5oMEvzk1d8k1BSjEt`, mint authority the deploy wallet, fee vault `Cn9owhsVArWaocXhQakh65wKTqaRJMfbjd3w9EcG8Pm2` |
+
+The config is fixed, so devnet keeps these test mints and keys. Circle's devnet USDC and EURC would need a new program id. Back up the program keypair (`target/deploy/market_escrow-keypair.json`, git-ignored) and both key files.
+
+```bash
+npx tsx scripts/market-escrow-devnet.ts show    # config, keys, mints, fee vaults
+npx tsx scripts/market-escrow-devnet.ts smoke   # one order: open → ship → confirm → collect fees → close (test USDC from the deploy wallet)
+npx tsx scripts/market-escrow-devnet.ts init    # once, upgrade authority only (already done on devnet)
+```
+
 ## History on devnet
 
 - **First live scan (2026-09-24):** `/scan` with a simulator tap on SN-2026-000001, counter 17, grade A; Ed25519 instruction and `record_scan` in one transaction: [tx](https://explorer.solana.com/tx/3RETYHEFCnTtYXYGKDHgFeHyeAKWf1jPhBdFcRT77LtLJLJebyNCPykBwLwmYvx2qtLLbqbKAUHHLh9heZUxKrsh?cluster=devnet).
@@ -167,3 +194,4 @@ accounts). Operator steps, from the upgrade/registry authority wallet:
 - **Certification from the browser (2026-09-24):** `/certify` with Dev wallet A as partner: Metaplex Core asset `FEM7HG84tRevMsUWcazdYJJhDCu2tWDLYpDdFeyKm4xG` minted with umi, `mint_passport` SN-2026-000005, `attach_seal`.
 - **Triggered indicator, software path (2026-09-24):** `/scan` → simulator tap (counter 20) → "Test image: 40 °C triggered" (five synthetic frames instead of the camera) → media upload with matching sha256 → reading "Heat: above 40 °C recorded" → tier-2 signature → `record_scan` → grade C.
 - **Arweave via Irys devnet (2026-09-24):** tier-2 scan counter 21 on SN-2026-000001 with `FV_ARWEAVE=true`: frames → `ar://DZptJtGsi4T63Q9PsQ4gHjzAyP44y8oRYeApuw5bDxcy`, canonical bundle → `ar://CUmyCgM4hEUzN55aEChBpdoJwxWG6oLhBfN6ihz9bXZN`; the bundle fetched from the gateway hashed to the on-chain `bundle_hash`. Irys devnet data is pruned after about 60 days.
+- **Market escrow end to end (2026-10-20):** `scripts/market-escrow-devnet.ts smoke` on the fresh deployment: a 40.00 test-USDC order (2.00 buyer protection, 1.20 commission), with the deploy wallet as sponsor and the buyer and seller holding no SOL: [open_and_deposit](https://explorer.solana.com/tx/2d76TdD8JMTC3QMYgrkW7Y8nYVPuoActqX5QGDwG783AjWcEatHNbPmCQEf5cxPhiyAJmkhJnqNiQoK4vLV33kkM?cluster=devnet) (Ed25519 offer + deposit) → [mark_shipped](https://explorer.solana.com/tx/2W7udjh5AwA8u5Go6oweVhajiDp5RcARUXJxTcg8rJ1zzdwWiSweRr91rmmdMJaKdWaNbTBzrtHNN5s8iPwrrNaZ?cluster=devnet) → [confirm](https://explorer.solana.com/tx/5TVXHGnyDJgAWEzKeHLKSP5KBX1FUdniTapBxXDQgrGE39PxJyYSYukNSdk5oU4fKirQMCMKtcfDadKcoPf7pM6b?cluster=devnet) (seller 38.80, fee vault 3.20) → [collect_fees](https://explorer.solana.com/tx/5STQV7CTnJ4mvfZeZEMhNTU4VhtbrHK4hGbnzFqQhf5cSttmJ4uLoN7YxUvnSiBQvnkhemjhvnfAcxgn6BBdWKRB?cluster=devnet) → [close_order](https://explorer.solana.com/tx/5QQK6nXu5QjgD3ZXi6kXtUK9H2Mp76jVM8z2po9N7XD8SUGxkvPZdqUhCN2GhbrgxfbdSuDfDxHxHdTUfJxaJTmP?cluster=devnet) (rent back to the sponsor). Order PDA `39yHVXKxTYbkkwMYKZ9CugBQsoEBbFe9scSjufdwLXGq` (closed).

@@ -128,6 +128,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p flacon --locked
       - run: cargo test -p escrow --locked
+      - run: cargo test -p market_escrow --locked
 
   anchor:
     name: anchor test (local validator)
@@ -161,13 +162,16 @@ jobs:
           avm use "${ANCHOR_VERSION}"
       # A throwaway wallet for the local validator, and fresh program keypairs: the real program keypairs are not in
       # the repo, so `anchor keys sync` points declare_id! and Anchor.toml at the generated ones (CI checkout only).
-      # The IDL check runs before that, while the generated IDLs still carry the committed program ids.
+      # The IDL check and the market escrow fixture check run before that, while everything still carries the
+      # committed program ids; the fixtures (aged orders loaded at genesis) are then rewritten for the synced id.
       - name: Throwaway wallet, IDL drift check, program keys
         run: |
           solana-keygen new --no-bip39-passphrase --silent --force --outfile "$HOME/.config/solana/id.json"
           anchor build
           bash .github/scripts/idl-check.sh
+          npx tsx scripts/market-escrow-fixtures.ts --check
           anchor keys sync
+          npx tsx scripts/market-escrow-fixtures.ts
       # The escrow's window branches (seller never ships, buyer never scans) under a Clock override: LiteSVM cannot load
       # the SBPF v3 binary `anchor build` writes, so the script builds the same source for SBPF v2 into target/sbf-v2
       # (cargo build-sbf from the Solana CLI installed above) and runs the ignored time_travel tests against it. The

@@ -16,7 +16,7 @@ check() {   # <generated> <committed>
     fail=1
   fi
 }
-for p in flacon escrow; do
+for p in flacon escrow market_escrow; do
   check "target/idl/$p.json" "packages/proof/src/idl/$p.json"
   check "target/types/$p.ts" "packages/proof/src/idl/$p.ts"
 done

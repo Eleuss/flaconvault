@@ -11,10 +11,12 @@ skip-lint = false
 [programs.localnet]
 flacon = "7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL"
 escrow = "9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL"
+market_escrow = "CeyUTXX5CbgUNPM1msfnp6UfLdNh8PGLm8DpvdYJsEXW"
 
 [programs.devnet]
 flacon = "7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL"
 escrow = "9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL"
+market_escrow = "CeyUTXX5CbgUNPM1msfnp6UfLdNh8PGLm8DpvdYJsEXW"
 
 [provider]
 cluster = "localnet"
@@ -38,3 +40,8 @@ url = "https://api.devnet.solana.com"
 
 [[test.validator.clone]]
 address = "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
+
+# market_escrow: TEST ONLY mints and aged orders (scripts/market-escrow-fixtures.ts). The validator cannot move its
+# clock, so the branches that open days after a step run on orders that reached the step on 2026-01-01.
+[[test.validator.account_dir]]
+directory = "tests/fixtures/market-escrow"

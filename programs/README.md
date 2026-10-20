@@ -1,11 +1,12 @@
 # On-chain programs
 
-Two Anchor 1.2 programs, deployed on devnet:
+Three Anchor 1.2 programs, deployed on devnet:
 
 | Program | Id | What it does |
 |---|---|---|
 | `flacon` | `7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL` | Registry (authority, server keys, partners, sites), `Passport`, `Seal`, one `ScanProof` per server-signed scan |
-| `escrow` | `9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL` | USDC escrow with scan-verified handover and optional Metaplex Core custody |
+| `escrow` | `9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL` | USDC escrow with scan-verified handover and optional Metaplex Core custody (devnet demo) |
+| `market_escrow` | `CeyUTXX5CbgUNPM1msfnp6UfLdNh8PGLm8DpvdYJsEXW` | Non-custodial USDC / EURC escrow for marketplace orders: no admin instructions, every state ends without a FlaconVault key ([`docs/market-escrow.md`](../docs/market-escrow.md)) |
 
 Toolchain (pinned in `Anchor.toml` `[toolchain]` and `rust-toolchain.toml`): Anchor CLI 1.2.0, Solana/Agave 4.1.2, Rust 1.89.0.
 
@@ -14,7 +15,7 @@ Toolchain (pinned in `Anchor.toml` `[toolchain]` and `rust-toolchain.toml`): Anc
 ```bash
 # needs on PATH: Anchor CLI (via avm), the Solana CLI (Agave installer), Rust (rustup), Node 22.18 or newer
 anchor build                         # target/deploy/*.so, target/idl/*.json, target/types/*.ts
-cargo test -p flacon -p escrow       # unit tests: message layout vs docs/vectors.json, grade rule, freshness, escrow rules
+cargo test -p flacon -p escrow -p market_escrow   # unit tests: message layout vs docs/vectors.json, grade rule, freshness, escrow rules, market escrow rules
 anchor test --validator legacy       # integration tests in tests/ on a local validator (clones Metaplex Core from devnet)
 scripts/test-escrow-time-travel.sh   # escrow window branches in LiteSVM with a Clock override (see below)
 
@@ -76,6 +77,13 @@ for existing accounts:
 - A dead seal no longer lets the buyer refund a SHIPPED order; the admin decides (see "Escrow admin duties").
 - Orders listed before the upgrade keep their stored `dispute_after_s`; the program clamps it to 1 h ..= 60 days when
   it evaluates a deadline.
+
+## market_escrow
+
+Independent of `flacon` and `escrow`: it reads no flacon accounts and has its own config, which nothing can change
+after `init_config`. The time-dependent branches run in `anchor test` on aged fixture orders loaded at genesis
+(`tests/fixtures/market-escrow`, regenerate with `scripts/market-escrow-fixtures.ts`). Instructions, guarantees, the
+signed offer layout and the open legal questions: [`docs/market-escrow.md`](../docs/market-escrow.md).
 
 ## flacon instructions
 

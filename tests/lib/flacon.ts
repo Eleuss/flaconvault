@@ -116,6 +116,65 @@ export async function expectAnchorError(
 }
 
 // ---------------------------------------------------------------------------
+// FVSCAN2 (docs/public-record.md §3) and the Holding hashes (§4), re-implemented like the v1 message above.
+// ---------------------------------------------------------------------------
+
+export const MSG2_PREFIX: string = vectors.constants.MSG2_PREFIX;
+export const MSG2_LEN: number = vectors.constants.MSG2_LEN;
+export const FILL_NONE: number = vectors.constants.FILL_NONE;
+
+export interface Msg2Fields {
+  programId: PublicKey;
+  clusterTag: number;
+  serialHash: Buffer;
+  uidHash: Buffer;
+  counter: number;
+  tier: number;
+  role: number;
+  tamper: number;
+  uv: number;
+  hum: number;
+  heat: number;
+  heatLevels: number;
+  fill: number;
+  siteId: number;
+  purpose: number;
+  actorKind: number;
+  actor: Buffer;
+  mediaHash: Buffer;
+  bundleHash: Buffer;
+  nonce: Buffer;
+  ts: number | bigint;
+}
+export function buildScanMessageV2(f: Msg2Fields): Buffer {
+  const m = Buffer.alloc(MSG2_LEN);
+  m.write(MSG2_PREFIX, 0, "ascii");
+  f.programId.toBuffer().copy(m, 7);
+  m[39] = f.clusterTag;
+  f.serialHash.copy(m, 40);
+  f.uidHash.copy(m, 72);
+  m.writeUInt32LE(f.counter, 104);
+  [f.tier, f.role, f.tamper, f.uv, f.hum, f.heat, f.heatLevels, f.fill].forEach((v, i) => (m[108 + i] = v));
+  m.writeUInt16LE(f.siteId, 116);
+  m[118] = f.purpose;
+  m[119] = f.actorKind;
+  f.actor.copy(m, 120);
+  f.mediaHash.copy(m, 152);
+  f.bundleHash.copy(m, 184);
+  f.nonce.copy(m, 216);
+  m.writeBigInt64LE(BigInt(f.ts), 248);
+  return m;
+}
+/** scan_head_n = sha256("FVHEAD1" ‖ scan_head_(n−1) ‖ sha256(msg_n)) */
+export const foldScanHead = (head: Buffer, msg: Buffer) => sha256(Buffer.concat([Buffer.from(vectors.constants.SCAN_HEAD_PREFIX), head, sha256(msg)]));
+/** commitment = sha256("FVHOLD1" ‖ passport ‖ epoch u32 LE ‖ secret32) */
+export function commitmentOf(passport: PublicKey, epoch: number, secret: Buffer): Buffer {
+  const e = Buffer.alloc(4);
+  e.writeUInt32LE(epoch);
+  return sha256(Buffer.concat([Buffer.from(vectors.constants.COMMITMENT_PREFIX), passport.toBuffer(), e, secret]));
+}
+
+// ---------------------------------------------------------------------------
 // PDAs
 // ---------------------------------------------------------------------------
 
@@ -130,6 +189,13 @@ export const passportPdaOf = (programId: PublicKey, serialHash: Buffer) =>
   PublicKey.findProgramAddressSync([Buffer.from(SEEDS.passport), serialHash], programId)[0];
 export const sealPdaOf = (programId: PublicKey, uidHash: Buffer) =>
   PublicKey.findProgramAddressSync([Buffer.from(SEEDS.seal), uidHash], programId)[0];
+export const holderConfigPdaOf = (programId: PublicKey) =>
+  PublicKey.findProgramAddressSync([Buffer.from(SEEDS.holder_config)], programId)[0];
+export const holdingPdaOf = (programId: PublicKey, passport: PublicKey) =>
+  PublicKey.findProgramAddressSync([Buffer.from(SEEDS.holding), passport.toBuffer()], programId)[0];
+/** Anchor's `#[event_cpi]` authority (not one of our seeds, not in PDA_SEEDS). */
+export const eventAuthorityOf = (programId: PublicKey) =>
+  PublicKey.findProgramAddressSync([Buffer.from("__event_authority")], programId)[0];
 export const scanPdaOf = (programId: PublicKey, seal: PublicKey, counter: number) => {
   const c = Buffer.alloc(4);
   c.writeUInt32LE(counter);
@@ -379,4 +445,70 @@ export async function recordScan(
 export async function airdrop(provider: anchor.AnchorProvider, to: PublicKey, sol = 2) {
   const sig = await provider.connection.requestAirdrop(to, sol * anchor.web3.LAMPORTS_PER_SOL);
   await provider.connection.confirmTransaction(sig, "confirmed");
+}
+
+// ---------------------------------------------------------------------------
+// v2 public record: HolderConfig, mint_passport_v2 + attach_seal_v2
+// ---------------------------------------------------------------------------
+
+/**
+ * The HolderConfig's cluster tag, creating it (LOCALNET, zero keys) when this validator has none. Idempotent like
+ * ensureRegistry; the registry authority (`wallet`) signs and pays.
+ */
+export async function ensureHolderConfig(program: Program<any>, wallet: PublicKey): Promise<{ holderConfigPda: PublicKey; clusterTag: number; created: boolean }> {
+  const holderConfigPda = holderConfigPdaOf(program.programId);
+  const account = (program.account as any).holderConfig;
+  let cfg = await account.fetchNullable(holderConfigPda);
+  let created = false;
+  if (!cfg) {
+    await program.methods
+      .initHolderConfig(enums.cluster.LOCALNET, PublicKey.default, PublicKey.default, PublicKey.default)
+      .accountsStrict({ registry: registryPdaOf(program.programId), holderConfig: holderConfigPda, authority: wallet, payer: wallet, systemProgram: SystemProgram.programId })
+      .rpc();
+    created = true;
+    cfg = await account.fetch(holderConfigPda);
+  }
+  return { holderConfigPda, clusterTag: cfg.clusterTag, created };
+}
+
+export interface PassV2Handle extends PassportHandle {
+  holdingPda: PublicKey;
+  /** current commitment (epoch 0) and its secret */
+  commitment: Buffer;
+  secret: Buffer;
+}
+
+/**
+ * mint_passport_v2 (issuer = `issuer`, a partner, or the provider wallet) + attach_seal_v2 (NECK), both paid by
+ * `payer` (default: the provider wallet). The commitment is that of a fresh random secret at epoch 0.
+ */
+export async function mintPassportV2WithSeal(
+  program: Program<any>,
+  registryPda: PublicKey,
+  opts: { serial?: string; uid?: Buffer; issuer?: Keypair; payer?: Keypair } = {}
+): Promise<PassV2Handle> {
+  const serial = opts.serial ?? `SN-V2-${randomBytes(6).toString("hex")}`;
+  const serialHash = sha256(serial);
+  const uid = opts.uid ?? randomBytes(7);
+  const uidHash = sha256(uid);
+  const passportPda = passportPdaOf(program.programId, serialHash);
+  const holdingPda = holdingPdaOf(program.programId, passportPda);
+  const sealPda = sealPdaOf(program.programId, uidHash);
+  const secret = randomBytes(32);
+  const commitment = commitmentOf(passportPda, 0, secret);
+  const providerKp = providerPayer(program);
+  const issuer = opts.issuer ?? providerKp;
+  const payer = opts.payer ?? providerKp;
+  const signers = [issuer, payer].filter((k, i, all) => !k.publicKey.equals(providerKp.publicKey) && all.findIndex((x) => x.publicKey.equals(k.publicKey)) === i);
+  await program.methods
+    .mintPassportV2(bytes(serialHash), bytes(sha256(Buffer.concat([Buffer.from(serial), uidHash]))), bytes(commitment))
+    .accountsStrict({ registry: registryPda, passport: passportPda, holding: holdingPda, issuer: issuer.publicKey, payer: payer.publicKey, systemProgram: SystemProgram.programId })
+    .signers(signers)
+    .rpc();
+  await program.methods
+    .attachSealV2(bytes(uidHash), enums.seal_kind.NECK)
+    .accountsStrict({ registry: registryPda, passport: passportPda, seal: sealPda, signer: issuer.publicKey, payer: payer.publicKey, systemProgram: SystemProgram.programId })
+    .signers(signers)
+    .rpc();
+  return { serial, serialHash, uidHash, passportPda, sealPda, asset: holdingPda, holdingPda, commitment, secret };
 }

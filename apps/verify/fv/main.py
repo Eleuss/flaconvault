@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from fv import arweave, routes_admin, routes_api, routes_chain, routes_dev, routes_tag
+from fv import arweave, relayer, routes_admin, routes_api, routes_chain, routes_dev, routes_tag
 from fv.bodylimit import BodySizeLimit
 from fv.chain import Rpc, decode_registry, pda_registry
 from fv.config import Settings, settings_from_env
@@ -80,6 +80,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 log.exception("reconcile cycle failed")
             await asyncio.sleep(interval)
 
+    async def relay_loop(app: FastAPI) -> None:
+        """The public-record relay (fv.relayer): confirms what was sent (first at start), then sends what is due."""
+        state: relayer.RelayState = app.state.relay
+        state.bind(asyncio.get_running_loop())
+        while True:
+            try:
+                summary = await asyncio.to_thread(relayer.relay_once, db, settings, app.state.relay_rpc, state)
+                if summary.get("sent") or summary.get("expired") or any((summary.get("confirm") or {}).get(k)
+                                                                          for k in ("recorded", "rejected", "requeued", "expired")):
+                    log.info("relay: %s", summary)
+            except Exception:  # noqa: BLE001 — keep the loop alive (RPC down, …)
+                log.exception("relay cycle failed")
+            await state.sleep(settings.relay_interval_s)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         settings.check_startup()      # forgeable keys (factory / all-zero master without the simulator), simulator with real keys
@@ -113,20 +127,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.info("reconcile loop every %ss against %s (program %s)", settings.reconcile_interval_s, settings.solana_rpc, settings.program_id)
         else:
             log.info("reconcile loop disabled (%s)", "no FV_PROGRAM_ID" if not settings.program_id else "FV_RECONCILE_INTERVAL_S=0")
+        relay_task = None
+        if settings.relay_enabled and settings.program_id:      # check_startup refused anything incomplete
+            relay_task = asyncio.create_task(relay_loop(app))
+            log.info("public-record relay on (%s, program %s, fee payer %s)", settings.cluster, settings.program_id,
+                     settings.relayer_pubkey)
+        else:
+            log.info("public-record relay off (FV_RELAY_ENABLED=false): relay scans are kept off chain")
         try:
             yield
         finally:
-            if task:
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
+            for t in (task, relay_task):
+                if t:
+                    t.cancel()
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                        pass
 
     app = FastAPI(title="FlaconVault verify", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.db = db
     app.state.rpc = Rpc(settings.solana_rpc)
+    # the relay sends through the primary RPC and falls back to FV_SOLANA_RPC_FALLBACK (tests inject a fake)
+    app.state.relay_rpc = relayer.FallbackRpc(Rpc(settings.solana_rpc),
+                                              Rpc(settings.solana_rpc_fallback) if settings.solana_rpc_fallback else None)
+    app.state.relay = relayer.RelayState()
     # The body limit runs before routing and any body parsing (every route except POST /api/media); CORS is added last,
     # so it is the outermost layer and its headers reach the 413 too (otherwise a browser cannot read the error code).
     # Retry-After is not a CORS-safelisted response header: without expose_headers the web (another origin) could not

@@ -2,10 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Role, Tier } from "@flaconvault/proof";
 import { ApiError, CODES, friendly } from "./errors";
-import { cameraOn, escrowScanWarning, initialRole, iosSignHint, needsPartnerWallet, partnerWalletGate, roleChoices, timedStep, uncertifiedScanLink, UNCERTIFIED_SCAN_HREF, type ScanStep, type WalletEnv } from "./scan-steps";
+import { cameraOn, escrowScanWarning, initialRole, iosSignHint, needsPartnerWallet, ORDER_SCAN_FLOW, partnerWalletGate, relayAvailable, roleChoices, scanPath, stepAfterVerify, timedStep, uncertifiedScanLink, UNCERTIFIED_SCAN_HREF, type ScanStep, type WalletEnv } from "./scan-steps";
 import { scanUrlFor } from "./handoff";
 
-const ALL: ScanStep[] = ["session", "tap", "preview", "camera", "read", "verify", "tx", "done", "dead"];
+const ALL: ScanStep[] = ["session", "tap", "preview", "camera", "read", "verify", "tx", "record", "done", "dead"];
 
 test("the camera runs only on the camera step of a running session (S17)", () => {
   for (const step of ALL) {
@@ -15,7 +15,55 @@ test("the camera runs only on the camera step of a running session (S17)", () =>
 });
 
 test("the session countdown stops once the server has signed", () => {
-  assert.deepEqual(ALL.filter((s) => !timedStep(s)), ["tx", "done", "dead"]);
+  assert.deepEqual(ALL.filter((s) => !timedStep(s)), ["tx", "record", "done", "dead"]);
+});
+
+test("Save to the public record is offered for tier ≤ 2 with owner, seller or buyer; certified scans keep the wallet", () => {
+  for (const role of [Role.OWNER, Role.SELLER, Role.BUYER]) {
+    for (const tier of [Tier.SIGHTING, Tier.SELF, Tier.SELF_MEDIA]) assert.equal(relayAvailable(tier, role), true, `tier ${tier} role ${role}`);
+    assert.equal(relayAvailable(Tier.CERTIFIED, role), false);
+    assert.equal(relayAvailable(Tier.BIRTH, role), false);
+  }
+  for (const role of [Role.VAULT, Role.PARTNER]) assert.equal(relayAvailable(Tier.SELF, role), false, `role ${role}`);
+});
+
+test("the order page's shipping and receipt scans (flow=wallet) take the wallet flow directly, without the relay button", () => {
+  const path = (o: Partial<Parameters<typeof scanPath>[0]> = {}) =>
+    scanPath({ certified: false, flow: null, tier: Tier.SELF_MEDIA, role: Role.SELLER, step: "read", txSig: null, ...o });
+  // without the query: the consumer path, the wallet flow under Advanced
+  for (const role of [Role.OWNER, Role.SELLER, Role.BUYER]) assert.deepEqual(path({ role }), { orderScan: false, relay: true, walletFlow: false }, `role ${role}`);
+  // from the order page: seller (shipping) and buyer (receipt) sign their own scan; the order needs its ScanProof
+  for (const role of [Role.SELLER, Role.BUYER]) {
+    assert.deepEqual(path({ role, flow: ORDER_SCAN_FLOW }), { orderScan: true, relay: false, walletFlow: true }, `role ${role}`);
+    assert.deepEqual(path({ role, flow: ORDER_SCAN_FLOW, step: "session" }).walletFlow, true, "wallet button at the session step");
+  }
+  // the owner (no order role) and any other flow value keep the consumer path
+  assert.deepEqual(path({ role: Role.OWNER, flow: ORDER_SCAN_FLOW }), { orderScan: false, relay: true, walletFlow: false });
+  assert.deepEqual(path({ flow: "relay" }), { orderScan: false, relay: true, walletFlow: false });
+  // certified scans and the tx / done steps of the wallet flow, as before
+  assert.deepEqual(path({ certified: true, role: Role.PARTNER, tier: Tier.CERTIFIED }), { orderScan: false, relay: false, walletFlow: true });
+  assert.equal(path({ step: "tx" }).walletFlow, true);
+  assert.equal(path({ step: "done", txSig: "S" }).walletFlow, true);
+  assert.equal(path({ step: "done" }).walletFlow, false);
+  assert.equal(path({ tier: Tier.CERTIFIED }).relay, false);
+  // a tap handed back from /t returns to the order flow
+  assert.equal(scanUrlFor(new URLSearchParams("role=1&flow=wallet&adopt=3&k=x")), "/scan?role=1&flow=wallet");
+  assert.equal(scanUrlFor(new URLSearchParams("role=1&flow=<x>")), "/scan?role=1");
+});
+
+test("after the verifier answered: a VALID relay answer always shows the record step, also without a record", () => {
+  assert.equal(stepAfterVerify("relay", { verdict: "VALID", anchor: "relay" }), "record");
+  // record null (nothing queued, e.g. a void passport): an FVSCAN2 the wallet's tx step cannot send stays off the tx step
+  const nothingQueued = { verdict: "VALID", anchor: "relay", record: null, msgHex: "46565343414e32" };
+  assert.equal(stepAfterVerify("relay", nothingQueued), "record");
+  // a verifier without the public record (no `anchor`) signed a v1 scan: the tx step anchors it with a wallet
+  assert.equal(stepAfterVerify("relay", { verdict: "VALID" }), "tx");
+  assert.equal(stepAfterVerify("wallet", { verdict: "VALID", anchor: "wallet" }), "tx");
+  assert.equal(stepAfterVerify("wallet", { verdict: "VALID" }), "tx");
+  for (const verdict of ["REPLAY", "INVALID", "NONCE_INVALID", "NO_RESPONSE"]) {
+    assert.equal(stepAfterVerify("relay", { verdict, anchor: "relay" }), "verify", verdict);
+    assert.equal(stepAfterVerify("wallet", { verdict }), "verify", verdict);
+  }
 });
 
 // ---- certified scans (M4 handoff: iPhone Safari without an injected wallet) -----------------------------------

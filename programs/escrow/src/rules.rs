@@ -117,6 +117,15 @@ pub fn core_asset_owner(owner_program: &Pubkey, data: &[u8]) -> Option<Pubkey> {
     Pubkey::try_from(&data[1..33]).ok()
 }
 
+/// A pass held in a FlaconVault account (`flacon::mint_passport_v2`: `passport.asset` is its flacon `Holding` PDA)
+/// has no Core asset and no owner on chain, so nobody may sell it here. Without this check `core_asset_owner` would
+/// return `None` for the Holding and `check_seller` would let the issuer sell a pass that belongs to an account
+/// holder. Checked first by `list` and `reserve` (`check_seller_of`).
+pub fn check_not_held_in_account(asset_owner_program: &Pubkey) -> Result<()> {
+    require!(asset_owner_program != &flacon::ID, EscrowError::PassHeldInAccount);
+    Ok(())
+}
+
 /// Who may sell a passport (checked by `list`, and again by `reserve` unless the asset is in the order's
 /// custody): the owner of its Core asset when the asset exists; only when there is no Core asset behind
 /// `passport.asset` (passports minted before the program checked it) the issuer, and only while the
@@ -261,6 +270,17 @@ mod tests {
         // no Core asset behind passport.asset: the issuer, while still a partner (or the authority)
         assert!(check_seller(&issuer, &issuer, None, true).is_ok());
         assert_eq!(code(check_seller(&issuer, &issuer, None, false)), err(EscrowError::NotPassportOwner));
+    }
+
+    #[test]
+    fn a_pass_held_in_an_account_is_never_for_sale() {
+        // passport.asset is a flacon Holding PDA: owned by the flacon program
+        assert_eq!(code(check_not_held_in_account(&flacon::ID)), err(EscrowError::PassHeldInAccount));
+        // a Core asset, a burned asset or placeholder (system-owned), any other program: the v1 rules decide
+        assert!(check_not_held_in_account(&MPL_CORE_PROGRAM_ID).is_ok());
+        assert!(check_not_held_in_account(&anchor_lang::system_program::ID).is_ok());
+        assert!(check_not_held_in_account(&Pubkey::new_unique()).is_ok());
+        assert_eq!(err(EscrowError::PassHeldInAccount), Some(6028));
     }
 
     #[test]

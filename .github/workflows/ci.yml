@@ -162,16 +162,23 @@ jobs:
       # A throwaway wallet for the local validator, and fresh program keypairs: the real program keypairs are not in
       # the repo, so `anchor keys sync` points declare_id! and Anchor.toml at the generated ones (CI checkout only).
       # The IDL check runs before that, while the generated IDLs still carry the committed program ids.
-      - name: Throwaway wallet, IDL drift check, program keys
+      - name: Throwaway wallet, IDL drift check
         run: |
           solana-keygen new --no-bip39-passphrase --silent --force --outfile "$HOME/.config/solana/id.json"
           anchor build
           bash .github/scripts/idl-check.sh
-          anchor keys sync
-      # The escrow's window branches (seller never ships, buyer never scans) under a Clock override: LiteSVM cannot load
-      # the SBPF v3 binary `anchor build` writes, so the script builds the same source for SBPF v2 into target/sbf-v2
-      # (cargo build-sbf from the Solana CLI installed above) and runs the ignored time_travel tests against it. The
-      # test loads the program at escrow::ID, so the keys synced above are fine.
+      # record_scan_v2 in LiteSVM (actor rules, the ±600 s window and key validity under a Clock override, and a
+      # byte-for-byte replay of docs/vectors.json v2.scans): built for SBPF v2 like the escrow tests below. The vectors
+      # are signed for the committed flacon id, so this runs before `anchor keys sync`.
+      - name: flacon record_scan_v2 tests (LiteSVM)
+        run: bash scripts/test-flacon-litesvm.sh
+      - name: Program keys
+        run: anchor keys sync
+      # The escrow's window branches (seller never ships, buyer never scans) under a Clock override, and the
+      # PassHeldInAccount guard of list / reserve: LiteSVM cannot load the SBPF v3 binary `anchor build` writes, so the
+      # script builds the same source for SBPF v2 into target/sbf-v2 (cargo build-sbf from the Solana CLI installed
+      # above) and runs the ignored tests against it. They load the program at escrow::ID, so the keys synced above are
+      # fine.
       - name: escrow time-travel tests (LiteSVM)
         run: bash scripts/test-escrow-time-travel.sh
       # Anchor.toml clones Metaplex Core from devnet into the local validator (read-only, needs network).

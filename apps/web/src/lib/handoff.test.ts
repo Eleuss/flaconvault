@@ -1,6 +1,6 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { ADOPT_WINDOW_S, adoptDeadline, safeScanUrl, scanSession, scanUrlFor, secondsLeft, sessionClock, tapGateAction, tapHandoff } from "./handoff";
+import { ADOPT_WINDOW_S, HEALTH_TIMEOUT_MS, adoptDeadline, healthOk, safeScanUrl, scanSession, scanUrlFor, secondsLeft, sessionClock, tapGateAction, tapHandoff, verifierReady } from "./handoff";
 
 class MemStorage implements Storage {
   private m = new Map<string, string>();
@@ -97,4 +97,60 @@ test("tap handoff without Web Locks: the claim + re-check lets only one tab take
   const [a, b] = await Promise.all([tapHandoff.take(), tapHandoff.take()]);
   assert.equal([a, b].filter(Boolean).length, 1, "the second claim overwrote the first, so only one survives");
   assert.equal(await tapHandoff.take(), null, "taken handoffs are gone");
+});
+
+// ---- TapGate: the verifier's /health before the tap is handed over (spec §10.3) ---------------------------------
+
+const json = (status: number, body: unknown) => new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+test("TapGate gate: only HTTP 2xx with JSON ok === true lets the tap go to the verifier", () => {
+  assert.equal(healthOk(200, { ok: true, keyId: 1 }), true);
+  assert.equal(healthOk(204, { ok: true }), true);
+  assert.equal(healthOk(200, { ok: false }), false);
+  assert.equal(healthOk(200, { ok: "true" }), false);
+  assert.equal(healthOk(200, null), false);
+  assert.equal(healthOk(200, [true]), false);
+  assert.equal(healthOk(503, { ok: true }), false);
+  assert.equal(healthOk(404, { ok: true }), false);
+});
+
+test("TapGate gate: asks {verify}/health without cache; non-2xx, ok !== true, bad JSON and network errors say no", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const answer = (r: () => Response | Promise<Response>) => (async (url: string, init?: RequestInit) => { calls.push({ url, init }); return r(); }) as unknown as typeof fetch;
+  assert.equal(await verifierReady("https://v.example", answer(() => json(200, { ok: true, simulator: false }))), true);
+  assert.equal(calls[0].url, "https://v.example/health");
+  assert.equal(calls[0].init?.cache, "no-store");
+  assert.ok(calls[0].init?.signal, "the request can be aborted");
+  assert.equal(await verifierReady("https://v.example", answer(() => json(200, { ok: false }))), false);
+  assert.equal(await verifierReady("https://v.example", answer(() => json(502, { ok: true }))), false);
+  assert.equal(await verifierReady("https://v.example", answer(() => json(404, "<html>Not Found</html>"))), false, "the host's 404 page");
+  assert.equal(await verifierReady("https://v.example", answer(() => json(200, "not json"))), false);
+  assert.equal(await verifierReady("https://v.example", (async () => { throw new TypeError("Load failed"); }) as typeof fetch), false);
+});
+
+test("TapGate gate: gives up after 2 s, even when the request never settles", async (t) => {
+  assert.equal(HEALTH_TIMEOUT_MS, 2000);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let aborted = false;
+  // a fetch that honours the abort, and one that ignores it: both end at 2 s
+  const honours = ((_u: string, init?: RequestInit) => new Promise<Response>((_res, rej) => init?.signal?.addEventListener("abort", () => { aborted = true; rej(new DOMException("aborted", "AbortError")); }))) as unknown as typeof fetch;
+  const ignores = (() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+  for (const f of [honours, ignores]) {
+    let result: boolean | null = null;
+    const p = verifierReady("https://v.example", f).then((v) => { result = v; });
+    await Promise.resolve();
+    t.mock.timers.tick(HEALTH_TIMEOUT_MS - 1);
+    await Promise.resolve();
+    assert.equal(result, null, "still waiting before 2 s");
+    t.mock.timers.tick(1);
+    await p;
+    assert.equal(result, false);
+  }
+  assert.equal(aborted, true, "the hung request is aborted");
+  // a body that arrives too late counts as a timeout as well
+  const slowBody = (async () => ({ ok: true, status: 200, json: () => new Promise(() => {}) })) as unknown as typeof fetch;
+  const p = verifierReady("https://v.example", slowBody);
+  await Promise.resolve();
+  t.mock.timers.tick(HEALTH_TIMEOUT_MS);
+  assert.equal(await p, false);
 });

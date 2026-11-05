@@ -46,10 +46,14 @@ export const secondsLeft = (deadline: number, deviceNow = nowS()) => Math.max(0,
 export function safeScanUrl(u: string | null | undefined): string {
   return typeof u === "string" && /^\/scan(\?[^#\s]*)?$/.test(u) ? u : "/scan";
 }
-/** /scan URL that keeps tier, role and site (never the one-shot adopt / k / resume parameters). */
+/**
+ * /scan URL that keeps tier, role, site and an order scan's `flow=wallet` (never the one-shot adopt / k / resume
+ * parameters), so a tap handed back from /t returns to the same flow.
+ */
 export function scanUrlFor(params: { get(k: string): string | null }): string {
   const keep = new URLSearchParams();
   for (const key of ["tier", "role", "site"]) { const v = params.get(key); if (v != null && /^\d{1,5}$/.test(v)) keep.set(key, v); }
+  if (params.get("flow") === "wallet") keep.set("flow", "wallet");
   const q = keep.toString();
   return q ? `/scan?${q}` : "/scan";
 }
@@ -68,6 +72,30 @@ export function tapGateAction(params: TagParams, session: ScanSessionFlag | null
     ? `picc_data=${encodeURIComponent(params.piccData)}&cmac=${encodeURIComponent(params.cmac)}${params.enc ? `&enc=${encodeURIComponent(params.enc)}` : ""}`
     : `uid=${encodeURIComponent(params.uid)}&ctr=${encodeURIComponent(params.ctr)}&cmac=${encodeURIComponent(params.cmac)}`;
   return { kind: "verify", url: `${verifyUrl}/t?${q}` };
+}
+
+/** How long TapGate waits for the verifier's /health before it shows the fallback (spec §10.3). */
+export const HEALTH_TIMEOUT_MS = 2000;
+/** The verifier takes the tap only when /health answers HTTP 2xx with JSON `ok === true`. */
+export const healthOk = (status: number, body: unknown): boolean =>
+  status >= 200 && status < 300 && !!body && typeof body === "object" && (body as { ok?: unknown }).ok === true;
+/**
+ * Before TapGate hands raw tag parameters to the verifier (which consumes the tap): is the verifier up? A timeout
+ * (also while reading the body), a non-2xx answer, a body without `ok: true` or a network error all mean no, so /t
+ * shows "Seal check unavailable" instead of the host's error page, and the tap stays unused for "Try again".
+ * The timer also covers a fetch that ignores the abort signal.
+ */
+export async function verifierReady(verifyUrl: string, fetchImpl: typeof fetch = (...a) => fetch(...a), timeoutMs = HEALTH_TIMEOUT_MS): Promise<boolean> {
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<false>((res) => { timer = setTimeout(() => { ctrl?.abort(); res(false); }, timeoutMs); });
+  const check = (async () => {
+    try {
+      const r = await fetchImpl(`${verifyUrl}/health`, { cache: "no-store", headers: { accept: "application/json" }, signal: ctrl?.signal });
+      return healthOk(r.status, r.ok ? await r.json() : null);
+    } catch { return false; }
+  })();
+  try { return await Promise.race([check, late]); } finally { clearTimeout(timer); }
 }
 
 export interface ScanSessionFlag extends SessionClock { nonce: string; expiresAt: number; ttl?: number; issuedAt?: number; scanUrl?: string }

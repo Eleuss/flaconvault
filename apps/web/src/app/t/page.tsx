@@ -5,8 +5,10 @@ import { ArrowRight } from "lucide-react";
 import { getHealth, getTap } from "@/lib/api";
 import { DEV_SIMULATOR } from "@/lib/config";
 import { passportHref, tapLanding, verdictText } from "@/lib/format";
+import { asRecord } from "@/lib/public-record";
 import { Lamp, Unavailable } from "@/components/badges";
 import { RememberTap, TapGate } from "@/components/tap-gate";
+import { TapRecord } from "@/components/tap-record";
 
 export const dynamic = "force-dynamic";
 
@@ -53,6 +55,8 @@ export default async function TagLanding({ searchParams }: { searchParams: Promi
   const { verdict, conditionHref } = tapLanding(t, tap, k);
   const v = verdictText(verdict, t.counter);
   const remember = <RememberTap uid={t.uid ?? null} serial={t.serial} counter={t.counter} />;
+  // the public record of this tap (an older verifier sends none: no line, no notice)
+  const record = asRecord(t.record);
   const toneClass = { ok: "text-ok", warn: "text-warn", bad: "text-bad", none: "text-muted" }[v.tone];
   return (
     <div className="page-in container-page flex min-h-[70vh] flex-col justify-center py-16">
@@ -69,6 +73,7 @@ export default async function TagLanding({ searchParams }: { searchParams: Promi
       {t.uid && (
         <p className="mt-2 text-sm text-muted">Chip UID <span className="mono select-all text-ink">{t.uid.toUpperCase()}</span>{t.verdict === "UNREGISTERED" && <> — enter it in <Link href="/certify" className="link">/certify</Link> under “Chip UID”</>}</p>
       )}
+      {record && <TapRecord tapId={t.tapId} serial={t.serial} initial={record} serverNow={Math.floor(Date.now() / 1000)} />}
       <div className="mt-8 flex flex-wrap gap-3">
         {t.serial && <Link href={passportHref(t.serial)} className="btn">View passport with history <ArrowRight className="h-4 w-4" aria-hidden /></Link>}
         {conditionHref && <Link href={conditionHref} className="btn-outline">Check condition · Photograph the card</Link>}

@@ -309,6 +309,326 @@ export type Flacon = {
       ]
     },
     {
+      "name": "attachSealV2",
+      "docs": [
+        "`attach_seal` with a separate payer."
+      ],
+      "discriminator": [
+        63,
+        172,
+        162,
+        90,
+        166,
+        253,
+        49,
+        228
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "passport",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  115,
+                  115,
+                  112,
+                  111,
+                  114,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "passport.serialHash",
+                "account": "passport"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seal",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  97,
+                  108
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "uidHash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "signer",
+          "docs": [
+            "The passport's issuer while it is a partner, or the registry authority."
+          ],
+          "signer": true
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "uidHash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "kind",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "initHolderConfig",
+      "docs": [
+        "Registry authority only, once. `cluster_tag` ∈ {1 MAINNET, 2 DEVNET, 3 LOCALNET} is immutable; every",
+        "FVSCAN2 must carry it."
+      ],
+      "discriminator": [
+        208,
+        186,
+        193,
+        218,
+        54,
+        228,
+        234,
+        43
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "holderConfig",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  108,
+                  100,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "Must be the registry authority; becomes `holder_config.authority`."
+          ],
+          "signer": true
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "clusterTag",
+          "type": "u8"
+        },
+        {
+          "name": "guardian",
+          "type": "pubkey"
+        },
+        {
+          "name": "holderKey",
+          "type": "pubkey"
+        },
+        {
+          "name": "registrarKey",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "initHoldingV1",
+      "docs": [
+        "Registry authority only, separate payer. The Holding (state WALLET) of a passport minted with v1",
+        "`mint_passport`, so it can take `record_scan_v2` scans."
+      ],
+      "discriminator": [
+        205,
+        152,
+        128,
+        155,
+        192,
+        103,
+        187,
+        3
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "passport",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  115,
+                  115,
+                  112,
+                  111,
+                  114,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "passport.serialHash",
+                "account": "passport"
+              }
+            ]
+          }
+        },
+        {
+          "name": "holding",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  108,
+                  100,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "passport"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "Must be the registry authority."
+          ],
+          "signer": true
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "initRegistry",
       "docs": [
         "Creates the singleton registry; the payer becomes `authority`. Only the program's upgrade",
@@ -575,6 +895,139 @@ export type Flacon = {
       ]
     },
     {
+      "name": "mintPassportV2",
+      "docs": [
+        "Partner (or authority) signs, separate payer. A pass held in a FlaconVault account: no Core asset,",
+        "`passport.asset` = the new Holding PDA (state ACCOUNT, epoch 0, `commitment` ≠ 0)."
+      ],
+      "discriminator": [
+        198,
+        40,
+        100,
+        114,
+        150,
+        222,
+        18,
+        90
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "passport",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  115,
+                  115,
+                  112,
+                  111,
+                  114,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "serialHash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "holding",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  108,
+                  100,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "passport"
+              }
+            ]
+          }
+        },
+        {
+          "name": "issuer",
+          "docs": [
+            "Must be a registered partner (or the registry authority); becomes `passport.issuer`."
+          ],
+          "signer": true
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "serialHash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "bindingHash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "commitment",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "recordScan",
       "docs": [
         "The core: anchors one server-signed scan. Must be preceded in the same",
@@ -716,6 +1169,175 @@ export type Flacon = {
       ]
     },
     {
+      "name": "recordScanV2",
+      "docs": [
+        "Records one server-signed FVSCAN2 scan; must be a top-level instruction right after an `Ed25519Program`",
+        "instruction over the 256-byte message. Creates nothing; any fee payer. Only HOLDER, WALLET and PARTNER",
+        "scans change grade and void."
+      ],
+      "discriminator": [
+        4,
+        123,
+        244,
+        141,
+        147,
+        248,
+        31,
+        241
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "holderConfig",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  108,
+                  100,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "passport",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  115,
+                  115,
+                  112,
+                  111,
+                  114,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "passport.serialHash",
+                "account": "passport"
+              }
+            ]
+          }
+        },
+        {
+          "name": "seal",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  97,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seal.uidHash",
+                "account": "seal"
+              }
+            ]
+          }
+        },
+        {
+          "name": "holding",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  108,
+                  100,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "passport"
+              }
+            ]
+          }
+        },
+        {
+          "name": "instructions",
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "actorSigner",
+          "docs": [
+            "WALLET and PARTNER scans only: the actor co-signs. Otherwise the program id (Anchor's \"none\")."
+          ],
+          "signer": true,
+          "optional": true
+        },
+        {
+          "name": "asset",
+          "docs": [
+            "WALLET scans only: the account at `passport.asset`, a Metaplex Core asset owned by the actor. Otherwise the",
+            "program id."
+          ],
+          "optional": true
+        },
+        {
+          "name": "eventAuthority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "serverKeyId",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "removePartner",
       "docs": [
         "Authority only. The removed wallet also loses `attach_seal` / `mark_seal_dead` on its passports."
@@ -820,6 +1442,103 @@ export type Flacon = {
       ]
     },
     {
+      "name": "setHolderConfig",
+      "docs": [
+        "Registry authority only (the current one; `holder_config.authority` is re-synced to it). Delays within",
+        "`MIN_HOLD_DELAY_S..=MAX_HOLD_DELAY_S`."
+      ],
+      "discriminator": [
+        141,
+        42,
+        203,
+        63,
+        55,
+        200,
+        26,
+        177
+      ],
+      "accounts": [
+        {
+          "name": "holderConfig",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  108,
+                  100,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "Must be the registry authority (not the copy in `holder_config.authority`)."
+          ],
+          "signer": true
+        },
+        {
+          "name": "registry",
+          "docs": [
+            "Appended after `authority`, so the IDL positions 0 and 1 stay as they were."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "guardian",
+          "type": "pubkey"
+        },
+        {
+          "name": "holderKey",
+          "type": "pubkey"
+        },
+        {
+          "name": "registrarKey",
+          "type": "pubkey"
+        },
+        {
+          "name": "claimDelayS",
+          "type": "i64"
+        },
+        {
+          "name": "notapDelayS",
+          "type": "i64"
+        }
+      ]
+    },
+    {
       "name": "transferAuthority",
       "docs": [
         "Current and new authority both sign."
@@ -872,6 +1591,32 @@ export type Flacon = {
     }
   ],
   "accounts": [
+    {
+      "name": "holderConfig",
+      "discriminator": [
+        121,
+        105,
+        42,
+        56,
+        94,
+        205,
+        153,
+        48
+      ]
+    },
+    {
+      "name": "holding",
+      "discriminator": [
+        23,
+        96,
+        64,
+        250,
+        235,
+        191,
+        0,
+        144
+      ]
+    },
     {
       "name": "passport",
       "discriminator": [
@@ -940,6 +1685,45 @@ export type Flacon = {
       ]
     },
     {
+      "name": "holderConfigInitialized",
+      "discriminator": [
+        205,
+        247,
+        222,
+        66,
+        179,
+        254,
+        129,
+        51
+      ]
+    },
+    {
+      "name": "holderConfigUpdated",
+      "discriminator": [
+        9,
+        9,
+        111,
+        141,
+        135,
+        26,
+        134,
+        75
+      ]
+    },
+    {
+      "name": "holdingInitialized",
+      "discriminator": [
+        187,
+        170,
+        108,
+        176,
+        158,
+        246,
+        9,
+        227
+      ]
+    },
+    {
       "name": "partnerAdded",
       "discriminator": [
         118,
@@ -1002,6 +1786,19 @@ export type Flacon = {
         213,
         49,
         171
+      ]
+    },
+    {
+      "name": "scanRecordedV2",
+      "discriminator": [
+        39,
+        157,
+        16,
+        73,
+        19,
+        22,
+        63,
+        4
       ]
     },
     {
@@ -1164,7 +1961,7 @@ export type Flacon = {
     {
       "code": 6018,
       "name": "malformedEd25519Instruction",
-      "msg": "Ed25519 instruction data is malformed (expects exactly one signature over a 152-byte message)"
+      "msg": "Ed25519 instruction data is malformed (expects exactly one signature over a 152-byte FVSCAN1 or, for record_scan_v2, a 256-byte FVSCAN2 message)"
     },
     {
       "code": 6019,
@@ -1290,6 +2087,86 @@ export type Flacon = {
       "code": 6043,
       "name": "assetNotOwnedByIssuer",
       "msg": "The Core asset must be owned by the issuer when the passport is minted"
+    },
+    {
+      "code": 6044,
+      "name": "invalidClusterTag",
+      "msg": "cluster_tag must be 1 (MAINNET), 2 (DEVNET) or 3 (LOCALNET)"
+    },
+    {
+      "code": 6045,
+      "name": "invalidDelay",
+      "msg": "Delay must be within MIN_HOLD_DELAY_S..=MAX_HOLD_DELAY_S"
+    },
+    {
+      "code": 6046,
+      "name": "invalidCommitment",
+      "msg": "Commitment must not be all zeros"
+    },
+    {
+      "code": 6047,
+      "name": "cpiNotAllowed",
+      "msg": "record_scan_v2 must be a top-level instruction"
+    },
+    {
+      "code": 6048,
+      "name": "invalidMessagePrefix",
+      "msg": "Signed message is not an FVSCAN2 message"
+    },
+    {
+      "code": 6049,
+      "name": "wrongProgramId",
+      "msg": "FVSCAN2 message is bound to another program id"
+    },
+    {
+      "code": 6050,
+      "name": "wrongCluster",
+      "msg": "FVSCAN2 message is bound to another cluster"
+    },
+    {
+      "code": 6051,
+      "name": "invalidPurpose",
+      "msg": "purpose must be 0..=6"
+    },
+    {
+      "code": 6052,
+      "name": "invalidActorKind",
+      "msg": "actor_kind must be 0..=4"
+    },
+    {
+      "code": 6053,
+      "name": "invalidSighting",
+      "msg": "A sighting (tier 0) has fill FILL_NONE, uv/hum/heat MISSING, heat_levels 0 and no media; FILL_NONE only with tier 0"
+    },
+    {
+      "code": 6054,
+      "name": "purposeNotAllowed",
+      "msg": "purpose is not allowed for this actor kind or tier"
+    },
+    {
+      "code": 6055,
+      "name": "actorMismatch",
+      "msg": "actor does not match its kind (zero for NONE, Holding.commitment for HOLDER, the signer for WALLET/PARTNER)"
+    },
+    {
+      "code": 6056,
+      "name": "missingActorSigner",
+      "msg": "WALLET and PARTNER scans need the actor as signer"
+    },
+    {
+      "code": 6057,
+      "name": "notAssetOwner",
+      "msg": "The WALLET actor does not own the passport's Core asset"
+    },
+    {
+      "code": 6058,
+      "name": "holdingNotInAccount",
+      "msg": "HOLDER and RECIPIENT scans need a pass held in an account (Passport.asset == Holding)"
+    },
+    {
+      "code": 6059,
+      "name": "headCountOverflow",
+      "msg": "Holding head_count overflow"
     }
   ],
   "types": [
@@ -1305,6 +2182,284 @@ export type Flacon = {
           {
             "name": "newAuthority",
             "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "holderConfig",
+      "docs": [
+        "Seeds: `[\"holder_config\"]` — the singleton settings of passes held in FlaconVault accounts",
+        "(docs/public-record.md §6.1). P1 uses `cluster_tag` (checked by `record_scan_v2`); the keys, delays,",
+        "`paused` and `last_heartbeat` are for the later phases (moves, claims, pause), which only add instructions."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "docs": [
+              "The registry authority at `init_holder_config` (immutable in P1)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "guardian",
+            "type": "pubkey"
+          },
+          {
+            "name": "holderKey",
+            "type": "pubkey"
+          },
+          {
+            "name": "registrarKey",
+            "type": "pubkey"
+          },
+          {
+            "name": "clusterTag",
+            "docs": [
+              "cluster enum (constants::CLUSTER_*), set once; every FVSCAN2 must carry it."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "claimDelayS",
+            "type": "i64"
+          },
+          {
+            "name": "notapDelayS",
+            "type": "i64"
+          },
+          {
+            "name": "paused",
+            "docs": [
+              "Guards moves (P5); scans are evidence and ignore it."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "lastHeartbeat",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "holderConfigInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "holderConfig",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "clusterTag",
+            "type": "u8"
+          },
+          {
+            "name": "guardian",
+            "type": "pubkey"
+          },
+          {
+            "name": "holderKey",
+            "type": "pubkey"
+          },
+          {
+            "name": "registrarKey",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "holderConfigUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "guardian",
+            "type": "pubkey"
+          },
+          {
+            "name": "holderKey",
+            "type": "pubkey"
+          },
+          {
+            "name": "registrarKey",
+            "type": "pubkey"
+          },
+          {
+            "name": "claimDelayS",
+            "type": "i64"
+          },
+          {
+            "name": "notapDelayS",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "holding",
+      "docs": [
+        "Seeds: `[\"holding\", passport]` — the register entry of a passport (docs/public-record.md §6.2; the layout is",
+        "final from P1). `Passport.asset == this PDA` ⇒ the pass is held in a FlaconVault account under `commitment`;",
+        "otherwise the owner of the Core asset at `Passport.asset` holds it. Every `record_scan_v2` folds its message into",
+        "`scan_head`, so anyone can check that a list of v2 scans is complete and in order."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "passport",
+            "type": "pubkey"
+          },
+          {
+            "name": "state",
+            "docs": [
+              "holding_state enum (constants::HOLDING_STATE_*)"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "epoch",
+            "type": "u32"
+          },
+          {
+            "name": "commitment",
+            "docs": [
+              "sha256(\"FVHOLD1\" ‖ passport ‖ epoch ‖ secret32); zero for a legacy (WALLET) holding."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "scanHead",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "headCount",
+            "type": "u32"
+          },
+          {
+            "name": "lastActorKind",
+            "type": "u8"
+          },
+          {
+            "name": "lastActor",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "lastPurpose",
+            "type": "u8"
+          },
+          {
+            "name": "lastScanTs",
+            "docs": [
+              "Signed `ts` of the last `record_scan_v2`."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "pendingKind",
+            "docs": [
+              "P3/P4: NONE 0, NOTAP 1, CLAIM 2."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "pendingTarget",
+            "docs": [
+              "P3: the new commitment of a NOTAP move; P4: the wallet of a claim."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "unlockAt",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "holdingInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "passport",
+            "type": "pubkey"
+          },
+          {
+            "name": "holding",
+            "type": "pubkey"
+          },
+          {
+            "name": "state",
+            "type": "u8"
+          },
+          {
+            "name": "epoch",
+            "type": "u32"
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }
@@ -1774,6 +2929,68 @@ export type Flacon = {
       }
     },
     {
+      "name": "scanRecordedV2",
+      "docs": [
+        "Emitted by `record_scan_v2` through `emit_cpi!` (an inner instruction, not a log line), with the full signed",
+        "message, so an indexer can re-check the signature and re-fold `scan_head`. Values after the scan."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "passport",
+            "type": "pubkey"
+          },
+          {
+            "name": "seal",
+            "type": "pubkey"
+          },
+          {
+            "name": "holding",
+            "type": "pubkey"
+          },
+          {
+            "name": "serverKeyId",
+            "type": "u8"
+          },
+          {
+            "name": "message",
+            "type": {
+              "array": [
+                "u8",
+                256
+              ]
+            }
+          },
+          {
+            "name": "grade",
+            "type": "u8"
+          },
+          {
+            "name": "void",
+            "type": "bool"
+          },
+          {
+            "name": "scanCount",
+            "type": "u32"
+          },
+          {
+            "name": "scanHead",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "headCount",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
       "name": "seal",
       "docs": [
         "Seeds: `[\"seal\", uid_hash]` — one NFC seal (box or neck) pointing at a passport."
@@ -2012,6 +3229,70 @@ export type Flacon = {
   ],
   "constants": [
     {
+      "name": "actorKindHolder",
+      "type": "u8",
+      "value": "1"
+    },
+    {
+      "name": "actorKindNone",
+      "type": "u8",
+      "value": "0"
+    },
+    {
+      "name": "actorKindPartner",
+      "type": "u8",
+      "value": "3"
+    },
+    {
+      "name": "actorKindRecipient",
+      "type": "u8",
+      "value": "4"
+    },
+    {
+      "name": "actorKindWallet",
+      "type": "u8",
+      "value": "2"
+    },
+    {
+      "name": "clusterDevnet",
+      "type": "u8",
+      "value": "2"
+    },
+    {
+      "name": "clusterLocalnet",
+      "type": "u8",
+      "value": "3"
+    },
+    {
+      "name": "clusterMainnet",
+      "type": "u8",
+      "value": "1"
+    },
+    {
+      "name": "commitmentPrefix",
+      "docs": [
+        "`commitment = sha256(\"FVHOLD1\" ‖ passport ‖ epoch u32 LE ‖ secret32)`"
+      ],
+      "type": "bytes",
+      "value": "[70, 86, 72, 79, 76, 68, 49]"
+    },
+    {
+      "name": "defaultClaimDelayS",
+      "docs": [
+        "Public delay of a move to a wallet (72 h)."
+      ],
+      "type": "i64",
+      "value": "259200"
+    },
+    {
+      "name": "defaultNotapDelayS",
+      "docs": [
+        "Public delay of a move without a tap (7 days)."
+      ],
+      "type": "i64",
+      "value": "604800"
+    },
+    {
       "name": "eventDispute",
       "type": "u8",
       "value": "8"
@@ -2060,6 +3341,14 @@ export type Flacon = {
       "name": "eventShip",
       "type": "u8",
       "value": "5"
+    },
+    {
+      "name": "fillNone",
+      "docs": [
+        "`fill` value of a scan without a fill reading (every tier-0 sighting, and only those)."
+      ],
+      "type": "u8",
+      "value": "255"
     },
     {
       "name": "gradeA",
@@ -2111,6 +3400,37 @@ export type Flacon = {
       "value": "4"
     },
     {
+      "name": "holderConfigSeed",
+      "docs": [
+        "`[\"holder_config\"]`: the singleton HolderConfig (docs/public-record.md §6.1)."
+      ],
+      "type": "bytes",
+      "value": "[104, 111, 108, 100, 101, 114, 95, 99, 111, 110, 102, 105, 103]"
+    },
+    {
+      "name": "holdingSeed",
+      "docs": [
+        "`[\"holding\", passport]`: one Holding per passport (docs/public-record.md §6.2)."
+      ],
+      "type": "bytes",
+      "value": "[104, 111, 108, 100, 105, 110, 103]"
+    },
+    {
+      "name": "holdingStateAccount",
+      "type": "u8",
+      "value": "0"
+    },
+    {
+      "name": "holdingStateClaimPending",
+      "type": "u8",
+      "value": "1"
+    },
+    {
+      "name": "holdingStateWallet",
+      "type": "u8",
+      "value": "2"
+    },
+    {
       "name": "indicatorIntact",
       "type": "u8",
       "value": "0"
@@ -2137,6 +3457,11 @@ export type Flacon = {
       ],
       "type": "u32",
       "value": "16777215"
+    },
+    {
+      "name": "maxHoldDelayS",
+      "type": "i64",
+      "value": "2592000"
     },
     {
       "name": "maxPartners",
@@ -2170,12 +3495,33 @@ export type Flacon = {
       "value": "16"
     },
     {
+      "name": "minHoldDelayS",
+      "docs": [
+        "`set_holder_config` accepts delays only within 1 day ..= 30 days."
+      ],
+      "type": "i64",
+      "value": "86400"
+    },
+    {
       "name": "mplCoreProgramId",
       "docs": [
         "Metaplex Core: `mint_passport` only accepts an asset account owned by this program."
       ],
       "type": "pubkey",
       "value": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
+    },
+    {
+      "name": "msg2Len",
+      "type": "u16",
+      "value": "256"
+    },
+    {
+      "name": "msg2Prefix",
+      "docs": [
+        "Prefix of the 256-byte FVSCAN2 message that `record_scan_v2` parses out of the Ed25519 instruction."
+      ],
+      "type": "bytes",
+      "value": "[70, 86, 83, 67, 65, 78, 50]"
     },
     {
       "name": "msgLen",
@@ -2203,6 +3549,41 @@ export type Flacon = {
       "name": "passportSeed",
       "type": "bytes",
       "value": "[112, 97, 115, 115, 112, 111, 114, 116]"
+    },
+    {
+      "name": "purposeBirth",
+      "type": "u8",
+      "value": "6"
+    },
+    {
+      "name": "purposeCheck",
+      "type": "u8",
+      "value": "1"
+    },
+    {
+      "name": "purposeClaim",
+      "type": "u8",
+      "value": "5"
+    },
+    {
+      "name": "purposeList",
+      "type": "u8",
+      "value": "2"
+    },
+    {
+      "name": "purposeReceipt",
+      "type": "u8",
+      "value": "4"
+    },
+    {
+      "name": "purposeShip",
+      "type": "u8",
+      "value": "3"
+    },
+    {
+      "name": "purposeTap",
+      "type": "u8",
+      "value": "0"
     },
     {
       "name": "registrySeed",
@@ -2233,6 +3614,14 @@ export type Flacon = {
       "name": "roleVault",
       "type": "u8",
       "value": "3"
+    },
+    {
+      "name": "scanHeadPrefix",
+      "docs": [
+        "`scan_head_n = sha256(\"FVHEAD1\" ‖ scan_head_(n−1) ‖ sha256(msg_n))`"
+      ],
+      "type": "bytes",
+      "value": "[70, 86, 72, 69, 65, 68, 49]"
     },
     {
       "name": "scanSeed",

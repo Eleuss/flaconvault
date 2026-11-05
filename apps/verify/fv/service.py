@@ -289,3 +289,33 @@ def apply_confirmed_scan(conn, event: dict, attester: str | None, ts: int, chain
             fill_close = False
         agree = pi.get("heat") == ci.get("heat") and pi.get("humidity") == ci.get("humidity") and fill_close
         bump_attester(conn, prev["actor_pubkey"], ts, compare=1, agree=1 if agree else 0)
+
+
+def apply_relayed_scan(conn, event: dict, ts: int, *, drop_sighting: bool) -> None:
+    """
+    State change of a public-record (relay) SCAN whose relay row is terminal (fv.relayer.settle_event; the event is
+    already `confirmed`, with the relay tx_sig when recorded): payload.confirmed from the signed FVSCAN2 fields
+    (source "fvscan2", no attester — the visitor is nobody's wallet), payload.tier/role from the message. A visitor scan
+    (actor NONE) and a RECIPIENT scan never change passport grade or void and credit no attester (D14); HOLDER, WALLET
+    and PARTNER scans (not signed by the P1 verifier) follow record_scan_v2's rule. The /t sighting of the same tap is
+    dropped when no TAP row of that counter can still record it (`drop_sighting`, fv.relayer.tap_live), so one tap is
+    not shown twice.
+    """
+    payload = json.loads(event.get("payload_json") or "{}")
+    try:
+        m = proof.parse_message_v2(bytes.fromhex(payload.get("msgHex") or ""))
+    except ValueError:
+        return
+    payload["confirmed"] = {"attester": None, "tier": m["tier"], "role": m["role"], "siteId": m["site_id"],
+                            "source": "fvscan2", "mismatch": []}
+    payload["tier"], payload["role"] = m["tier"], m["role"]
+    update_event_payload(conn, event["id"], payload)
+    serial = event["serial"]
+    if proof.actor_changes_grade(m["actor_kind"]):
+        row = conn.execute("SELECT grade, void FROM passports WHERE serial=?", (serial,)).fetchone()
+        if row is not None:
+            g, v = proof.passport_after_scan_v2(int(row["grade"]), bool(row["void"]), tamper=m["tamper"], heat=m["heat"],
+                                                hum=m["hum"], fill=m["fill"])
+            conn.execute("UPDATE passports SET grade=?, void=? WHERE serial=?", (g, int(v), serial))
+    if drop_sighting and event.get("seal_uid_hash"):
+        drop_superseded_sighting(conn, serial, event["seal_uid_hash"], int(m["counter"]), event["id"])

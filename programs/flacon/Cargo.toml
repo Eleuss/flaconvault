@@ -20,11 +20,22 @@ custom-heap = []
 custom-panic = []
 
 [dependencies]
-anchor-lang = { version = "1.2.0", features = ["init-if-needed"] }
+# event-cpi: record_scan_v2 emits ScanRecordedV2 through a self-CPI (emit_cpi!), so the event survives log truncation
+anchor-lang = { version = "1.2.0", features = ["init-if-needed", "event-cpi"] }
 solana-instructions-sysvar = "3.0.0"
+# sha256 for the Holding scan-head fold and the holder commitment (the sol_sha256 syscall on chain, sha2 off chain)
+solana-sha256-hasher = { version = "3.1.0", features = ["sha2"] }
 
 [dev-dependencies]
 serde_json = "1"
+# tests/record_scan_v2.rs: record_scan_v2 under a Clock override (needs target/sbf-v2/flacon.so, scripts/test-flacon-litesvm.sh)
+litesvm = "0.10"
+solana-account = "3"
+solana-keypair = "3"
+solana-signer = "3"
+solana-signature = { version = "3", features = ["verify"] }
+solana-transaction = { version = "3", features = ["bincode"] }
+solana-program-runtime = "3.1.14"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

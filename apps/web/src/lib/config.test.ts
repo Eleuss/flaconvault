@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { firstSet, resolveUrls } from "./config";
+import { firstSet, parseCluster, resolveUrls } from "./config";
 
 /** KEY=VALUE lines of an env file, the way @next/env (dotenv) reads them: comments skipped, `KEY=` is an empty string. */
 function parseEnvFile(file: string): Record<string, string> {
@@ -45,4 +45,14 @@ test("apps/web/.env.example copied to .env.local gives absolute server-side URLs
     assert.match(base, /^https?:\/\//);
   }
   assert.equal(u.verifyUrl, "http://localhost:8787");
+});
+
+test("NEXT_PUBLIC_SOLANA_CLUSTER: devnet, mainnet or localnet; unset, empty or anything else is devnet", () => {
+  assert.equal(parseCluster("devnet"), "devnet");
+  assert.equal(parseCluster("mainnet"), "mainnet");
+  assert.equal(parseCluster("localnet"), "localnet");
+  assert.equal(parseCluster(" Mainnet "), "mainnet");
+  for (const v of [undefined, "", "  ", "mainnet-beta", "testnet", "prod"]) assert.equal(parseCluster(v), "devnet", String(v));
+  const env = parseEnvFile(path.join(__dirname, "../../.env.example"));
+  assert.equal(env.NEXT_PUBLIC_SOLANA_CLUSTER, "devnet", "the template names the cluster of its devnet RPC");
 });

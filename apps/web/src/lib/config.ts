@@ -41,7 +41,19 @@ export const PROGRAM_ID = process.env.NEXT_PUBLIC_PROGRAM_ID ?? "";
  * wallets, burner, airdrop, test images) stay hidden unless demo mode is on — see lib/demo.ts.
  */
 export const DEV_SIMULATOR = process.env.NEXT_PUBLIC_DEV_SIMULATOR === "true";
-export const CLUSTER = "devnet";
+
+/** The Solana cluster this deployment records on (spec docs/public-record.md §10.1). */
+export type ClusterName = "devnet" | "mainnet" | "localnet";
+const CLUSTERS: readonly ClusterName[] = ["devnet", "mainnet", "localnet"];
+/**
+ * NEXT_PUBLIC_SOLANA_CLUSTER: `devnet`, `mainnet` or `localnet` (case and surrounding blanks ignored). Unset, empty or
+ * anything else is devnet, so a typo shows the test-phase notice instead of hiding it.
+ */
+export function parseCluster(raw: string | undefined): ClusterName {
+  const v = firstSet(raw).toLowerCase();
+  return (CLUSTERS as readonly string[]).includes(v) ? (v as ClusterName) : "devnet";
+}
+export const CLUSTER: ClusterName = parseCluster(process.env.NEXT_PUBLIC_SOLANA_CLUSTER);
 /** Public origin of this app (used where no window is available, e.g. wallet app identity during SSR). */
 export const CANONICAL_ORIGIN = urls.canonicalOrigin;
 

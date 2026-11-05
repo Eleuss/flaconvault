@@ -1,8 +1,12 @@
 //! FlaconVault `flacon` program — passport, seals and server-signed scan proofs
 //! for collectible perfume bottles (Dev-Briefing v2 §6).
 //!
+//! v1 (`record_scan`, FVSCAN1): one ScanProof PDA per scan, paid by the attesting wallet.
+//! v2 public record (docs/public-record.md, P1): `record_scan_v2` (FVSCAN2) creates no account; FlaconVault's
+//! relayer pays only the fee, and the scan is folded into the passport's `Holding.scan_head`.
+//!
 //! Deliberately NOT here: Merkle batching, role tokens, encryption, multisig,
-//! the `Origin` account. One PDA per scan.
+//! the `Origin` account.
 
 pub mod constants;
 pub mod ed25519;
@@ -11,6 +15,7 @@ pub mod events;
 pub mod grade;
 pub mod instructions;
 pub mod message;
+pub mod message_v2;
 pub mod state;
 
 use anchor_lang::prelude::*;
@@ -95,5 +100,61 @@ pub mod flacon {
     /// transaction by an `Ed25519Program` instruction over the §4.3 message.
     pub fn record_scan(ctx: Context<RecordScan>, args: RecordScanArgs) -> Result<()> {
         instructions::record_scan::handle_record_scan(ctx, args)
+    }
+
+    // ---- v2 public record (docs/public-record.md §7) ----------------------------------
+
+    /// Registry authority only, once. `cluster_tag` ∈ {1 MAINNET, 2 DEVNET, 3 LOCALNET} is immutable; every
+    /// FVSCAN2 must carry it.
+    pub fn init_holder_config(
+        ctx: Context<InitHolderConfig>,
+        cluster_tag: u8,
+        guardian: Pubkey,
+        holder_key: Pubkey,
+        registrar_key: Pubkey,
+    ) -> Result<()> {
+        instructions::holder_config::handle_init_holder_config(ctx, cluster_tag, guardian, holder_key, registrar_key)
+    }
+
+    /// Registry authority only (the current one; `holder_config.authority` is re-synced to it). Delays within
+    /// `MIN_HOLD_DELAY_S..=MAX_HOLD_DELAY_S`.
+    pub fn set_holder_config(
+        ctx: Context<SetHolderConfig>,
+        guardian: Pubkey,
+        holder_key: Pubkey,
+        registrar_key: Pubkey,
+        claim_delay_s: i64,
+        notap_delay_s: i64,
+    ) -> Result<()> {
+        instructions::holder_config::handle_set_holder_config(ctx, guardian, holder_key, registrar_key, claim_delay_s, notap_delay_s)
+    }
+
+    /// Registry authority only, separate payer. The Holding (state WALLET) of a passport minted with v1
+    /// `mint_passport`, so it can take `record_scan_v2` scans.
+    pub fn init_holding_v1(ctx: Context<InitHoldingV1>) -> Result<()> {
+        instructions::init_holding_v1::handle_init_holding_v1(ctx)
+    }
+
+    /// Partner (or authority) signs, separate payer. A pass held in a FlaconVault account: no Core asset,
+    /// `passport.asset` = the new Holding PDA (state ACCOUNT, epoch 0, `commitment` ≠ 0).
+    pub fn mint_passport_v2(
+        ctx: Context<MintPassportV2>,
+        serial_hash: [u8; 32],
+        binding_hash: [u8; 32],
+        commitment: [u8; 32],
+    ) -> Result<()> {
+        instructions::mint_passport_v2::handle_mint_passport_v2(ctx, serial_hash, binding_hash, commitment)
+    }
+
+    /// `attach_seal` with a separate payer.
+    pub fn attach_seal_v2(ctx: Context<AttachSealV2>, uid_hash: [u8; 32], kind: u8) -> Result<()> {
+        instructions::attach_seal_v2::handle_attach_seal_v2(ctx, uid_hash, kind)
+    }
+
+    /// Records one server-signed FVSCAN2 scan; must be a top-level instruction right after an `Ed25519Program`
+    /// instruction over the 256-byte message. Creates nothing; any fee payer. Only HOLDER, WALLET and PARTNER
+    /// scans change grade and void.
+    pub fn record_scan_v2(ctx: Context<RecordScanV2>, server_key_id: u8) -> Result<()> {
+        instructions::record_scan_v2::handle_record_scan_v2(ctx, server_key_id)
     }
 }

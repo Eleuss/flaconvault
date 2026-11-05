@@ -25,6 +25,9 @@ Reconcile job (briefing §10). One cycle:
   6. Media retention (media_store.retention, also without FV_PROGRAM_ID): staged uploads of expired / consumed session
      nonces, and — after FV_MEDIA_RETENTION_S (default 7 days, 0 = never) — kept blobs that no pending, confirmed or
      still recoverable failed scan references, plus blob files without a media row.
+  7. Public record (fv.relayer): queued relay rows past their deadline expire (DB only, also with the relay off or
+     without FV_PROGRAM_ID, so no relay scan stays pending for ever), and `sending` rows are confirmed (confirm_sending;
+     no RPC call without such rows). Relay scans are never checked against a ScanProof (step 1 skips them).
 
 All RPC reads happen before the write transaction (a slow RPC must never hold the SQLite write lock).
 """
@@ -175,6 +178,7 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
                "enabled": bool(settings.program_id)}
     if not settings.program_id:
         with db.connect() as conn:
+            summary["relay"] = _relay_step(conn, settings, rpc, ts)
             summary["media"] = _media_retention(conn, settings, ts)
         return summary
     pid = program_pubkey(settings.program_id)
@@ -332,7 +336,22 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
             summary["arweave"] = arweave.backfill(conn, settings, now_ts=ts)
         # ---- 5. media retention (after archiving: a confirmed scan's media is referenced and always kept) ----
         summary["media"] = _media_retention(conn, settings, ts)
+        # ---- 6. public record: expired relay rows, sent relay transactions ----
+        summary["relay"] = _relay_step(conn, settings, rpc, ts)
     return summary
+
+
+def _relay_step(conn, settings: Settings, rpc, ts: int) -> dict | None:
+    """relayer.expire_overdue, then (with FV_PROGRAM_ID) relayer.confirm_sending. Never aborts a cycle."""
+    from fv import relayer
+    try:
+        out = {"expired": relayer.expire_overdue(conn, ts)}
+        if settings.program_id:
+            out["confirm"] = relayer.confirm_sending(conn, settings, rpc, None, ts)
+        return out
+    except Exception:  # noqa: BLE001 — RPC or DB trouble: the next cycle (or the relay loop) tries again
+        log.exception("reconcile: relay step failed")
+        return None
 
 
 def _media_retention(conn, settings: Settings, ts: int) -> dict | None:

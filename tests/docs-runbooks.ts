@@ -110,6 +110,18 @@ describe("runbooks match the code", () => {
     expect(fs.existsSync(path.join(ROOT, "scripts/test-escrow-time-travel.sh"))).to.equal(true);
   });
 
+  it("the manual CI anchor job runs the flacon LiteSVM tests before `anchor keys sync` (the vectors carry the devnet id)", () => {
+    const ci = read(".github/workflows/ci.yml");
+    const anchorJob = ci.slice(ci.indexOf("\n  anchor:"));
+    const at = anchorJob.indexOf("run: bash scripts/test-flacon-litesvm.sh");
+    expect(at, "flacon LiteSVM step").to.be.greaterThan(-1);
+    expect(at).to.be.greaterThan(anchorJob.indexOf("anchor build"));
+    expect(at).to.be.lessThan(anchorJob.indexOf("run: anchor keys sync"));
+    expect(at).to.be.lessThan(anchorJob.indexOf("anchor test --validator legacy"));
+    expect(read("scripts/test-flacon-litesvm.sh")).to.match(/--test record_scan_v2 -- --ignored/);
+    expect(read("scripts/test-escrow-time-travel.sh")).to.match(/--test held_in_account/);
+  });
+
   it("README security claims stay within what the code does", () => {
     const readme = read("README.md");
     const resume = readme.split("\n").find((l) => /wallet-app resume link/.test(l)) ?? "";

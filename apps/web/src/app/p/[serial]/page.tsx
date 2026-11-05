@@ -1,13 +1,15 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ExternalLink } from "lucide-react";
+import { ChevronDown, ExternalLink } from "lucide-react";
 import { Grade, HEAT_FIELDS_C, Indicator } from "@flaconvault/proof";
 import { getPassport } from "@/lib/api";
 import { addrUrl, fmtDate, gradeLetter, gradeSentence, gradeTone, indicatorText, sealStatusText, short } from "@/lib/format";
+import { DRAWER_TEXT, DRAWER_TITLE, PASSPORT_PUBLIC, witnessedBy } from "@/lib/public-record";
 import { GradeMark, Lamp, Pill, Unavailable } from "@/components/badges";
 import { Timeline } from "@/components/timeline";
 import { LiveCheck } from "@/components/live-check";
+import { TestPhaseNotice } from "@/components/public-record";
 
 export const dynamic = "force-dynamic";
 
@@ -45,7 +47,7 @@ export default async function PassportPage({ params }: { params: Promise<{ seria
           <div className="mt-5 flex flex-wrap gap-2">
             <Pill tone={seal.tone}>{seal.label}</Pill>
             {p.stats.attesterCount > 0 && (
-              <Pill tone="none">Witnessed by {p.stats.attesterCount} {p.stats.attesterCount === 1 ? "wallet" : "wallets"}, {p.stats.certifiedCount} of them certified</Pill>
+              <Pill tone="none">{witnessedBy(p.stats.attesterCount, p.stats.certifiedCount)}</Pill>
             )}
           </div>
         </div>
@@ -58,6 +60,7 @@ export default async function PassportPage({ params }: { params: Promise<{ seria
         </div>
       </div>
       {sentence && <p className="mt-4 text-sm text-muted">{sentence}</p>}
+      <TestPhaseNotice className="mt-5" />
 
       <section className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {[heat, hum, uv].map((i) => (
@@ -99,43 +102,45 @@ export default async function PassportPage({ params }: { params: Promise<{ seria
       )}
 
       <section className="mt-12">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <p className="eyebrow">History</p>
-            <h2 className="mt-2 font-serif text-3xl">Birth, sealing, every scan, every change of owner</h2>
-          </div>
-          <LiveCheck serialHashHex={p.serialHash} serverGrade={grade} serverOnChainScanCount={p.stats.onChainScanCount} />
-        </div>
+        <p className="eyebrow">History</p>
+        <h2 className="mt-2 font-serif text-3xl">Birth, sealing, every scan, every change of owner</h2>
         <div className="mt-8"><Timeline events={p.events} /></div>
+        {/* closed by default: what the record proves, then the technical block (on-chain accounts, live check) */}
+        <details className="group card mt-8 p-4 text-sm">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-medium [&::-webkit-details-marker]:hidden">
+            {DRAWER_TITLE}
+            <ChevronDown className="h-4 w-4 shrink-0 text-muted transition group-open:rotate-180" aria-hidden />
+          </summary>
+          <p className="mt-3 max-w-2xl text-muted">{DRAWER_TEXT}</p>
+          <div className="mt-5 border-t border-line pt-4">
+            <p className="eyebrow">On-chain</p>
+            <ul className="mt-3 space-y-2 text-muted">
+              <li>serial_hash <span className="mono text-ink">{short(p.serialHash, 10)}</span></li>
+              <li>Asset {p.asset ? <a className="link inline-flex items-center gap-1 text-ink" href={addrUrl(p.asset)} target="_blank" rel="noreferrer">{short(p.asset)} <ExternalLink className="h-3 w-3" aria-hidden /></a> : "–"}</li>
+              <li>Issuer {p.issuer ? <Link className="link text-ink" href={`/wallet/${encodeURIComponent(p.issuer)}`}>{p.issuerLabel ?? short(p.issuer)}</Link> : "–"}</li>
+            </ul>
+            <div className="mt-4"><LiveCheck serialHashHex={p.serialHash} serverGrade={grade} serverOnChainScanCount={p.stats.onChainScanCount} /></div>
+          </div>
+        </details>
       </section>
 
-      <section className="mt-12 grid gap-6 text-sm sm:grid-cols-2">
-        <div>
-          <p className="eyebrow">Seals</p>
-          <ul className="mt-3 space-y-2">
-            {p.seals.map((s) => (
-              <li key={s.uidHash} className="flex flex-wrap items-center gap-x-3 text-muted">
-                <Lamp tone={s.dead ? "bad" : "ok"} />
-                <span className="text-ink">{s.kind === 0 ? "Box" : "Neck"}</span>
-                <span className="mono">…{s.uidHash.slice(-8)}</span>
-                <span className="tabular">Counter {s.lastCounter}</span>
-                <span>since {fmtDate(s.attachedAt)}</span>
-                {s.dead && <span className="text-bad">not responding</span>}
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div>
-          <p className="eyebrow">On-chain</p>
-          <ul className="mt-3 space-y-2 text-muted">
-            <li>serial_hash <span className="mono text-ink">{short(p.serialHash, 10)}</span></li>
-            <li>Asset {p.asset ? <a className="link inline-flex items-center gap-1 text-ink" href={addrUrl(p.asset)} target="_blank" rel="noreferrer">{short(p.asset)} <ExternalLink className="h-3 w-3" aria-hidden /></a> : "–"}</li>
-            <li>Issuer {p.issuer ? <Link className="link text-ink" href={`/wallet/${encodeURIComponent(p.issuer)}`}>{p.issuerLabel ?? short(p.issuer)}</Link> : "–"}</li>
-          </ul>
-        </div>
+      <section className="mt-12 text-sm">
+        <p className="eyebrow">Seals</p>
+        <ul className="mt-3 space-y-2">
+          {p.seals.map((s) => (
+            <li key={s.uidHash} className="flex flex-wrap items-center gap-x-3 text-muted">
+              <Lamp tone={s.dead ? "bad" : "ok"} />
+              <span className="text-ink">{s.kind === 0 ? "Box" : "Neck"}</span>
+              <span className="mono">…{s.uidHash.slice(-8)}</span>
+              <span className="tabular">Counter {s.lastCounter}</span>
+              <span>since {fmtDate(s.attachedAt)}</span>
+              {s.dead && <span className="text-bad">not responding</span>}
+            </li>
+          ))}
+        </ul>
       </section>
       <p className={`mt-10 text-xs ${gradeTone(grade) === "bad" ? "text-bad" : "text-muted"}`}>
-        This passport is publicly readable, without a wallet and without login.
+        {PASSPORT_PUBLIC}
       </p>
     </div>
   );

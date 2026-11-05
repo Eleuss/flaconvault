@@ -19,6 +19,9 @@ import {
   parseKeyIdFlag,
   parsePartnerArgs,
   parseServerKeyArgs,
+  planHoldings,
+  holdingPdaOf,
+  parseHolderConfigArgs,
   planServerKey,
   sealSeedPlan,
   txCreatesAccount,
@@ -217,5 +220,40 @@ describe("ops scripts", () => {
     const b = burnCoreAssetIx({ asset, payer, owner });
     expect(b.data.toString("hex")).to.equal("0c00");
     expect(b.keys.map((k) => k.pubkey.toBase58())).to.deep.equal([asset, MPL_CORE_PROGRAM_ID, payer, owner, SystemProgram.programId, MPL_CORE_PROGRAM_ID].map((k) => k.toBase58()));
+  });
+
+  it("init-holdings: init_holding_v1 only for v1 passports without a Holding (re-runnable)", () => {
+    const programId = new PublicKey(flaconIdl.address);
+    const [a, b, c] = [Keypair.generate().publicKey, Keypair.generate().publicKey, Keypair.generate().publicKey];
+    const ha = holdingPdaOf(programId, a);
+    expect(ha.equals(PublicKey.findProgramAddressSync([Buffer.from("holding"), a.toBuffer()], programId)[0])).to.be.true;
+    const plan = planHoldings([
+      { passport: a, asset: Keypair.generate().publicKey, holding: ha, holdingExists: false },
+      { passport: b, asset: Keypair.generate().publicKey, holding: holdingPdaOf(programId, b), holdingExists: true },
+      { passport: c, asset: holdingPdaOf(programId, c), holding: holdingPdaOf(programId, c), holdingExists: true },
+    ]);
+    expect(plan.map((s) => s.op)).to.deep.equal(["init", "skip", "skip"]);
+    expect(plan[0].op === "init" && plan[0].holding.equals(ha)).to.be.true;
+    expect(plan.map((s) => (s.op === "skip" ? s.reason : ""))).to.deep.equal(["", "holding exists", "v2 passport (held in an account)"]);
+    // the IDL's init_holding_v1 takes exactly the accounts the script passes
+    const ix = flaconIdl.instructions.find((i: any) => i.name === "init_holding_v1");
+    expect(ix.accounts.map((x: any) => x.name)).to.deep.equal(["registry", "passport", "holding", "authority", "payer", "system_program"]);
+  });
+
+  it("holder-config: init <cluster> must match the RPC (the tag is immutable), show", () => {
+    expect(parseHolderConfigArgs(["show"], DEVNET)).to.deep.equal({ cmd: "show" });
+    expect(parseHolderConfigArgs(["init", "devnet"], DEVNET)).to.deep.equal({ cmd: "init", cluster: "devnet", tag: 2 });
+    expect(parseHolderConfigArgs(["init", "localnet"], LOCAL)).to.deep.equal({ cmd: "init", cluster: "localnet", tag: 3 });
+    expect(parseHolderConfigArgs(["init", "mainnet"], "https://api.mainnet-beta.solana.com").tag).to.equal(1);
+    expect(() => parseHolderConfigArgs(["init", "devnet"], LOCAL)).to.throw(/does not match/);
+    expect(() => parseHolderConfigArgs(["init", "localnet"], DEVNET)).to.throw(/does not match/);
+    expect(() => parseHolderConfigArgs(["init", "mainnet"], DEVNET)).to.throw(/does not match/);
+    expect(() => parseHolderConfigArgs(["init", "devnet"], "https://api.mainnet-beta.solana.com")).to.throw(/devnet RPC/);
+    expect(() => parseHolderConfigArgs(["init", "testnet"], DEVNET)).to.throw(/unknown cluster/);
+    expect(() => parseHolderConfigArgs(["init"], DEVNET)).to.throw(/usage/);
+    expect(() => parseHolderConfigArgs([], DEVNET)).to.throw(/usage/);
+    // the tags are docs/enums.json's cluster enum
+    const enums = JSON.parse(fs.readFileSync(path.join(__dirname, "../docs/enums.json"), "utf8"));
+    expect(enums.cluster).to.deep.equal({ MAINNET: 1, DEVNET: 2, LOCALNET: 3 });
   });
 });

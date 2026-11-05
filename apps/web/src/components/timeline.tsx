@@ -3,6 +3,7 @@ import { EventType } from "@flaconvault/proof";
 import { Award, Camera, Coins, ExternalLink, FileCheck2, PackageCheck, Scan, ShieldOff, Stamp, Truck, Unlock, type LucideIcon } from "lucide-react";
 import type { PassportEvent } from "@/lib/api";
 import { eventLine, fmtDate, isSeedEvent, txUrl, visibleEvents } from "@/lib/format";
+import { PUBLIC_RECORD_LINK, scanByLabel } from "@/lib/public-record";
 import { GradeMark } from "./badges";
 
 /** ar://<id> → a gateway URL a browser can open (Irys devnet data is served by the Irys gateway). */
@@ -35,14 +36,19 @@ export function Timeline({ events }: { events: PassportEvent[] }) {
           const Icon = icons[e.type] ?? Scan;
           const { title, details } = eventLine(e);
           const loc = e.location?.city ?? e.location?.country ?? null;
+          const scan = e.type === EventType.SCAN;
+          // who scanned (Visitor / Holder / Partner / Recipient), from the verifier's scanBy; none on older verifiers
+          const by = scan ? scanByLabel(e.scanBy) : null;
           return (
-            <li key={e.id} className="relative pb-7 last:pb-0">
+            // id: "view record" on a scan result links here (/p/<serial>#e<eventId>)
+            <li key={e.id} id={`e${e.id}`} className="relative scroll-mt-6 pb-7 last:pb-0">
               <span className="absolute -left-[31px] top-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full border border-line bg-surface">
                 <Icon className="h-3 w-3 text-muted" aria-hidden />
               </span>
               <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                 <span className="tabular text-xs text-muted">{fmtDate(e.ts)}</span>
                 <span className="font-medium">{title}</span>
+                {by && <span className="rounded-full border border-line bg-surface px-2 py-0.5 text-[11px] font-medium text-ink">{by}</span>}
                 {statusBadge(e.status) && <span className="rounded-full border border-line px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted">{statusBadge(e.status)}</span>}
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
@@ -55,7 +61,7 @@ export function Timeline({ events }: { events: PassportEvent[] }) {
               <div className="mt-2 flex items-center gap-3 text-xs">
                 {e.gradeAfter != null && <span className="inline-flex items-center gap-1.5 text-muted">Grade <GradeMark grade={e.gradeAfter} size="sm" /></span>}
                 {/* demo seed rows carry made-up signatures: no explorer link for them */}
-                {e.txSig && !isSeedEvent(e) && <a href={txUrl(e.txSig)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink">tx <ExternalLink className="h-3 w-3" aria-hidden /></a>}
+                {e.txSig && !isSeedEvent(e) && <a href={txUrl(e.txSig)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink">{scan ? PUBLIC_RECORD_LINK : "tx"} <ExternalLink className="h-3 w-3" aria-hidden /></a>}
                 {e.arMedia && <a href={arUrl(e.arMedia)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-muted hover:text-ink"><Camera className="h-3 w-3" aria-hidden /> Photo</a>}
                 {e.arBundle && <a href={arUrl(e.arBundle)} target="_blank" rel="noreferrer" className="text-muted hover:text-ink">Bundle</a>}
               </div>

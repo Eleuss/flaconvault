@@ -2,6 +2,7 @@
  * Readable error messages. HTTP errors from the verifier arrive as `ApiError` (status + FastAPI `detail`), chain
  * failures from `sendAsV0` as `TxFailedError`; everything else is matched on its message.
  */
+import { RECORD_ERRORS } from "./public-record";
 
 /**
  * HTTP error from the verifier. `detail` is FastAPI's `detail` flattened to text, `code` a machine code like
@@ -86,6 +87,8 @@ export const CODES: Record<string, string> = {
   resume_not_found: "This signed scan is no longer waiting to be anchored (already anchored or expired). Open the passport or start a new scan.",
   not_partner: "Certified scans and the vault/partner roles are signed only for a wallet registered as a FlaconVault partner. Connect the partner wallet before “Get signature” (on iPhone Safari: via WalletConnect). Without a partner wallet, open the scan without certification and scan as owner.",
   request_too_large: "The request is too large for the verification server.",
+  // the public record (relay) path, spec docs/public-record.md §9.9 / §10.2
+  ...RECORD_ERRORS,
 };
 
 /** Codes whose Retry-After is worth showing as "try again in …". */
@@ -125,6 +128,23 @@ export const PROGRAM_ERRORS: Array<{ name: string; msg: string; text: string }> 
   { name: "AssetMismatch", msg: "Asset account does not match the", text: "The Core asset does not match this passport." },
   { name: "InvalidAsset", msg: "Asset account is not", text: "The account is not a Metaplex Core asset." },
   { name: "AssetNotOwnedByIssuer", msg: "must be owned by the issuer", text: "The Core asset must belong to the wallet that issues the passport." },
+  // flacon, public record (docs/public-record.md §7.8)
+  { name: "InvalidClusterTag", msg: "cluster_tag must be 1 (MAINNET)", text: "The network of this setup is not valid (mainnet, devnet or a local test network only)." },
+  { name: "InvalidDelay", msg: "Delay must be within", text: "The waiting period must be between one and thirty days." },
+  { name: "InvalidCommitment", msg: "Commitment must not be all zeros", text: "The account link of this pass is empty." },
+  { name: "CpiNotAllowed", msg: "must be a top-level instruction", text: "This scan must be sent on its own, not from another program." },
+  { name: "InvalidMessagePrefix", msg: "is not an FVSCAN2 message", text: "The signed scan is not a public-record scan. Start a new scan." },
+  { name: "WrongProgramId", msg: "bound to another program id", text: "The signed scan belongs to another FlaconVault program. Start a new scan." },
+  { name: "WrongCluster", msg: "bound to another cluster", text: "The signed scan belongs to another Solana network (test network or mainnet). Start a new scan." },
+  { name: "InvalidPurpose", msg: "purpose must be 0..=6", text: "The purpose of this scan is not valid." },
+  { name: "InvalidActorKind", msg: "actor_kind must be 0..=4", text: "The kind of scanner (visitor, holder, wallet or partner) is not valid." },
+  { name: "InvalidSighting", msg: "A sighting (tier 0) has fill FILL_NONE", text: "A sighting (a tap without readings) carries no readings or photos, and a scan with readings is no sighting." },
+  { name: "PurposeNotAllowed", msg: "purpose is not allowed for this actor kind or tier", text: "This kind of scan is not allowed for this scanner or tier." },
+  { name: "ActorMismatch", msg: "actor does not match its kind", text: "The scan was signed for someone other than the one sending it." },
+  { name: "MissingActorSigner", msg: "scans need the actor as signer", text: "A wallet or partner scan must be signed by that wallet. Connect it and try again." },
+  { name: "NotAssetOwner", msg: "actor does not own the passport's Core asset", text: "This wallet does not own the passport's Core asset." },
+  { name: "HoldingNotInAccount", msg: "need a pass held in an account", text: "This pass is not held in a FlaconVault account, so this kind of scan is not possible." },
+  { name: "HeadCountOverflow", msg: "head_count overflow", text: "The public record of this passport is full." },
   // escrow
   { name: "InvalidState", msg: "Order is not in the required state", text: "The order has already moved on to another step. Reload the order." },
   { name: "NotSeller", msg: "Signer is not the order's seller", text: "Only the seller of this order can do this. Connect the seller's wallet." },
@@ -144,6 +164,7 @@ export const PROGRAM_ERRORS: Array<{ name: string; msg: string; text: string }> 
   { name: "WrongTokenOwner", msg: "does not belong to the expected recipient", text: "The USDC account does not belong to the expected recipient." },
   { name: "ScanBeforeOrderStep", msg: "older than this order step", text: "This scan was made before the reservation (shipping scan) or before shipping (receipt scan). Do a new scan and record that one." },
   { name: "DeadSealAfterShipping", msg: "a dead seal is settled by the escrow admin", text: "The order is shipped: only the escrow admin can refund it now. Contact the admin before the receipt deadline." },
+  { name: "PassHeldInAccount", msg: "it cannot be sold through the escrow", text: "This pass is held in a FlaconVault account, so it cannot be sold through the escrow." },
 ];
 
 function programError(m: string): string | null {

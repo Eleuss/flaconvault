@@ -324,3 +324,41 @@ export function parsePartnerArgs(argv: string[]): PartnerCmd {
   if (argv[0] !== "add" && argv[0] !== "remove") throw new Error(usage);
   try { return { cmd: argv[0], partner: new PublicKey(argv[1] ?? "") }; } catch { throw new Error(`invalid pubkey "${argv[1] ?? ""}"\n${usage}`); }
 }
+
+/** `["holding", passport]` of the flacon program (docs/public-record.md §6.2). */
+export const holdingPdaOf = (programId: PublicKey, passport: PublicKey) =>
+  PublicKey.findProgramAddressSync([Buffer.from("holding"), passport.toBuffer()], programId)[0];
+
+export interface HoldingRow { passport: PublicKey; asset: PublicKey; holding: PublicKey; holdingExists: boolean }
+export type HoldingStep = { op: "init"; passport: PublicKey; holding: PublicKey } | { op: "skip"; passport: PublicKey; reason: string };
+
+/**
+ * init-holdings: which passports get `init_holding_v1`. A v1 passport without a Holding does; one that has its
+ * Holding already is skipped (the script can be re-run), and so is a v2 passport (`asset` = its Holding PDA, minted by
+ * mint_passport_v2 together with its Holding).
+ */
+export function planHoldings(rows: HoldingRow[]): HoldingStep[] {
+  return rows.map((r) => {
+    if (r.asset.equals(r.holding)) return { op: "skip", passport: r.passport, reason: "v2 passport (held in an account)" };
+    if (r.holdingExists) return { op: "skip", passport: r.passport, reason: "holding exists" };
+    return { op: "init", passport: r.passport, holding: r.holding };
+  });
+}
+
+/** cluster enum of docs/enums.json (`FV_CLUSTER` names are lowercase). */
+export const CLUSTER_TAGS = { mainnet: 1, devnet: 2, localnet: 3 } as const;
+export type HolderConfigCmd = { cmd: "init"; cluster: keyof typeof CLUSTER_TAGS; tag: number } | { cmd: "show" };
+
+/** holder-config init <devnet|mainnet|localnet> | show. The tag is immutable once set, so the cluster must match the RPC. */
+export function parseHolderConfigArgs(argv: string[], url: string): HolderConfigCmd {
+  const usage = "usage: holder-config init <devnet|mainnet|localnet> | show";
+  if (argv[0] === "show" && argv.length === 1) return { cmd: "show" };
+  if (argv[0] !== "init" || argv.length !== 2) throw new Error(usage);
+  const cluster = argv[1] as keyof typeof CLUSTER_TAGS;
+  if (!(cluster in CLUSTER_TAGS)) throw new Error(`unknown cluster "${argv[1]}"\n${usage}`);
+  const local = isLocalUrl(url);
+  if ((cluster === "localnet") !== local) throw new Error(`cluster ${cluster} does not match the RPC ${local ? "(a local validator)" : "(not a local validator)"}`);
+  if (cluster === "mainnet" && /devnet|testnet/.test(url)) throw new Error("cluster mainnet does not match a devnet/testnet RPC");
+  if (cluster === "devnet" && !/devnet/.test(url)) throw new Error("cluster devnet needs a devnet RPC (ANCHOR_PROVIDER_URL)");
+  return { cmd: "init", cluster, tag: CLUSTER_TAGS[cluster] };
+}

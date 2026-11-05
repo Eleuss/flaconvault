@@ -17,7 +17,7 @@ from fv.proof import passport_after_scan
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 TABLES = ("passports", "seals", "events", "attesters", "nonces", "taps", "sim_tags", "media", "escrow_orders", "chain_state",
-          "arweave_queue")
+          "arweave_queue", "relay_tx", "relay_budget")
 ORDER_RELEASED, ORDER_DISPUTE = 5, 7   # escrow ORDER_STATE_*
 
 
@@ -59,13 +59,17 @@ def migrate(conn: sqlite3.Connection, schema: str) -> None:
     """
     Bring a database created by an older schema.sql up to date (CREATE TABLE IF NOT EXISTS never alters a table):
       * taps.adopt_hash / taps.adopted_at (one-time /t adoption tokens),
-      * events.status CHECK constraint gains 'reported' — SQLite cannot alter a CHECK, so the table is rebuilt.
-    Idempotent; a no-op on a fresh database.
+      * events.status CHECK constraint gains 'reported' — SQLite cannot alter a CHECK, so the table is rebuilt,
+      * relay_tx.server_pubkey (the scan key that signed a row; rows of an earlier P1 build have none).
+    New tables (relay_tx, relay_budget: the public-record relay) otherwise need nothing here: schema.sql creates them
+    with CREATE TABLE IF NOT EXISTS before this runs. Idempotent; a no-op on a fresh database.
     """
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(taps)").fetchall()}
     for col, decl in (("adopt_hash", "TEXT"), ("adopted_at", "INTEGER")):
         if col not in cols:
             conn.execute(f"ALTER TABLE taps ADD COLUMN {col} {decl}")
+    if "server_pubkey" not in {r["name"] for r in conn.execute("PRAGMA table_info(relay_tx)").fetchall()}:
+        conn.execute("ALTER TABLE relay_tx ADD COLUMN server_pubkey TEXT")
     row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='events'").fetchone()
     if row and "'reported'" not in row["sql"]:
         m = re.search(r"CREATE TABLE IF NOT EXISTS events \((.*?)\n\);", schema, re.S)
@@ -230,13 +234,20 @@ def _reads_indicators(payload: dict) -> bool:
     return ind.get("heat", MISSING_INDICATOR) != MISSING_INDICATOR or ind.get("humidity", MISSING_INDICATOR) != MISSING_INDICATOR
 
 
+# A visitor scan (public-record actor NONE): evidence only — it never sets the passport header or grade (D14).
+_NOT_VISITOR = "COALESCE(json_extract(payload_json, '$.actorKind'), '') != 'NONE'"
+# A public-record scan sent by the relayer (record_scan_v2): no ScanProof, settled by fv.relayer.
+_NOT_RELAY = "COALESCE(json_extract(payload_json, '$.anchor'), '') != 'relay'"
+
+
 def latest_scan_with_indicators(conn, serial: str) -> dict | None:
     """
     Latest *confirmed* SCAN that actually read an indicator (heat or humidity not MISSING) — the passport header.
-    Pending/failed scans and no-photo scans (both indicators MISSING) never blank or overwrite it.
+    Pending/failed scans, no-photo scans (both indicators MISSING) and visitor scans (actor NONE) never blank or
+    overwrite it.
     """
-    for r in conn.execute("SELECT * FROM events WHERE serial=? AND type=2 AND status='confirmed' ORDER BY ts DESC, id DESC",
-                          (serial,)).fetchall():
+    for r in conn.execute(f"""SELECT * FROM events WHERE serial=? AND type=2 AND status='confirmed' AND {_NOT_VISITOR}
+                              ORDER BY ts DESC, id DESC""", (serial,)).fetchall():
         if _reads_indicators(json.loads(r["payload_json"] or "{}")):
             return dict(r)
     return None
@@ -256,13 +267,13 @@ def newer_confirmed_scan_exists(conn, event: dict) -> bool:
     """
     True if record_scan applied another confirmed, bundle-carrying SCAN of the same passport after `event`: on the same
     seal one with a higher counter (the program only accepts rising counters per seal), on another seal one signed later
-    (ts, then id). Tier-0 /t sightings carry no grade and never count.
+    (ts, then id). Tier-0 /t sightings and visitor scans (actor NONE) carry no grade and never count.
     """
     payload = json.loads(event.get("payload_json") or "{}")
     counter, seal = payload.get("counter"), event.get("seal_uid_hash")
-    for r in conn.execute("""SELECT id, ts, seal_uid_hash, json_extract(payload_json, '$.counter') AS ctr FROM events
+    for r in conn.execute(f"""SELECT id, ts, seal_uid_hash, json_extract(payload_json, '$.counter') AS ctr FROM events
                              WHERE serial=? AND type=2 AND status='confirmed' AND id!=?
-                               AND json_extract(payload_json, '$.indicators') IS NOT NULL""",
+                               AND json_extract(payload_json, '$.indicators') IS NOT NULL AND {_NOT_VISITOR}""",
                           (event["serial"], event["id"])).fetchall():
         if seal and r["seal_uid_hash"] == seal and counter is not None and r["ctr"] is not None:
             if int(r["ctr"]) > int(counter):
@@ -456,10 +467,11 @@ def scan_events_to_reconcile(conn, failed_since: int) -> list[dict]:
     """
     SCAN events the reconcile job checks against their ScanProof PDA: every pending one, plus failed ones newer than
     `failed_since` — a signed scan stays anchorable in the web app, so a ScanProof may still appear after the timeout.
+    Public-record (relay) scans never get a ScanProof: the relayer settles them (fv.relayer), they never time out here.
     """
     return _rows(conn.execute(
-        """SELECT * FROM events WHERE type=2 AND seal_uid_hash IS NOT NULL AND json_extract(payload_json, '$.counter') IS NOT NULL
-             AND (status='pending' OR (status='failed' AND ts>=?)) ORDER BY id""", (failed_since,)).fetchall())
+        f"""SELECT * FROM events WHERE type=2 AND seal_uid_hash IS NOT NULL AND json_extract(payload_json, '$.counter') IS NOT NULL
+             AND (status='pending' OR (status='failed' AND ts>=?)) AND {_NOT_RELAY} ORDER BY id""", (failed_since,)).fetchall())
 
 
 def stale_pending_events(conn, before: int) -> list[dict]:
@@ -611,14 +623,15 @@ def set_event_arweave(conn, event_id: int, ar_bundle: str | None, ar_media: str 
 
 def arweave_queue(conn, now_ts: int, limit: int) -> list[dict]:
     """
-    Confirmed SCANs (not seeded, with a bundle) that still need an upload — no ar_bundle yet, or media that is not
-    archived — and are due (never tried, or their retry time has come). Fewest failed attempts first, then newest, so a
+    Confirmed SCANs (not seeded, with a bundle, not a public-record relay scan: P1 does not archive those, D14) that
+    still need an upload — no ar_bundle yet, or media that is not archived — and are due (never tried, or their retry time has come). Fewest failed attempts first, then newest, so a
     row that keeps failing goes to the back of the queue and never blocks the others.
     """
     return _rows(conn.execute(
         """SELECT e.*, COALESCE(q.attempts, 0) AS ar_attempts FROM events e LEFT JOIN arweave_queue q ON q.event_id = e.id
            WHERE e.type=2 AND e.status='confirmed' AND json_extract(e.payload_json, '$.indicators') IS NOT NULL
              AND COALESCE(json_extract(e.payload_json, '$.seed'), 0) = 0 AND COALESCE(q.done, 0) = 0
+             AND COALESCE(json_extract(e.payload_json, '$.anchor'), '') != 'relay'
              AND COALESCE(q.next_at, 0) <= ?
              AND (e.ar_bundle IS NULL OR (e.ar_media IS NULL AND json_extract(e.payload_json, '$.media[0].sha256') IS NOT NULL))
            ORDER BY COALESCE(q.attempts, 0) ASC, e.id DESC LIMIT ?""", (now_ts, limit)).fetchall())

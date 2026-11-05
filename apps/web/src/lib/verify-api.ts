@@ -3,6 +3,7 @@ import { ZERO32, bytesEqual, hexToBytes, parseScanMessage, serialHash } from "@f
 import { PUBLIC_VERIFY_URL } from "./config";
 import { ApiError, apiError } from "./errors";
 import type { VerifyResponse } from "./flacon";
+import type { PublicRecord } from "./public-record";
 
 /** Abort a hung request (AbortSignal.timeout is missing on older Safari: no timeout there). */
 const timeout = (ms: number): AbortSignal | undefined => (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(ms) : undefined);
@@ -42,18 +43,31 @@ export interface SimTag { uid: string; serial: string | null; kind: number | nul
 export interface TapResult { responds: boolean; uid: string; ctr?: number; ctrHex?: string; cmac?: string; url: string | null; tapId?: number }
 /** `sealDead` is null when the chip is not attached to any seal. */
 export interface Preview { verdict: string; counter: number | null; serial: string | null; serialHash: string | null; uidHash: string | null; sealKind: number | null; sealDead: boolean | null }
-/** `uid` is only returned for UNREGISTERED taps (null otherwise). */
-export interface TapView extends Preview { tapId: number; ts: number; uid: string | null; message: string }
+/**
+ * `uid` is only returned for UNREGISTERED taps (null otherwise). `record`: the public record of this tap (its TAP, or
+ * the CHECK of the scan that adopted it), null without one; absent on an older verifier.
+ */
+export interface TapView extends Preview { tapId: number; ts: number; uid: string | null; message: string; record?: PublicRecord | null }
 /**
  * /api/verify answer. For a VALID scan it also carries `resumeToken`: together with `eventId` it lets the wallet
- * app's browser fetch this signed scan again (GET /api/verify/{eventId}?token=…) while it is pending.
+ * app's browser fetch this signed scan again (GET /api/verify/{eventId}?token=…) while it is pending; on the relay
+ * path the same pair reads the public record status (GET /api/verify/{eventId}/record?token=…).
+ * `anchor`, `purpose`, `actorKind`, `cluster` and `record` come from a verifier with the public record (spec §9.9):
+ * `record` is set only for a VALID relay scan, null for the wallet path.
  */
-export type VerifyResult = VerifyResponse & { resumeToken?: string | null };
+export type VerifyResult = VerifyResponse & {
+  resumeToken?: string | null;
+  anchor?: "relay" | "wallet"; purpose?: string | null; actorKind?: string | null; cluster?: string | null;
+  record?: PublicRecord | null;
+};
 /** GET /health. `build` is the deployed commit (when the platform reports it), `arweave` the archiving status. */
 export interface Health {
   ok: boolean; keyId: number; pubkeyHex: string; simulator: boolean; programId: string | null;
   build?: string | null;
   arweave?: { enabled: boolean; ok: boolean | null; problem: string | null; lastErrorCode: string | null } | null;
+  /** the verifier's cluster and relay status (no balances, no keys) */
+  cluster?: string | null;
+  relay?: { enabled: boolean; ok: boolean } | null;
 }
 
 export const api = {
@@ -75,6 +89,8 @@ export const api = {
   passport: (serial: string) => get<{ serial: string; brand: string; name: string }>(`/api/passport/${encodeURIComponent(serial)}`),
   /** The pending signed scan behind a resume link (404 resume_not_found once it is anchored or failed, or for a wrong token). */
   resume: (eventId: number, token: string) => get<VerifyResult>(`/api/verify/${encodeURIComponent(String(eventId))}?token=${encodeURIComponent(token)}`),
+  /** The public record status of a relay scan, with its resume token (404 record_not_found for anything else). */
+  record: (eventId: number, token: string) => get<{ eventId: number; record: PublicRecord | null }>(`/api/verify/${encodeURIComponent(String(eventId))}/record?token=${encodeURIComponent(token)}`),
   /**
    * Chain-backed events need `txSig` and `actor`. The server stamps the time itself, so `ts` is never sent.
    * Retries while the server's RPC has not seen the transaction yet or its lookups are busy (eventRetryDelay).
@@ -130,15 +146,22 @@ export interface VerifyInput {
   reading: { heat: number; humidity: number; uv: number; heatLevels: number[] } | null;
   fill: number; mediaHash?: string; serial?: string | null;
   country?: string; city?: string; attester: string | null; platform: string;
+  /**
+   * "relay": the verifier saves the scan to the public record (FVSCAN2, purpose CHECK, no attester). Absent or "wallet":
+   * today's signed scan for record_scan with a wallet; the body then stays exactly as before (spec D1).
+   */
+  anchor?: "relay" | "wallet";
 }
 const MISSING = 3, decidedHeat = (h: number) => h === 0 || h === 1;
 /**
  * POST /api/verify body. Never carries `tamper`: the verifier always signs tamper UNKNOWN (NTAG 424 DNA has no tamper
- * loop). heatLevels go along only for a decided heat reading (INTACT/TRIGGERED), else six zeros.
+ * loop). heatLevels go along only for a decided heat reading (INTACT/TRIGGERED), else six zeros. The relay path adds
+ * `anchor` and `purpose` and never sends an attester or a ticket (the visitor is actor NONE).
  */
 export function verifyBody(i: VerifyInput): Record<string, unknown> {
   const adopted = i.tag.tapId != null;
   const r = i.reading;
+  const relay = i.anchor === "relay";
   return {
     uid: adopted ? undefined : i.tag.uid || undefined, ctr: adopted ? undefined : i.tag.ctr || undefined, cmac: adopted ? undefined : i.tag.cmac,
     piccData: i.tag.piccData, enc: i.tag.enc,
@@ -147,7 +170,8 @@ export function verifyBody(i: VerifyInput): Record<string, unknown> {
     heatLevels: r && decidedHeat(r.heat) ? r.heatLevels.slice(0, 6) : [0, 0, 0, 0, 0, 0],
     fill: i.fill, mediaHash: i.mediaHash,
     serial: i.serial ?? undefined, location: { country: i.country || null, city: i.city?.trim() || null },
-    attester: i.attester, platform: i.tag.source === "simulator" ? "SIMULATOR" : i.platform,
+    attester: relay ? null : i.attester, platform: i.tag.source === "simulator" ? "SIMULATOR" : i.platform,
+    ...(relay ? { anchor: "relay", purpose: "CHECK" } : {}),
   };
 }
 

@@ -18,7 +18,7 @@ Read these before setting any variable.
 
 1. **Simulator off.** `FV_DEV_SIMULATOR=false` (the default). `/api/dev/*` then answers 404.
 2. **Never factory keys in production.** `FV_KEY_MODE=factory` uses the NXP null keys, which anyone can compute, so anyone could forge a valid tap. Production uses the key mode the stickers were programmed with: `sdmbackend` with `FV_SDM_DERIVE=legacy` for stickers written with the NFC Developer App (see `docs/hardware-day.md`). Factory mode is for local development with the simulator only.
-3. **Secrets come from the platform's secret store** (Railway service variables), never from the repo and never copied from a local `.env`: `FV_MASTER_KEY`, `FV_SERVER_ED25519_SEED`, `FV_ADMIN_TOKEN`, `FV_IRYS_KEY_JSON`.
+3. **Secrets come from the platform's secret store** (Railway service variables), never from the repo and never copied from a local `.env`: `FV_MASTER_KEY`, `FV_SERVER_ED25519_SEED`, `FV_ADMIN_TOKEN`, `FV_IRYS_KEY_JSON`, and for the public record `FV_RELAYER_KEY`, `FV_HOLDER_KEY`, `FV_ISSUER_KEY` (one set per cluster, each its own key).
 4. **A production-only signing key.** Generate a seed that exists only in the secret store, register its public key on-chain under its own key id (`add_server_key`, see `docs/devnet.md`) and set `FV_SERVER_KEY_ID` to that id. A local verifier, especially one with the simulator on or exposed through a tunnel, must never hold the production seed or the production master key: it could sign scans and mint taps that production accepts.
 5. **No demo seed.** `docs/seed/passports.json` is sample data with fake transaction signatures. The verifier loads it into an empty database only with `FV_DEV_SIMULATOR=true` or `FV_SEED_DEMO=true`, so keep both `false`. Keep `FV_SEED_PATH` at its default: the startup check and `POST /api/admin/purge-seed` use the file to recognise seed rows left in an older database.
 6. **CORS lists only the web origin.** Never `localhost` in production.
@@ -66,6 +66,17 @@ Read these before setting any variable.
 | `FV_IRYS_KEY` | unset | a key file path for local runs; hosted deployments use `FV_IRYS_KEY_JSON` |
 | `FV_IRYS_NETWORK` | `devnet` | Irys devnet uploads are pruned after about 60 days |
 | `FV_ARWEAVE_TIMEOUT_S` | `60` (default) | Irys sidecar timeout per upload |
+| `FV_CLUSTER` | `devnet` | `devnet`, `mainnet` or `localnet`: the cluster tag of every public-record scan (FVSCAN2) the verifier signs. It must equal the on-chain `HolderConfig.cluster_tag`; otherwise the relay sends nothing (`cluster_mismatch`) |
+| `FV_RELAY_ENABLED` | `false` until the devnet rollout below, then `true` | kill switch of the public-record relay (unset or empty = `false`: nothing is sent, relay scans stay off chain). `true` needs `FV_RELAYER_KEY` and `FV_PROGRAM_ID` |
+| `FV_RELAYER_KEY` | **secret**, a Solana keypair JSON (64 numbers) used for nothing else | fee payer of relay transactions only, no program authority; fund it with at most 0.5 SOL on devnet. Generate one with `solana-keygen new --no-bip39-passphrase -o <file>` outside the repo, paste the file's content into the variable, then delete the file. `GET /api/admin/status` shows its public key |
+| `FV_HOLDER_KEY` | **secret**, unset in P1 | holder-move key for P2; only parsed and validated now (its public key appears in `GET /api/admin/status`) |
+| `FV_ISSUER_KEY` | **secret**, unset in P1 | registry partner key for sealing at the counter (P2); only parsed and validated now |
+| `FV_SOLANA_RPC_FALLBACK` | a second RPC endpoint (optional) | relay sends and status reads switch to it after a failure of `FV_SOLANA_RPC` |
+| `FV_RELAY_DAILY_LAMPORTS` | `10000000` (default) | global relay fee cap per UTC day; a scan above it is kept off chain (`over_cap` / `budget`) |
+| `FV_RELAY_LOW_BALANCE_LAMPORTS` | `100000000` (default, 0.1 SOL) | below this relayer balance the log warns (at most hourly) and `GET /health` reports `relay.ok: false` |
+| `FV_RELAY_CU_LIMIT` | `150000` (default) | compute unit limit of a relay transaction |
+| `FV_RELAY_MAX_PRIORITY_MICROLAMPORTS` | `10000` (default) | ceiling of the priority fee price (micro-lamports per compute unit) |
+| `FV_RELAY_INTERVAL_S` | `2` (default) | relay loop interval in seconds |
 | `FV_DB_PATH`, `FV_MEDIA_DIR`, `FV_NODE_BIN` | set by the image | `/data/flaconvault.db`, `/data/media`, `/usr/local/bin/node` (`Dockerfile.verify`) |
 | `PORT` | set by Railway | the Dockerfile honours it (`FV_PORT` is not used in the container) |
 
@@ -83,6 +94,7 @@ Read these before setting any variable.
 | `NEXT_PUBLIC_SOLANA_RPC` | `https://api.devnet.solana.com` | |
 | `NEXT_PUBLIC_PROGRAM_ID` | `7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL` | |
 | `NEXT_PUBLIC_ESCROW_PROGRAM_ID` | `9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL` | |
+| `NEXT_PUBLIC_SOLANA_CLUSTER` | `devnet` | `devnet`, `mainnet` or `localnet`; the test-phase notice on scan results and passport pages shows unless it is `mainnet` |
 | `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | Reown Cloud project id | required for certified (tier 3/4) and vault/partner scans from iPhone Safari: Safari has no wallet extension, so without it iPhone partners cannot certify (the scan page says "This browser cannot sign a certified scan"). Other flows work without it (on iPhone, owner scans then sign through the Phantom/Solflare resume links) |
 | `NEXT_PUBLIC_ESCROW_ADMIN_CONTACT` | a `mailto:` address or an `https://` link of the escrow admin | set it in production. The order page shows it as "Contact the escrow admin" when a buyer needs the admin (non-delivery, a dead seal after shipping, disagreeing scans; see `programs/README.md`, escrow admin duties); a `mailto:` gets the order as subject. Any other value is ignored, and without it the page shows the admin wallet only |
 | `NEXT_PUBLIC_DEV_SIMULATOR` | `false` | `true` only for a demo deployment: it enables the demo tools (dev wallets, burner, airdrop, test images, simulator UI), which then still need demo mode in the browser (`apps/web/src/lib/demo.ts`; any visitor can switch it on for their own browser with `/dev?demo=1`, so only `false` removes them). The dev wallets keep their secret keys in the browser's `localStorage`: never register them as partners or fund them with anything of value. |
@@ -94,6 +106,19 @@ Read these before setting any variable.
 3. `curl -s -D - -o /dev/null -H 'Origin: http://localhost:3000' https://verify.flaconvault.com/health | grep -i access-control-allow-origin` prints nothing (localhost is not an allowed origin).
 4. Tap a real sticker (iPhone: background NFC opens Safari): `/t` shows "Seal genuine · Tap N". For the replay check, read the sticker with an NFC reader app (NFC Tools, TagInfo), copy its tap URL (`…/t?picc_data=…&cmac=…`) and open it twice: the second time shows "Repeated tap". Reopening the result page (`/t?tap=…`) only shows the stored result again.
 5. On that sticker's passport page, "Check live on-chain" reads the Passport account from devnet.
+6. With the public record on: `curl -s https://verify.flaconvault.com/health` shows `"cluster": "devnet"` and `"relay": {"enabled": true, "ok": true}`; a sticker tap shows "Saving to the public record within about 3 minutes." and, a few minutes later, "Saved to the public record ✓".
+
+## Public record relay (devnet rollout)
+
+The public record (`docs/public-record.md`) lets every genuine tap land on chain without a wallet: the verifier signs the scan (FVSCAN2) and its relayer key pays the fee of `record_scan_v2`. The owner rolls it out; nothing here runs from CI or a builder. Order:
+
+1. Upgrade `flacon` and `escrow` on devnet, escrow first (the escrow refuses passes held in an account, and that guard must be live before flacon can run `mint_passport_v2`; `docs/devnet.md`).
+2. `init_holder_config` with cluster tag DEVNET (2), signed by the registry authority (`docs/devnet.md`).
+3. `init_holding_v1` for every existing devnet passport (`scripts/init-holdings.ts`, run by the owner).
+4. Set the verifier variables: `FV_CLUSTER=devnet`, `FV_PROGRAM_ID`, a fresh `FV_RELAYER_KEY` (and optionally `FV_SOLANA_RPC_FALLBACK`); fund the relayer with at most 0.5 SOL; then `FV_RELAY_ENABLED=true` and redeploy. Startup refuses an incomplete relay configuration (no relayer key or program id, a malformed key, two roles sharing one key, a cluster that does not match the RPC) with one clear error in `railway logs`.
+5. `curl -s https://verify.flaconvault.com/health` → `"relay": {"enabled": true, "ok": true}`. `ok` turns true once the verifier has read HolderConfig with the matching cluster tag, the relayer balance is above `FV_RELAY_LOW_BALANCE_LAMPORTS` and the daily budget is not used up. `GET /api/admin/status` (admin token) shows the relayer's public key, balance, today's spend and the row counts.
+
+To stop sending at once, set `FV_RELAY_ENABLED=false` and redeploy: relay scans are then kept off chain, and the web shows "Not saved to the public record this time. FlaconVault keeps the check."
 
 ### Removing demo data from an older production database
 

@@ -1,6 +1,6 @@
 # Programs on devnet
 
-Two Anchor programs: `programs/flacon` (registry, passports, seals, scan proofs) and `programs/escrow` (USDC escrow). Both are deployed on Solana devnet. The source in this repository is ahead of the devnet deployment (server-key revocation, partner removal, issuer-only seal administration, sticky VOID and C grades, issuer-owned Core assets, owner-only listing re-checked at reserve, price-bound reserve, fresh shipping and receipt scans, escrow timeouts and admin resolve): see [Upgrading devnet](#upgrading-devnet). [`programs/README.md`](../programs/README.md) lists every instruction with its signer rules.
+Two Anchor programs: `programs/flacon` (registry, passports, seals, scan proofs) and `programs/escrow` (USDC escrow). Both are deployed on Solana devnet. The source in this repository is ahead of the devnet deployment (server-key revocation, partner removal, issuer-only seal administration, sticky VOID and C grades, issuer-owned Core assets, owner-only listing re-checked at reserve, price-bound reserve, fresh shipping and receipt scans, escrow timeouts and admin resolve, the v2 public record): see [Upgrading devnet](#upgrading-devnet) and [Public record (P1) rollout](#public-record-p1-rollout). [`programs/README.md`](../programs/README.md) lists every instruction with its signer rules.
 
 Toolchain: Anchor CLI 1.2.0 (via `avm`), Solana CLI 4.1.x (Agave), Rust from `rust-toolchain.toml` (1.89), Node 22.18 or newer, and the npm client `@anchor-lang/core` 1.2 (`@coral-xyz/anchor` 0.32 cannot read Anchor 1.x IDLs).
 
@@ -42,6 +42,9 @@ cargo test -p flacon && cargo test -p escrow
 
 # integration tests on a local validator (Anchor 1.2 defaults to surfpool; use the legacy validator)
 anchor test --validator legacy            # or: ANCHOR_TEST_VALIDATOR=legacy anchor test
+
+# LiteSVM (SBPF v2 builds in target/sbf-v2): record_scan_v2 under a Clock override; escrow windows and PassHeldInAccount
+bash scripts/test-flacon-litesvm.sh && bash scripts/test-escrow-time-travel.sh
 
 # copy the IDLs and types for the web app after a program change
 cp target/idl/flacon.json packages/proof/src/idl/flacon.json && cp target/types/flacon.ts packages/proof/src/idl/flacon.ts
@@ -86,12 +89,16 @@ PDAs (seeds from `docs/vectors.json` → `constants.PDA_SEEDS`):
 | `Seal` | `["seal", uid_hash]` |
 | `ScanProof` | `["scan", seal_pubkey, counter u32 LE]` |
 | `Origin` | `["origin", passport]` (reserved, not implemented) |
+| `HolderConfig` | `["holder_config"]` (v2 public record, singleton) |
+| `Holding` | `["holding", passport]` (v2 public record) |
 
 Instructions: `init_registry` (the program's upgrade authority only); `add_server_key`, `revoke_server_key`, `add_partner`, `remove_partner`, `add_site`, `transfer_authority` (registry authority; `transfer_authority` needs the new authority's signature too); `mint_passport` (registry partners or the authority; the appended `core_asset` account must be the Metaplex Core asset named in the args); `attach_seal`, `mark_seal_dead` (the passport's issuer while it is a partner, or the authority; at most 2 seals, never on a void passport); `record_scan(args)` (any signer for tier ≤ 2 and role OWNER, SELLER or BUYER; a partner for tier ≥ 3 or role VAULT or PARTNER). The exact signer checks live in `programs/flacon/src/instructions/`; the IDL in `packages/proof/src/idl/flacon.json` is the authoritative interface.
 
 `record_scan` must be sent as `[Ed25519Program.createInstructionWithPublicKey({publicKey: serverPubkey, message, signature}), flacon.record_scan(args)]`. The program reads the previous instruction from the instructions sysvar, checks that it is the Ed25519 precompile, that the public key is the registry server key `args.server_key_id` valid at `args.ts` and at the cluster clock, that `|args.ts − clock| ≤ 600 s` and the counter fits 24 bits, and that the signed 152-byte message equals its reconstruction (`"FVSCAN1" ‖ serial_hash ‖ uid_hash ‖ counter ‖ tamper ‖ uv ‖ hum ‖ heat ‖ fill ‖ media_hash ‖ nonce ‖ ts`) byte for byte. VOID and C are sticky and A/B/D follow the latest scan's fill level (the fill is a self-reported slider value); an OPENED tamper or a VOID grade voids the passport for good. Errors are typed (`MissingEd25519Instruction`, `MessageMismatch`, `CounterNotIncreasing`, `SealDead`, `NotPartner`, `StaleScanTimestamp`, `ServerKeyNotValidNow`, `NotIssuerOrAuthority`, `TooManySeals`, …). Events: `RegistryInitialized`, `ServerKeyAdded`, `ServerKeyRevoked`, `PartnerAdded`, `PartnerRemoved`, `AuthorityTransferred`, `SiteAdded`, `PassportMinted`, `SealAttached`, `SealMarkedDead`, `ScanRecorded`.
 
-All enum values (`tamper`, `indicator`, `tier`, `role`, `grade`, `seal_kind`, `event`), the seeds, `MSG_PREFIX`, `MSG_LEN` and the grade thresholds (`GRADE_FILL_A_MIN = 90`, `GRADE_FILL_B_MIN = 60`) are IDL constants (`program.rawIdl.constants`). `cargo test -p flacon` and `tests/flacon.ts` assert them against `docs/enums.json` and `docs/vectors.json`; `npm run proof:test` checks those files against `packages/proof`.
+`record_scan_v2(server_key_id)` (the public record, [`public-record.md`](public-record.md) §7.6) must be sent as a top-level `[Ed25519 over the 256-byte FVSCAN2 message, flacon.record_scan_v2]`; whoever sends it pays only the fee (no rent account), the message carries every field plus the program id and the HolderConfig's cluster tag, and only HOLDER, WALLET and PARTNER scans change grade and void. Accounts in IDL order: `registry, holder_config, passport, seal, holding, instructions, actor_signer (optional), asset (optional), event_authority, program`. Its event `ScanRecordedV2` is an inner instruction (`emit_cpi!`) carrying the full message. Setup: `init_holder_config`, `set_holder_config`, `init_holding_v1`, `mint_passport_v2`, `attach_seal_v2` ([`programs/README.md`](../programs/README.md#flacon-instructions)).
+
+All enum values (`tamper`, `indicator`, `tier`, `role`, `grade`, `seal_kind`, `event`, and for v2 `purpose`, `actor_kind`, `cluster`, `holding_state`), the seeds, `MSG_PREFIX`, `MSG_LEN` and the grade thresholds (`GRADE_FILL_A_MIN = 90`, `GRADE_FILL_B_MIN = 60`) are IDL constants (`program.rawIdl.constants`). `cargo test -p flacon` and `tests/flacon.ts` assert them against `docs/enums.json` and `docs/vectors.json`; `npm run proof:test` checks those files against `packages/proof`.
 
 ## escrow
 
@@ -159,6 +166,38 @@ accounts). Operator steps, from the upgrade/registry authority wallet:
 5. The escrow admin (the deploy wallet) settles what the program leaves open: a buyer's non-delivery report on a SHIPPED order before its receipt deadline (refund with `dispute` if the parcel did not arrive; otherwise `release_after_timeout` pays the seller), a dead seal after shipping, and MISMATCH orders (`resolve`). See [`programs/README.md`](../programs/README.md#escrow-admin-duties); set `NEXT_PUBLIC_ESCROW_ADMIN_CONTACT` (a `mailto:` or `https:` link) on the web app so the order page shows buyers how to reach the admin.
 
 `scripts/seed-escrow.ts` env: `ANCHOR_PROVIDER_URL` (default localnet), `ANCHOR_WALLET`, `FV_USDC_MINT` (use an existing mint instead of creating one), `FV_DISPUTE_AFTER_S` (default 604800; an existing config is updated to it when the wallet is the admin). Mint more test USDC with the helpers in `scripts/lib/spl.ts` (`mintTo`, mint authority = the CLI wallet).
+
+## Public record (P1) rollout
+
+The owner's steps for [`public-record.md`](public-record.md) §11, from the upgrade/registry authority wallet. Builders
+and CI never run them.
+
+0. Before: the manual CI run passes (it includes `scripts/test-flacon-litesvm.sh` and the escrow LiteSVM tests). The
+   verifier and the web app of the same commit can be deployed first: with `FV_RELAY_ENABLED` unset nothing is sent,
+   and the new web app keeps working against the old programs (the relay records stay "failed").
+1. Upgrade both programs, **escrow first**: `anchor build --verifiable`, then
+   `anchor upgrade target/verifiable/escrow.so --program-id 9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL --provider.cluster devnet`
+   (escrow, 420,384 bytes, still fits its 432,296). Then flacon, which grows from 342,384 bytes (the devnet
+   ProgramData) to about 465,000 (a plain build of P1 is 464,976): compare `ls -l target/verifiable/flacon.so` with
+   `solana program show 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL --url devnet` (Data Length), run
+   `solana program extend 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL <difference plus a few KB> --url devnet`
+   (about 0.86 SOL of rent for 123 kB), then
+   `anchor upgrade target/verifiable/flacon.so --program-id 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL --provider.cluster devnet`.
+   Check both with `anchor verify` against the pushed commit, copy the IDLs and record the commit, as in
+   [Upgrading devnet](#upgrading-devnet) step 1. The escrow goes first so its `PassHeldInAccount` guard is live before
+   flacon can run `mint_passport_v2` (two upgrades are two transactions, never atomic; the new escrow reads only the
+   frozen Passport and Registry layouts, so it runs safely against the old flacon); send no `mint_passport_v2` before
+   step 2.
+2. `npx tsx scripts/holder-config.ts init devnet` (`init_holder_config`, cluster tag 2, immutable; guardian, holder
+   and registrar keys zero until P2), then `npx tsx scripts/holder-config.ts show`.
+3. `npx tsx scripts/init-holdings.ts --dry-run`, then without `--dry-run`: `init_holding_v1` (state WALLET) for every
+   existing passport, about 0.0025 SOL of rent each. Re-runnable.
+4. Set the verifier's relay variables ([`deploy.md`](deploy.md)), fund the relayer with at most 0.5 SOL, set
+   `FV_RELAY_ENABLED=true`.
+5. Check `GET /health` → `relay.ok`, then tap a seal and run `npm run verify-pass -- --rpc https://api.devnet.solana.com --serial <serial>`.
+
+The relayer pays about 10,000 lamports per recorded scan plus the priority fee; a `record_scan_v2` uses about 24,000
+compute units (LiteSVM, SBPF v2 build), well under the verifier's default limit of 150,000.
 
 ## History on devnet
 

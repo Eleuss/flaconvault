@@ -7,7 +7,7 @@ use crate::{
     error::EscrowError,
     events::{AssetDeposited, OrderCancelled, OrderClosed, OrderListed},
     mpl_core::{transfer_v1, CoreTransfer},
-    rules::{check_seller, core_asset_owner, effective_window},
+    rules::{check_not_held_in_account, check_seller, core_asset_owner, effective_window},
     state::{EscrowConfig, Order},
 };
 
@@ -28,8 +28,9 @@ pub struct List<'info> {
     #[account(mut)]
     pub seller: Signer<'info>,
     pub system_program: Program<'info, System>,
-    /// CHECK: the account at `passport.asset` (address checked). When it is a Metaplex Core asset the
-    /// seller must own it; otherwise (no Core asset behind the passport) the seller must be the issuer.
+    /// CHECK: the account at `passport.asset` (address checked).
+    /// A flacon Holding (a pass held in a FlaconVault account) is refused; when it is a Metaplex Core asset the seller
+    /// must own it; otherwise (no Core asset behind the passport) the seller must be the issuer.
     /// Appended last so the indices of the accounts above stay unchanged.
     #[account(address = passport.asset @ EscrowError::AssetMismatch)]
     pub asset: UncheckedAccount<'info>,
@@ -40,13 +41,15 @@ pub struct List<'info> {
 }
 
 /// The seller rule (`rules::check_seller`) for a passport, its asset account and the flacon registry;
-/// shared by `list` and `reserve`.
+/// shared by `list` and `reserve`. A pass held in a FlaconVault account (its asset is a flacon Holding) is refused
+/// first (`rules::check_not_held_in_account`).
 pub fn check_seller_of(
     seller: &Pubkey,
     passport: &flacon::Passport,
     asset: &AccountInfo,
     registry: &flacon::Registry,
 ) -> Result<()> {
+    check_not_held_in_account(asset.owner)?;
     let asset_owner = core_asset_owner(asset.owner, &asset.try_borrow_data()?);
     let issuer_active = registry.is_partner_or_authority(&passport.issuer);
     check_seller(seller, &passport.issuer, asset_owner, issuer_active)

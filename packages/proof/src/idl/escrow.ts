@@ -490,7 +490,8 @@ export type Escrow = {
         {
           "name": "asset",
           "docs": [
-            "seller must own it; otherwise (no Core asset behind the passport) the seller must be the issuer.",
+            "A flacon Holding (a pass held in a FlaconVault account) is refused; when it is a Metaplex Core asset the seller",
+            "must own it; otherwise (no Core asset behind the passport) the seller must be the issuer.",
             "Appended last so the indices of the accounts above stay unchanged."
           ]
         },
@@ -1725,6 +1726,11 @@ export type Escrow = {
       "code": 6027,
       "name": "deadSealAfterShipping",
       "msg": "The order is shipped: a dead seal is settled by the escrow admin, not by the buyer"
+    },
+    {
+      "code": 6028,
+      "name": "passHeldInAccount",
+      "msg": "The pass is held in a FlaconVault account (Passport.asset is its Holding): it cannot be sold through the escrow"
     }
   ],
   "types": [

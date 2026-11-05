@@ -1,7 +1,7 @@
 """
 Operator endpoints (x-admin-token = FV_ADMIN_TOKEN; 403 while it is unset):
 
-  GET  /api/admin/status                   configuration summary and the full Arweave archiving status
+  GET  /api/admin/status                   configuration summary, the full Arweave archiving status and the relay status
   POST /api/admin/purge-seed?dry_run=true  remove what the demo seed (docs/seed/passports.json) put into this database
 
 purge-seed keeps everything that has real on-chain evidence. It deletes
@@ -29,14 +29,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from fv import arweave, proof
+from fv import arweave, proof, relayer
 from fv.chain import (DEFAULT_PUBKEY, DecodeError, RpcError, decode_passport, decode_registry, decode_seal, is_account,
                       pda_passport, pda_registry, pda_scan, pda_seal, program_pubkey)
 from fv.config import Settings
 from fv.db import insert_event, onchain_scan_count, transaction
-from fv.deps import get_db, get_rpc, get_settings, require_admin
+from fv.deps import get_conn, get_db, get_rpc, get_settings, require_admin
 from fv.enums import EventType, Grade
 from fv.ratelimit import rate_limit
 from fv.reconcile import creating_signature
@@ -50,11 +50,12 @@ SEED_COUNTERS = {"scanCount": "scan_count", "certifiedCount": "certified_count",
 
 
 @router.get("/api/admin/status")
-def admin_status(settings: Settings = Depends(get_settings)):
+def admin_status(request: Request, conn=Depends(get_conn), settings: Settings = Depends(get_settings)):
     return {"keyMode": settings.key_mode, "sdmDerive": settings.sdm_derive, "simulator": settings.dev_simulator,
             "seedDemo": settings.seed_demo, "programId": settings.program_id or None,
             "escrowProgramId": settings.escrow_program_id or None, "reconcileIntervalS": settings.reconcile_interval_s,
-            "arweave": arweave.status(settings)}
+            "arweave": arweave.status(settings),
+            "relay": relayer.relay_status(conn, settings, getattr(request.app.state, "relay", None))}
 
 
 # ---------- purge-seed ----------

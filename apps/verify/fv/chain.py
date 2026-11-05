@@ -1,6 +1,6 @@
 """
 Solana side: PDA derivation (solders), Anchor account decoders for programs/flacon, and a tiny
-JSON-RPC client (httpx). No signing — the server only *reads* the chain (briefing §10 reconcile).
+JSON-RPC client (httpx). No signing here: only fv.relayer signs and sends (the public-record relay, fee payer only).
 
 Account layouts (after the 8-byte Anchor discriminator):
   ScanProof: seal(32) counter u32 tier u8 role u8 tamper u8 uv u8 hum u8 heat u8 heat_levels u8 fill u8
@@ -12,6 +12,11 @@ Account layouts (after the 8-byte Anchor discriminator):
              Vec<Pubkey> partners  Vec<Site{site_id u16, label [32] utf-8 zero-padded}>   (all Vec: u32 LE length)
   Order (escrow): passport(32) seller(32) buyer(32) asset(32) price u64 state u8 listed_at i64 reserved_at i64
              shipped_at i64 seller_scan(32) buyer_scan(32) dispute_after_s i64 asset_deposited u8 bump u8 vault_bump u8
+  HolderConfig (public record, docs/public-record.md §6.1): authority(32) guardian(32) holder_key(32) registrar_key(32)
+             cluster_tag u8 claim_delay_s i64 notap_delay_s i64 paused u8 last_heartbeat i64 bump u8 reserved[64]
+  Holding (§6.2): passport(32) state u8 epoch u32 commitment[32] scan_head[32] head_count u32 last_actor_kind u8
+             last_actor[32] last_purpose u8 last_scan_ts i64 pending_kind u8 pending_target[32] unlock_at i64 bump u8
+             reserved[32]
 
 Every decoder checks the 8-byte Anchor account discriminator (sha256("account:<Name>")[:8]). Anything else at a PDA
 address — no data at all (a plain SOL transfer to the address creates a system-owned, empty account), a truncated
@@ -32,6 +37,8 @@ SCAN_PROOF_LEN = DISC_LEN + 32 + 4 + 8 + 2 + 32 + 32 + 32 + 1 + 8 + 1      # 160
 PASSPORT_LEN = DISC_LEN + 32 + 32 + 32 + 32 + 1 + 4 + 1 + 1 + 8 + 1         # 152
 SEAL_LEN = DISC_LEN + 32 + 1 + 32 + 4 + 1 + 8 + 1                            # 87
 ORDER_LEN = DISC_LEN + 32 * 4 + 8 + 1 + 8 * 3 + 32 * 2 + 8 + 1 + 1 + 1       # 244 (programs/escrow/src/state.rs)
+HOLDER_CONFIG_LEN = DISC_LEN + 32 * 4 + 1 + 8 + 8 + 1 + 8 + 1 + 64            # 227
+HOLDING_LEN = DISC_LEN + 32 + 1 + 4 + 32 + 32 + 4 + 1 + 32 + 1 + 8 + 1 + 32 + 8 + 1 + 32   # 229
 SIGNATURE_STATUS_BATCH = 256                                                  # getSignatureStatuses accepts ≤ 256 per call
 
 # escrow ORDER_STATE_* (programs/escrow/src/constants.rs)
@@ -47,7 +54,7 @@ def account_discriminator(name: str) -> bytes:
 
 
 ACCOUNT_DISC: dict[str, bytes] = {n: account_discriminator(n) for n in ("ScanProof", "Passport", "Seal", "Registry", "Order",
-                                                                        "EscrowConfig")}
+                                                                        "EscrowConfig", "HolderConfig", "Holding")}
 
 
 class DecodeError(ValueError):
@@ -60,7 +67,15 @@ def is_account(data: bytes | None, name: str) -> bool:
 
 
 class RpcError(RuntimeError):
-    pass
+    """
+    An RPC call that failed. `error` is the JSON-RPC error object when the node answered with one (e.g. a
+    sendTransaction preflight failure: {code, message, data: {err, logs}}), None for a transport failure (timeout,
+    connection, HTTP status), after which the outcome of the call is unknown.
+    """
+
+    def __init__(self, message: str, error: dict | None = None):
+        super().__init__(message)
+        self.error = error
 
 
 # ---------- PDAs ----------
@@ -94,6 +109,23 @@ def pda_order(escrow_program_id: str | Pubkey, passport: Pubkey, seller: str | P
 def pda_scan(program_id: str | Pubkey, seal: Pubkey, counter: int) -> Pubkey:
     pid = program_id if isinstance(program_id, Pubkey) else program_pubkey(program_id)
     return Pubkey.find_program_address([b"scan", bytes(seal), struct.pack("<I", counter)], pid)[0]
+
+
+def pda_holder_config(program_id: str | Pubkey) -> Pubkey:
+    pid = program_id if isinstance(program_id, Pubkey) else program_pubkey(program_id)
+    return Pubkey.find_program_address([b"holder_config"], pid)[0]
+
+
+def pda_holding(program_id: str | Pubkey, passport: Pubkey) -> Pubkey:
+    """["holding", passport]: the Holding of a passport; Passport.asset == this PDA ⇒ held in a FlaconVault account."""
+    pid = program_id if isinstance(program_id, Pubkey) else program_pubkey(program_id)
+    return Pubkey.find_program_address([b"holding", bytes(passport)], pid)[0]
+
+
+def pda_event_authority(program_id: str | Pubkey) -> Pubkey:
+    """Anchor's #[event_cpi] authority ["__event_authority"] (not one of our PDA_SEEDS)."""
+    pid = program_id if isinstance(program_id, Pubkey) else program_pubkey(program_id)
+    return Pubkey.find_program_address([b"__event_authority"], pid)[0]
 
 
 # ---------- decoders ----------
@@ -158,6 +190,20 @@ def decode_registry(data: bytes) -> dict[str, Any]:
     return {"authority": authority, "serverKeys": keys, "partners": partners, "sites": sites}
 
 
+def decode_holder_config(data: bytes) -> dict[str, Any]:
+    r = _Reader(data, "HolderConfig")
+    return {"authority": r.pubkey(), "guardian": r.pubkey(), "holderKey": r.pubkey(), "registrarKey": r.pubkey(),
+            "clusterTag": r.u8(), "claimDelayS": r.i64(), "notapDelayS": r.i64(), "paused": bool(r.u8()),
+            "lastHeartbeat": r.i64(), "bump": r.u8()}
+
+
+def decode_holding(data: bytes) -> dict[str, Any]:
+    r = _Reader(data, "Holding")
+    return {"passport": r.pubkey(), "state": r.u8(), "epoch": r.u32(), "commitment": r.hash32(), "scanHead": r.hash32(),
+            "headCount": r.u32(), "lastActorKind": r.u8(), "lastActor": r.hash32(), "lastPurpose": r.u8(),
+            "lastScanTs": r.i64(), "pendingKind": r.u8(), "pendingTarget": r.hash32(), "unlockAt": r.i64(), "bump": r.u8()}
+
+
 def decode_order(data: bytes) -> dict[str, Any]:
     """escrow Order account. `buyer` is None until reserved (the program stores Pubkey::default())."""
     r = _Reader(data, "Order")
@@ -190,7 +236,8 @@ class Rpc:
         except (httpx.HTTPError, ValueError) as exc:
             raise RpcError(f"{method}: {exc}") from exc
         if "error" in body:
-            raise RpcError(f"{method}: {body['error']}")
+            err = body["error"]
+            raise RpcError(f"{method}: {err}", error=err if isinstance(err, dict) else {"message": str(err)})
         return body.get("result")
 
     @staticmethod
@@ -241,6 +288,36 @@ class Rpc:
             for (idx, _s), v in zip(chunk, values):
                 out[idx] = v
         return out
+
+    # ---- used by the public-record relay (fv.relayer) ----
+
+    def get_latest_blockhash(self) -> tuple[str, int]:
+        """(blockhash, lastValidBlockHeight) at commitment confirmed."""
+        res = self.call("getLatestBlockhash", [{"commitment": "confirmed"}]) or {}
+        v = res.get("value") or {}
+        if not v.get("blockhash") or v.get("lastValidBlockHeight") is None:
+            raise RpcError("getLatestBlockhash: malformed answer")
+        return str(v["blockhash"]), int(v["lastValidBlockHeight"])
+
+    def get_block_height(self, commitment: str = "finalized") -> int:
+        return int(self.call("getBlockHeight", [{"commitment": commitment}]))
+
+    def get_balance(self, pubkey: str | Pubkey) -> int:
+        res = self.call("getBalance", [str(pubkey), {"commitment": "confirmed"}]) or {}
+        return int(res.get("value", 0))
+
+    def get_recent_prioritization_fees(self, accounts: list[str | Pubkey]) -> list[int]:
+        """prioritizationFee (µlamports per CU) of the recent slots that locked any of `accounts` writable."""
+        res = self.call("getRecentPrioritizationFees", [[str(a) for a in accounts]]) or []
+        return [int(r.get("prioritizationFee", 0)) for r in res if isinstance(r, dict)]
+
+    def send_transaction(self, raw: bytes) -> str:
+        """Send a signed transaction (base64) with preflight at commitment confirmed; returns its signature."""
+        res = self.call("sendTransaction", [base64.b64encode(raw).decode(), {"encoding": "base64", "skipPreflight": False,
+                                                                              "preflightCommitment": "confirmed"}])
+        if not isinstance(res, str):
+            raise RpcError("sendTransaction: malformed answer")
+        return res
 
     def get_program_accounts(self, program_id: str | Pubkey, *, data_size: int | None = None) -> list[tuple[str, bytes]]:
         """(pubkey, data) of every account owned by `program_id`, optionally filtered by exact data size."""

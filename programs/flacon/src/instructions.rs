@@ -1,13 +1,23 @@
 pub mod attach_seal;
+pub mod attach_seal_v2;
+pub mod holder_config;
+pub mod init_holding_v1;
 pub mod init_registry;
 pub mod mark_seal_dead;
 pub mod mint_passport;
+pub mod mint_passport_v2;
 pub mod record_scan;
+pub mod record_scan_v2;
 pub mod registry_admin;
 
 pub use attach_seal::*;
+pub use attach_seal_v2::*;
+pub use holder_config::*;
+pub use init_holding_v1::*;
 pub use init_registry::*;
 pub use mark_seal_dead::*;
 pub use mint_passport::*;
+pub use mint_passport_v2::*;
 pub use record_scan::*;
+pub use record_scan_v2::*;
 pub use registry_admin::*;

@@ -4,6 +4,7 @@ Settings from environment / apps/verify/.env (python-dotenv). All keys are prefi
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +16,9 @@ APP_DIR = Path(__file__).resolve().parent.parent          # apps/verify
 REPO_DIR = APP_DIR.parent.parent                          # flaconvault/
 DEFAULT_SEED_PATH = REPO_DIR / "docs" / "seed" / "passports.json"
 DEFAULT_ESCROW_PROGRAM_ID = "9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL"
+# FVSCAN2 messages name this flacon program while FV_PROGRAM_ID is unset (offline dev server, nothing is sent: D20)
+DEFAULT_PROGRAM_ID = "7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL"
+CLUSTERS = ("mainnet", "devnet", "localnet")             # FV_CLUSTER; upper-cased = the cluster enum (cluster_tag)
 
 # Load apps/verify/.env once, without overriding variables already in the environment.
 load_dotenv(APP_DIR / ".env", override=False)
@@ -38,6 +42,30 @@ def is_local_rpc(url: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def parse_keypair(value: str | None, env: str):
+    """
+    (solders Keypair, None) for a Solana keypair JSON (64 numbers whose second half is the public key of the first),
+    (None, None) when empty, (None, problem) otherwise. The problem text never contains any part of the value.
+    """
+    v = (value or "").strip()
+    if not v:
+        return None, None
+    try:
+        raw = json.loads(v)
+        if (not isinstance(raw, list) or len(raw) != 64
+                or any(isinstance(x, bool) or not isinstance(x, int) or not 0 <= x <= 255 for x in raw)):
+            raise ValueError
+        from solders.keypair import Keypair
+        b = bytes(raw)
+        kp = Keypair.from_seed(b[:32])
+        if bytes(kp.pubkey()) != b[32:]:
+            raise ValueError
+    except Exception:  # noqa: BLE001 — never chain or echo the parser's message: it may quote the secret
+        return None, (f"{env} is not a Solana keypair (a JSON array of 64 numbers whose second half is the public key "
+                      "of the first)")
+    return kp, None
 
 
 def _resolve(p: str | Path) -> Path:
@@ -82,6 +110,22 @@ class Settings:
     max_json_body: int = 64 * 1024                         # FV_MAX_JSON_BODY — request body limit in bytes (not /api/media)
     build_sha: str = ""                                    # FV_BUILD_SHA (or RAILWAY_GIT_COMMIT_SHA) — commit shown by GET /health
     media_retention_s: int = 7 * 86400                     # FV_MEDIA_RETENTION_S — kept media no scan references is deleted after this (0 = never)
+    # public record relay (docs/public-record.md §9.1)
+    cluster: str = "devnet"                                # FV_CLUSTER — devnet | mainnet | localnet: cluster_tag of every FVSCAN2
+    relay_enabled: bool = False                            # FV_RELAY_ENABLED — kill switch: nothing is ever sent while false
+    relayer_key_json: str = field(default="", repr=False)  # FV_RELAYER_KEY — fee payer only (secret; cleared once parsed)
+    holder_key_json: str = field(default="", repr=False)   # FV_HOLDER_KEY — P2, parsed and validated only (secret)
+    issuer_key_json: str = field(default="", repr=False)   # FV_ISSUER_KEY — P2, parsed and validated only (secret)
+    solana_rpc_fallback: str = ""                          # FV_SOLANA_RPC_FALLBACK — second RPC for relay sends and status reads
+    relay_daily_lamports: int = 10_000_000                 # FV_RELAY_DAILY_LAMPORTS — global fee cap per UTC day
+    relay_low_balance_lamports: int = 100_000_000          # FV_RELAY_LOW_BALANCE_LAMPORTS — relayer balance alert (0.1 SOL)
+    relay_cu_limit: int = 150_000                          # FV_RELAY_CU_LIMIT — compute unit limit of a relay transaction
+    relay_max_priority_microlamports: int = 10_000         # FV_RELAY_MAX_PRIORITY_MICROLAMPORTS — priority fee price ceiling
+    relay_interval_s: float = 2.0                          # FV_RELAY_INTERVAL_S — relay loop interval (woken early by a CHECK)
+    relayer_keypair: object = field(default=None, init=False, repr=False, compare=False)
+    holder_keypair: object = field(default=None, init=False, repr=False, compare=False)
+    issuer_keypair: object = field(default=None, init=False, repr=False, compare=False)
+    key_problems: list = field(default_factory=list, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self.key_mode = self.key_mode.strip().lower()
@@ -120,6 +164,23 @@ class Settings:
         self.build_sha = (self.build_sha or "").strip()[:40]
         if int(self.media_retention_s) < 0:
             raise ValueError("FV_MEDIA_RETENTION_S must be 0 (keep forever) or a positive number of seconds")
+        self.cluster = (self.cluster or "devnet").strip().lower()
+        self.solana_rpc_fallback = (self.solana_rpc_fallback or "").strip()
+        for name in ("relay_daily_lamports", "relay_low_balance_lamports", "relay_max_priority_microlamports"):
+            if int(getattr(self, name)) < 0:
+                raise ValueError(f"FV_{name.upper()} must be 0 or a positive integer")
+        if not 1 <= int(self.relay_cu_limit) <= 1_400_000:
+            raise ValueError("FV_RELAY_CU_LIMIT must be 1..1400000")
+        if not float(self.relay_interval_s) > 0:
+            raise ValueError("FV_RELAY_INTERVAL_S must be a positive number of seconds")
+        # keys: keep only the keypair objects (public keys are exposed, the secret never leaves the object)
+        self.key_problems = []
+        for env, attr in (("FV_RELAYER_KEY", "relayer"), ("FV_HOLDER_KEY", "holder"), ("FV_ISSUER_KEY", "issuer")):
+            kp, problem = parse_keypair(getattr(self, f"{attr}_key_json"), env)
+            setattr(self, f"{attr}_keypair", kp)
+            setattr(self, f"{attr}_key_json", "")
+            if problem:
+                self.key_problems.append(problem)
 
     @property
     def solana_rpc_public(self) -> str:
@@ -132,6 +193,77 @@ class Settings:
     def rpc_is_local(self) -> bool:
         """FV_SOLANA_RPC is a local test validator (nothing signed here can reach devnet or mainnet accounts)."""
         return is_local_rpc(self.solana_rpc)
+
+    @property
+    def fallback_rpc_is_local(self) -> bool:
+        return is_local_rpc(self.solana_rpc_fallback) if self.solana_rpc_fallback else self.rpc_is_local
+
+    @property
+    def cluster_tag(self) -> int:
+        """cluster enum value of FV_CLUSTER (1 MAINNET, 2 DEVNET, 3 LOCALNET); startup refuses any other FV_CLUSTER."""
+        from fv.enums import Cluster
+        return getattr(Cluster, self.cluster.upper())
+
+    @property
+    def v2_program_id(self) -> str:
+        """The flacon program FVSCAN2 messages are bound to: FV_PROGRAM_ID, else DEFAULT_PROGRAM_ID (D20)."""
+        return self.program_id or DEFAULT_PROGRAM_ID
+
+    def _pub(self, kp) -> str | None:
+        return str(kp.pubkey()) if kp is not None else None
+
+    @property
+    def relayer_pubkey(self) -> str | None:
+        return self._pub(self.relayer_keypair)
+
+    @property
+    def holder_pubkey(self) -> str | None:
+        return self._pub(self.holder_keypair)
+
+    @property
+    def issuer_pubkey(self) -> str | None:
+        return self._pub(self.issuer_keypair)
+
+    def relay_problems(self) -> list[str]:
+        """Public-record relay configurations that must never serve (part of startup_problems, spec §9.1)."""
+        problems = list(self.key_problems)
+        if self.cluster not in CLUSTERS:
+            problems.append(f"FV_CLUSTER must be devnet, mainnet or localnet, got {self.cluster!r}")
+            return problems
+        local = self.rpc_is_local and self.fallback_rpc_is_local
+        remote = not self.rpc_is_local and not self.fallback_rpc_is_local
+        if self.cluster == "localnet" and not local:
+            problems.append("FV_CLUSTER=localnet with a non-local FV_SOLANA_RPC / FV_SOLANA_RPC_FALLBACK — localnet scans "
+                            "are only sent to a local validator")
+        if self.cluster == "mainnet" and self.dev_simulator:
+            problems.append("FV_CLUSTER=mainnet with FV_DEV_SIMULATOR=true — the simulator mints taps")
+        if self.relay_enabled:
+            if not self.relayer_keypair and not any(p.startswith("FV_RELAYER_KEY") for p in problems):
+                problems.append("FV_RELAY_ENABLED=true without FV_RELAYER_KEY (the fee payer keypair)")
+            if not self.program_id:
+                problems.append("FV_RELAY_ENABLED=true without FV_PROGRAM_ID")
+            if self.cluster in ("devnet", "mainnet") and not remote:
+                problems.append(f"FV_RELAY_ENABLED=true with FV_CLUSTER={self.cluster} against a local RPC — the messages "
+                                "would carry the wrong cluster tag")
+            if self.dev_simulator and not local:
+                problems.append("FV_RELAY_ENABLED=true with FV_DEV_SIMULATOR=true against a shared cluster — simulated taps "
+                                "would be sent to the public record")
+        pubs = [("FV_SERVER_ED25519_SEED", str(self._scan_pubkey())), ("FV_RELAYER_KEY", self.relayer_pubkey),
+                ("FV_HOLDER_KEY", self.holder_pubkey), ("FV_ISSUER_KEY", self.issuer_pubkey)]
+        seen: dict[str, str] = {}
+        for env, pub in pubs:
+            if pub is None:
+                continue
+            if pub in seen:
+                problems.append(f"{env} and {seen[pub]} are the same key — every role needs its own key")
+            else:
+                seen[pub] = env
+        return problems
+
+    def _scan_pubkey(self):
+        from solders.pubkey import Pubkey
+        from fv import proof
+        return Pubkey.from_bytes(proof.public_key(self.server_seed))
 
     @property
     def seed_enabled(self) -> bool:
@@ -167,7 +299,7 @@ class Settings:
                     f"id: here the simulator would mint taps with real ({self.key_mode}) tag keys and sign scans that "
                     "record_scan on a shared cluster accepts. Use FV_KEY_MODE=factory with a dev-only FV_MASTER_KEY and "
                     "a dev-only FV_SERVER_ED25519_SEED instead")
-        return problems
+        return problems + self.relay_problems()
 
     def registered_key_problem(self, server_keys: list[dict], now_ts: int) -> str | None:
         """
@@ -248,4 +380,15 @@ def settings_from_env() -> Settings:
         max_json_body=int(e("FV_MAX_JSON_BODY") or 64 * 1024),
         build_sha=e("FV_BUILD_SHA") or e("RAILWAY_GIT_COMMIT_SHA") or "",
         media_retention_s=int(e("FV_MEDIA_RETENTION_S") or 7 * 86400),
+        cluster=e("FV_CLUSTER") or "devnet",
+        relay_enabled=_bool(e("FV_RELAY_ENABLED"), False),
+        relayer_key_json=e("FV_RELAYER_KEY") or "",
+        holder_key_json=e("FV_HOLDER_KEY") or "",
+        issuer_key_json=e("FV_ISSUER_KEY") or "",
+        solana_rpc_fallback=e("FV_SOLANA_RPC_FALLBACK") or "",
+        relay_daily_lamports=int(e("FV_RELAY_DAILY_LAMPORTS") or 10_000_000),
+        relay_low_balance_lamports=int(e("FV_RELAY_LOW_BALANCE_LAMPORTS") or 100_000_000),
+        relay_cu_limit=int(e("FV_RELAY_CU_LIMIT") or 150_000),
+        relay_max_priority_microlamports=int(e("FV_RELAY_MAX_PRIORITY_MICROLAMPORTS") or 10_000),
+        relay_interval_s=float(e("FV_RELAY_INTERVAL_S") or 2),
     )

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventType, Grade } from "@flaconvault/proof";
 import type { PassportEvent } from "./api";
-import { MAX_REPORTS_SHOWN, PASSPORT_DISCRIMINATOR, decodePassportAccount, effectiveVerdict, eventLine, isSeedEvent, liveCheckVerdict, passportHref, tapLanding, visibleEvents } from "./format";
+import { MAX_REPORTS_SHOWN, PASSPORT_DISCRIMINATOR, addrUrl, decodePassportAccount, effectiveVerdict, eventLine, explorerQuery, isRecordScan, isSeedEvent, liveCheckVerdict, passportHref, tapLanding, txUrl, visibleEvents } from "./format";
 
 const ev = (o: Partial<PassportEvent>): PassportEvent => ({
   id: 1, type: EventType.SCAN, ts: 1000, actor: null, actorLabel: null, txSig: null, status: "confirmed", sealUidHash: null,
@@ -120,4 +120,29 @@ test("demo seed rows say so (payload.seed)", () => {
   assert.equal(eventLine(seeded).details.at(-1), "demo data");
   assert.equal(isSeedEvent(ev({ payload: { seed: "true" } })), false);
   assert.doesNotMatch(eventLine(ev({ payload: { tier: 2, indicators: {}, counter: 1 } })).details.join(), /demo/);
+});
+
+test("explorer links carry the cluster: none on mainnet, devnet by name, a local validator by its RPC", () => {
+  assert.equal(explorerQuery("mainnet"), "");
+  assert.equal(explorerQuery("devnet"), "?cluster=devnet");
+  assert.equal(explorerQuery("localnet", "http://127.0.0.1:8899"), "?cluster=custom&customUrl=http%3A%2F%2F127.0.0.1%3A8899");
+  assert.equal(txUrl("Sig1", "mainnet"), "https://explorer.solana.com/tx/Sig1");
+  assert.equal(txUrl("Sig1", "devnet"), "https://explorer.solana.com/tx/Sig1?cluster=devnet");
+  assert.equal(addrUrl("Addr1", "mainnet"), "https://explorer.solana.com/address/Addr1");
+  // the default is the configured cluster (devnet when NEXT_PUBLIC_SOLANA_CLUSTER is unset)
+  assert.equal(txUrl("Sig1"), "https://explorer.solana.com/tx/Sig1?cluster=devnet");
+});
+
+test("a public-record scan lists no self-declared role (its label is the actor kind); a v1 scan keeps its role", () => {
+  const v1 = ev({ payload: { tier: 2, role: 0, counter: 4, indicators: { heat: 0, humidity: 0 }, fill: 90 } });
+  assert.equal(isRecordScan(v1), false);
+  assert.deepEqual(eventLine(v1).details.slice(0, 2), ["Owner", "Counter 4"]);
+  const relayed = ev({ purpose: "CHECK", scanBy: "VISITOR", payload: { tier: 2, role: 0, counter: 5, anchor: "relay", indicators: { heat: 0, humidity: 0 }, fill: 90 } });
+  assert.equal(isRecordScan(relayed), true);
+  assert.deepEqual(eventLine(relayed), { title: "Scan tier 2", details: ["Counter 5", "Heat ok", "Humidity ok", "Fill level 90 %"] });
+  // a TAP that is still queued has no payload.anchor yet: the verifier's purpose marks it
+  const tap = ev({ purpose: "TAP", scanBy: "VISITOR", payload: { tier: 0, role: 0, counter: 6 } });
+  assert.equal(isRecordScan(tap), true);
+  assert.deepEqual(eventLine(tap), { title: "Sighting", details: ["Counter 6"] });
+  assert.equal(isRecordScan(ev({ type: EventType.MINT, purpose: "BIRTH" })), false, "only SCAN events");
 });

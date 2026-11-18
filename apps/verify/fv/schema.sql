@@ -166,6 +166,7 @@ CREATE TABLE IF NOT EXISTS relay_tx (
   reason        TEXT,                             -- §9.6
   sig           TEXT,                             -- tx signature of the current attempt; the landed one once recorded
   last_valid_height INTEGER,                      -- lastValidBlockHeight of the current attempt
+  earlier_sigs  TEXT,                             -- JSON [{sig, estimate}]: attempts sent and given up on (§9.5)
   attempts      INTEGER NOT NULL DEFAULT 0,
   lamports      INTEGER NOT NULL DEFAULT 0,       -- fee actually paid (meta.fee); the charged estimate while sending
   created_at    INTEGER NOT NULL,

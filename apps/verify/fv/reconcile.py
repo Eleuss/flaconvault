@@ -26,7 +26,8 @@ Reconcile job (briefing §10). One cycle:
      nonces, and — after FV_MEDIA_RETENTION_S (default 7 days, 0 = never) — kept blobs that no pending, confirmed or
      still recoverable failed scan references, plus blob files without a media row.
   7. Public record (fv.relayer): queued relay rows past their deadline expire (DB only, also with the relay off or
-     without FV_PROGRAM_ID, so no relay scan stays pending for ever), and `sending` rows are confirmed (confirm_sending;
+     without FV_PROGRAM_ID, so no relay scan stays pending for ever; a row with earlier attempts only after their
+     getSignatureStatuses look-up, which records it if one landed), and `sending` rows are confirmed (confirm_sending;
      no RPC call without such rows). Relay scans are never checked against a ScanProof (step 1 skips them).
 
 All RPC reads happen before the write transaction (a slow RPC must never hold the SQLite write lock).
@@ -342,10 +343,11 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
 
 
 def _relay_step(conn, settings: Settings, rpc, ts: int) -> dict | None:
-    """relayer.expire_overdue, then (with FV_PROGRAM_ID) relayer.confirm_sending. Never aborts a cycle."""
+    """relayer.expire_overdue (a row with earlier attempts after their look-up through `rpc`), then (with FV_PROGRAM_ID)
+    relayer.confirm_sending. Never aborts a cycle."""
     from fv import relayer
     try:
-        out = {"expired": relayer.expire_overdue(conn, ts)}
+        out = {"expired": relayer.expire_overdue(conn, ts, rpc)}
         if settings.program_id:
             out["confirm"] = relayer.confirm_sending(conn, settings, rpc, None, ts)
         return out

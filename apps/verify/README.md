@@ -76,7 +76,7 @@ uv run uvicorn fv.main:app --port 8787 --reload
 | `FV_RELAYER_KEY` | — | **secret** Solana keypair JSON (64 numbers): fee payer of relay transactions only, no program authority. Required with `FV_RELAY_ENABLED=true` |
 | `FV_HOLDER_KEY` | — | **secret** keypair JSON for P2 (holder moves); parsed and validated only, its public key is shown in `/api/admin/status` |
 | `FV_ISSUER_KEY` | — | **secret** keypair JSON of a registry partner for sealing (P2); parsed and validated only |
-| `FV_SOLANA_RPC_FALLBACK` | — | second JSON-RPC for relay sends and status reads, used after a failure of `FV_SOLANA_RPC` |
+| `FV_SOLANA_RPC_FALLBACK` | — | second JSON-RPC for relay sends and status reads, used after a failure of `FV_SOLANA_RPC`; it needs no transaction history: a signature it does not find never counts as lost (only `FV_SOLANA_RPC` can say so) |
 | `FV_RELAY_DAILY_LAMPORTS` | `10000000` | global relay fee cap per UTC day; a scan that would exceed it ends `over_cap` / `budget` |
 | `FV_RELAY_LOW_BALANCE_LAMPORTS` | `100000000` (0.1 SOL) | relayer balance below this → a warning in the log (at most hourly) and `relay.ok: false` in `/health` |
 | `FV_RELAY_CU_LIMIT` | `150000` | compute unit limit of a relay transaction |
@@ -429,8 +429,9 @@ cycle, which re-checks each event's status (a parallel `POST /api/events` confir
    files per cycle, in one write transaction, so a parallel `/api/verify` keeping the same bytes never loses its file.
    Only `<sha256>.bin` / `<sha256>.preview.<ext>` names are ever deleted.
 7. **Public record**: queued relay rows past their deadline → `failed` / `expired` (also with the relay off or without
-   `FV_PROGRAM_ID`, so no relay scan stays pending), then `sending` rows are confirmed like the relay loop does
-   (`confirm_sending`; no RPC call without such rows). Step 1 never checks a relay scan against a ScanProof, and the
+   `FV_PROGRAM_ID`, so no relay scan stays pending; a row with earlier attempts only after their
+   `getSignatureStatuses` look-up, which records it instead if one of them landed), then `sending` rows are confirmed
+   like the relay loop does (`confirm_sending`; no RPC call without such rows). Step 1 never checks a relay scan against a ScanProof, and the
    Arweave queue skips relay scans in P1.
 
 `events` are sorted by `ts` ascending. SCAN payloads of tier ≥ 1 are the full §4.4 bundle plus `grade`,
@@ -476,7 +477,15 @@ price at most `FV_RELAY_MAX_PRIORITY_MICROLAMPORTS`. Anything else is refused.
   `getTransaction`) or `failed` / `rejected`; an attempt that is unknown once the finalized block height has passed its
   `lastValidBlockHeight` can never land and goes back to `queued` (new blockhash) or, past the deadline, `expired`. A
   row is never re-sent while its previous attempt could still land; if two ever land, the second fails on chain with
-  `CounterNotIncreasing`.
+  `CounterNotIncreasing`. Status reads ask each RPC on its own: `FV_SOLANA_RPC` is the source with the full history,
+  `FV_SOLANA_RPC_FALLBACK` may have none, so an attempt is given up only when the primary does not find it (and the
+  fallback, asked as a second source, does not either) and the primary's block height is past it; while only the
+  fallback answers, the row waits.
+* **Earlier attempts** (`relay_tx.earlier_sigs`): every attempt given up on keeps its signature. Before a row with
+  earlier attempts ends without being recorded (`counter_used` above all: its own first attempt may have used the
+  counter), they are looked up (primary, then fallback); one that landed records the row with its signature (`txSig`),
+  nothing is sent again, and its fee is charged once (it was refunded when given up). While that look-up cannot tell,
+  the row stays pending and backs off.
 * **Balance**: `getBalance(relayer)` at most every 60 s and after each recorded row; below
   `FV_RELAY_LOW_BALANCE_LAMPORTS` a warning (at most hourly) and `relay.ok: false`.
 * **Events**: a recorded TAP gives its `/t` sighting the relay `tx_sig` and the FVSCAN2 detail (`anchor: "relay"`,

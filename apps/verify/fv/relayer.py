@@ -15,7 +15,11 @@ Rows (relay_tx) and their states: queued → sending → recorded, or over_cap /
 of the same tap took its place). Idempotency: at most one live row (queued, sending, recorded) per (seal, counter) —
 the partial unique index relay_tx_live_ref — and a row is never re-sent while its previous attempt could still land
 (it stays `sending` until getSignatureStatuses knows it or its blockhash has expired; that includes a send whose
-primary RPC failed on the transport, whatever the fallback then answers). Should two attempts ever land, the second
+primary RPC failed on the transport, whatever the fallback then answers). An attempt is given up only on the word of
+the primary RPC, the source with the full history (the fallback, which may keep none, is asked as a second source and
+must not know it either; while only the fallback answers, the row waits), and its signature is kept
+(relay_tx.earlier_sigs): before a row with earlier attempts ends without being recorded (counter_used above all), they
+are looked up, and one that landed records the row with its own signature. Should two attempts ever land, the second
 fails on chain with CounterNotIncreasing: nothing is recorded twice. The ts + 570 s deadline is checked against the
 clock at the moment a row is claimed for sending, not the start of the relay cycle.
 
@@ -298,15 +302,27 @@ def _finish(conn, row: dict, status: str, reason: str | None, now: int, *, lampo
     return True
 
 
-def expire_overdue(conn, now: int | None = None) -> int:
-    """Queued rows past their deadline → failed/expired (DB only; also run by the reconcile job, relay on or off)."""
+def expire_overdue(conn, now: int | None = None, rpc=None, state: RelayState | None = None) -> int:
+    """
+    Queued rows past their deadline → failed/expired (also run by the reconcile job, relay on or off). A row with
+    earlier attempts is expired only after they were looked up (`rpc`, outside the write transaction; one that landed
+    records the row instead; once its due_at has come, so a look-up that could not tell backs off): without `rpc` it is
+    left queued for a caller that has one.
+    """
     now = now_ts() if now is None else int(now)
     if not conn.execute("SELECT 1 FROM relay_tx WHERE status='queued' AND deadline_at < ? LIMIT 1", (now,)).fetchone():
         return 0
     n = 0
+    later: list[dict] = []
     with transaction(conn):
         for r in conn.execute("SELECT * FROM relay_tx WHERE status='queued' AND deadline_at < ? ORDER BY id", (now,)).fetchall():
-            n += _finish(conn, dict(r), "failed", "expired", now)
+            if not earlier_attempts(dict(r)):
+                n += _finish(conn, dict(r), "failed", "expired", now)
+            elif int(r["due_at"]) <= now:
+                later.append(dict(r))
+    if rpc is not None:
+        for r in later:
+            n += _end(conn, rpc, r, "failed", "expired", now, state) == "ended"
     return n
 
 
@@ -484,7 +500,9 @@ class FallbackRpc:
     failed on the transport may have been forwarded already, so any failure of the fallback then (BlockhashNotFound from
     a node that is behind, "node is behind", even a program error once the first copy landed) is reported as an
     unknown outcome (RpcError without `error`): the row stays `sending` with its signature until confirm_sending knows
-    it, instead of going back to `queued` and being sent a second time.
+    it, instead of going back to `queued` and being sent a second time. The relay's signature status reads
+    (confirm_sending, look_up_earlier) do not go through this fallback: they ask each RPC on its own (_status_sources),
+    since a fallback without history answers "not found" for a transaction that landed.
     """
 
     def __init__(self, primary, fallback=None):
@@ -574,64 +592,176 @@ def _paid_fee(rpc, sig: str) -> int | None:
     return int(fee) if isinstance(fee, int) else None
 
 
+def _status_sources(rpc) -> tuple[Any, Any | None]:
+    """
+    (primary, fallback) for status reads. The primary (FV_SOLANA_RPC) is the source with the full transaction history;
+    the fallback may keep none, so its "not found" alone never means "lost". A client that is not a FallbackRpc (the
+    reconcile job's primary RPC, a test fake) is the primary alone.
+    """
+    if isinstance(rpc, FallbackRpc):
+        return rpc.primary, rpc.fallback
+    return rpc, None
+
+
+def _statuses_from(source, sigs: list[str], which: str) -> list[dict | None] | None:
+    """getSignatureStatuses (searchTransactionHistory) of `sigs` from one source; None when it gave no usable answer."""
+    try:
+        got = list(source.get_signature_statuses(sigs))
+    except RpcError as exc:
+        log.warning("relay: getSignatureStatuses failed on the %s RPC (%s)", which, _code(exc))
+        return None
+    return got if len(got) == len(sigs) else None
+
+
+def _landed(st: dict | None) -> bool:
+    return bool(st) and st.get("confirmationStatus") in ("confirmed", "finalized")
+
+
+def earlier_attempts(row: dict) -> list[dict]:
+    """The row's earlier attempts, oldest first: {sig, estimate} of each transaction it sent and then gave up on (unknown
+    to the primary RPC once its blockhash had expired). Empty for a row of an earlier P1 build without the column."""
+    try:
+        got = json.loads(row.get("earlier_sigs") or "[]")
+    except ValueError:
+        return []
+    return [a for a in got if isinstance(a, dict) and isinstance(a.get("sig"), str)] if isinstance(got, list) else []
+
+
+def look_up_earlier(rpc, row: dict) -> tuple[str | None, int] | None:
+    """
+    What the row's earlier attempts did (§9.5): getSignatureStatuses on the primary, then on the fallback for what the
+    primary does not know. → (sig, paid): `sig` = the attempt that landed with err null (it recorded the scan) or None;
+    `paid` = what the attempts that landed paid (meta.fee, else their estimate) — each was refunded when it was given up,
+    so the caller charges it once. None = not known yet (the primary did not answer and the fallback does not know them
+    all — its "not found" alone proves nothing — or an attempt is processed only): the caller ends nothing.
+    """
+    attempts = earlier_attempts(row)
+    if not attempts:
+        return None, 0
+    primary, fallback = _status_sources(rpc)
+    sigs = [a["sig"] for a in attempts]
+    first = _statuses_from(primary, sigs, "primary")
+    statuses = list(first) if first is not None else [None] * len(sigs)
+    unknown = [i for i, st in enumerate(statuses) if st is None]
+    if unknown and fallback is not None:
+        for i, st in zip(unknown, _statuses_from(fallback, [sigs[i] for i in unknown], "fallback") or []):
+            statuses[i] = st
+    if (first is None and None in statuses) or any(st is not None and not _landed(st) for st in statuses):
+        return None
+    sig, paid = None, 0
+    for attempt, st in zip(attempts, statuses):
+        if st is None:
+            continue
+        fee = _paid_fee(rpc, attempt["sig"])
+        paid += fee if fee is not None else int(attempt.get("estimate") or 0)
+        if st.get("err") is None and sig is None:
+            sig = attempt["sig"]
+    return sig, paid
+
+
+def _record(conn, row: dict, sig: str, lamports: int, now: int, expect: str) -> bool:
+    """The row → recorded by transaction `sig` (what the row paid: `lamports`) if it is still in `expect`; then §9.8."""
+    cur = conn.execute("""UPDATE relay_tx SET status='recorded', reason=NULL, sig=?, lamports=?, updated_at=?
+                          WHERE id=? AND status=?""", (sig, int(lamports), int(now), row["id"], expect))
+    if cur.rowcount != 1:
+        return False
+    settle_event(conn, get_row(conn, row["id"]), int(now))
+    return True
+
+
 def confirm_sending(conn, settings: Settings, rpc, state: RelayState | None = None, now: float | None = None) -> dict:
     """
     Settle `sending` rows (§9.5; run by the loop, at its start, and by reconcile_once). No RPC call without such rows.
+    Statuses come from the primary RPC; from the fallback only when the primary fails (then only what it finds counts)
+    and as a second source before an attempt is given up. The block height is the primary's.
       * confirmed/finalized, err null → recorded (meta.fee stored, the budget corrected by fee − estimate), §9.8;
-      * err set → failed/rejected (the paid fee kept in the budget);
-      * unknown and the finalized block height is past last_valid_height → it can never land: back to queued (re-sent
-        with a new blockhash, the estimate refunded) or, past the deadline, failed/expired.
-    Anything else waits (processed only, or the blockhash still valid).
+      * err set → failed/rejected (the paid fee kept in the budget), unless an earlier attempt of the row landed
+        (look_up_earlier): then recorded with that one;
+      * either way, what earlier attempts of the row that landed paid is charged once with it (they were refunded when
+        given up);
+      * not found by the primary nor the fallback, and the primary's finalized block height past last_valid_height → it
+        can never land: back to queued (re-sent with a new blockhash, the estimate refunded, its signature kept in
+        earlier_sigs) or, past the deadline, failed/expired (after the look-up of its earlier attempts).
+    Anything else waits (processed only, the blockhash still valid, only the fallback answered, or earlier attempts not
+    known yet).
     """
     now = time.time() if now is None else now
     rows = [dict(r) for r in conn.execute("SELECT * FROM relay_tx WHERE status='sending' ORDER BY id").fetchall()]
     out = {"sending": len(rows), "recorded": 0, "rejected": 0, "requeued": 0, "expired": 0}
     if not rows:
         return out
-    try:
-        statuses = rpc.get_signature_statuses([r["sig"] for r in rows])
-    except RpcError as exc:
-        log.warning("relay: getSignatureStatuses failed (%s)", _code(exc))
+    primary, fallback = _status_sources(rpc)
+    statuses = _statuses_from(primary, [r["sig"] for r in rows], "primary")
+    history = statuses is not None                # the primary answered: its "not found" can be final
+    if statuses is None and fallback is not None:
+        statuses = _statuses_from(fallback, [r["sig"] for r in rows], "fallback")
+    if statuses is None:
         return out
     height: int | None = None
-    plan: list[tuple[dict, str, int | None]] = []
+    landed: list[tuple[dict, dict]] = []
+    gone: list[dict] = []
     for row, st in zip(rows, statuses):
-        if st and st.get("confirmationStatus") in ("confirmed", "finalized"):
-            plan.append((row, "recorded" if st.get("err") is None else "rejected", _paid_fee(rpc, row["sig"])))
-        elif st is None:
+        if _landed(st):
+            landed.append((row, st))
+        elif st is None and history and row["last_valid_height"] is not None:
             if height is None:
                 try:
-                    height = int(rpc.get_block_height())
+                    height = int(primary.get_block_height())
                 except RpcError as exc:
                     log.warning("relay: getBlockHeight failed (%s)", _code(exc))
                     height = -1
-            if height >= 0 and row["last_valid_height"] is not None and height > int(row["last_valid_height"]):
-                plan.append((row, "expired" if now > int(row["deadline_at"]) else "requeue", None))
+            if height > int(row["last_valid_height"]):
+                gone.append(row)
+    if gone and fallback is not None:             # a second source before an attempt is given up
+        second = _statuses_from(fallback, [r["sig"] for r in gone], "fallback")
+        if second is not None:
+            landed += [(row, st) for row, st in zip(gone, second) if _landed(st)]
+            gone = [row for row, st in zip(gone, second) if st is None]
+    plan: list[tuple[dict, str, int | None, tuple[str | None, int]]] = []
+    for row, st in landed:
+        what = "recorded" if st.get("err") is None else "rejected"
+        earlier = look_up_earlier(rpc, row)
+        if earlier is None:
+            if what == "rejected":
+                continue                          # wait: an earlier attempt may be the one that recorded the scan
+            earlier = (None, 0)                   # recorded by this attempt either way
+        elif what == "recorded":
+            earlier = (None, earlier[1])          # this attempt recorded it; an earlier one can only have failed (paid)
+        plan.append((row, what, _paid_fee(rpc, row["sig"]), earlier))
+    for row in gone:
+        what = "expired" if now > int(row["deadline_at"]) else "requeue"
+        earlier = look_up_earlier(rpc, row) if what == "expired" else (None, 0)
+        if earlier is not None:
+            plan.append((row, what, None, earlier))
     with transaction(conn):
-        for row, what, fee in plan:
+        for row, what, fee, (earlier_sig, earlier_paid) in plan:
             cur = conn.execute("SELECT status, sig FROM relay_tx WHERE id=?", (row["id"],)).fetchone()
             if not cur or cur["status"] != "sending" or cur["sig"] != row["sig"]:
                 continue                                  # settled meanwhile (the other caller of confirm_sending)
             estimate = int(row["lamports"] or 0)
-            if what in ("recorded", "rejected"):
-                paid = fee if fee is not None else estimate
-                _charge(conn, now, paid - estimate)
-                if what == "recorded":
-                    conn.execute("UPDATE relay_tx SET status='recorded', reason=NULL, lamports=?, updated_at=? WHERE id=?",
-                                 (paid, int(now), row["id"]))
-                    settle_event(conn, get_row(conn, row["id"]), int(now))
-                else:
-                    _finish(conn, row, "failed", "rejected", int(now), lamports=paid, expect="sending", keep_sig=True)
-                    log.warning("relay: row %s (%s) landed with an error", row["id"], row["ref"])
-                out[what] += 1
-            elif what == "requeue":
+            if what == "requeue":
                 _charge(conn, now, -estimate)
-                conn.execute("""UPDATE relay_tx SET status='queued', sig=NULL, last_valid_height=NULL, lamports=0, due_at=?,
-                                updated_at=? WHERE id=?""", (int(now), int(now), row["id"]))
+                earlier = json.dumps(earlier_attempts(row) + [{"sig": row["sig"], "estimate": estimate}])
+                conn.execute("""UPDATE relay_tx SET status='queued', sig=NULL, last_valid_height=NULL, lamports=0, earlier_sigs=?,
+                                due_at=?, updated_at=? WHERE id=?""", (earlier, int(now), int(now), row["id"]))
                 out["requeued"] += 1
+                continue
+            # what this attempt paid (refund of its estimate when it never landed) + what earlier attempts that landed paid
+            paid = (fee if fee is not None else estimate) if what in ("recorded", "rejected") else 0
+            _charge(conn, now, paid - estimate + earlier_paid)
+            if what == "recorded" or earlier_sig:
+                _record(conn, row, row["sig"] if what == "recorded" else earlier_sig, paid + earlier_paid, int(now), "sending")
+                if what != "recorded":
+                    log.warning("relay: row %s (%s) was recorded by its earlier attempt %s…", row["id"], row["ref"],
+                                earlier_sig[:12])
+                out["recorded"] += 1
+            elif what == "rejected":
+                _finish(conn, row, "failed", "rejected", int(now), lamports=paid + earlier_paid, expect="sending",
+                        keep_sig=True)
+                log.warning("relay: row %s (%s) landed with an error", row["id"], row["ref"])
+                out["rejected"] += 1
             else:
-                _charge(conn, now, -estimate)
-                _finish(conn, row, "failed", "expired", int(now), lamports=0, expect="sending")
+                _finish(conn, row, "failed", "expired", int(now), lamports=earlier_paid, expect="sending")
                 out["expired"] += 1
     if out["recorded"]:
         if state is not None:
@@ -674,12 +804,44 @@ def _retry(conn, row: dict, now: float, why: str, state: RelayState | None) -> N
     log.info("relay: row %s (%s): %s, retry in %ss", row["id"], row["ref"], why, delay)
 
 
-def _fail(conn, row: dict, status: str, reason: str, now: float, state: RelayState | None) -> None:
+def _end(conn, rpc, row: dict, status: str, reason: str, now: float, state: RelayState | None) -> str:
+    """
+    End a queued row without recording it (status/reason) — unless one of its own earlier attempts landed. A row with
+    earlier attempts looks them up first (look_up_earlier, outside any write transaction):
+      * one landed with err null → the row is recorded with that signature, its fee charged once ("recorded");
+      * not known yet → the row stays queued and is tried again after the backoff ("wait");
+      * none landed → status/reason as asked, the fees of attempts that landed with an error charged ("ended").
+    "moved": the row changed meanwhile and nothing was written.
+    """
+    earlier = look_up_earlier(rpc, row) if earlier_attempts(row) else (None, 0)
+    if earlier is None:
+        _retry(conn, row, now, "earlier attempt not known yet", state)
+        return "wait"
+    sig, paid = earlier
     with transaction(conn):
-        _finish(conn, row, status, reason, int(now))
+        if sig:
+            done = _record(conn, row, sig, paid, int(now), "queued")
+        else:
+            done = _finish(conn, row, status, reason, int(now), lamports=paid or None)
+        if done and paid:
+            _charge(conn, now, paid)
+    if not done:
+        return "moved"
+    if sig:
+        if state is not None:
+            state.balance_due = True
+        log.warning("relay: row %s (%s) was recorded by its earlier attempt %s… (not %s)", row["id"], row["ref"], sig[:12],
+                    reason)
+        return "recorded"
     if state is not None:
         state.last_error = reason
     log.info("relay: row %s (%s) → %s (%s)", row["id"], row["ref"], status, reason)
+    return "ended"
+
+
+def _ended(what: str, outcome: str) -> str:
+    """process_row's outcome after _end: the caller's name for an ended row, else _end's ("recorded", "wait", "moved")."""
+    return outcome if what == "ended" else what
 
 
 def _check_accounts(row: dict, datas: list[bytes | None], passport_pda: Pubkey) -> str | None:
@@ -707,11 +869,12 @@ def process_row(conn, settings: Settings, rpc, state: RelayState | None, row: di
     One due row: checks, fee, accounts, build + allowlist + sign, claim (→ sending, budget charged), send. Returns the
     outcome. `clock` is read again right before the claim (after the RPC calls, each of which may wait out its timeout):
     a row past its deadline at that moment ends failed/expired and is never sent (D13); default: `now` throughout.
+    Every way of ending the row unrecorded goes through _end, so a row whose counter its own earlier attempt used
+    (counter_used, or CounterNotIncreasing at the preflight) is recorded with that attempt instead.
     """
     clock = clock or (lambda: now)
     if now > int(row["deadline_at"]):
-        _fail(conn, row, "failed", "expired", now, state)
-        return "expired"
+        return _ended(_end(conn, rpc, row, "failed", "expired", now, state), "expired")
     pid = program_pubkey(settings.program_id)
     m = proof.parse_message_v2(bytes.fromhex(row["msg_hex"]))
     passport = pda_passport(pid, m["serial_hash"])
@@ -725,8 +888,7 @@ def process_row(conn, settings: Settings, rpc, state: RelayState | None, row: di
         price = 0
     fee = fee_estimate(price, settings.relay_cu_limit)
     if spent_today(conn, now) + fee > int(settings.relay_daily_lamports):
-        _fail(conn, row, "over_cap", "budget", now, state)
-        return "over_cap"
+        return _ended(_end(conn, rpc, row, "over_cap", "budget", now, state), "over_cap")
     try:
         datas = rpc.get_multiple_accounts([passport, seal, holding])
     except RpcError as exc:
@@ -734,8 +896,7 @@ def process_row(conn, settings: Settings, rpc, state: RelayState | None, row: di
         return "retry"
     why = _check_accounts(row, datas, passport)
     if why:
-        _fail(conn, row, "failed", why, now, state)
-        return why
+        return _ended(_end(conn, rpc, row, "failed", why, now, state), why)
     try:
         blockhash, last_valid = rpc.get_latest_blockhash()
     except RpcError as exc:
@@ -745,33 +906,32 @@ def process_row(conn, settings: Settings, rpc, state: RelayState | None, row: di
         tx = build_relay_tx(settings, row, blockhash, price)          # refused by the allowlist → never signed
     except (RelayShapeError, ValueError) as exc:
         log.error("relay: row %s (%s) refused by the shape allowlist: %s", row["id"], row["ref"], exc)
-        _fail(conn, row, "failed", "rejected", now, state)
-        return "rejected"
+        return _ended(_end(conn, rpc, row, "failed", "rejected", now, state), "rejected")
     sig = str(tx.signatures[0])
     now = clock()                                       # the send time, not the cycle start
     # claim before sending: from here the row is `sending`, so an adoption of its tap answers REPLAY and nothing re-sends
     # it until confirm_sending knows its fate. Only while the deadline (ts + 570) has not passed at this moment.
-    expired = False
     with transaction(conn):
         if spent_today(conn, now) + fee > int(settings.relay_daily_lamports):
-            _finish(conn, row, "over_cap", "budget", int(now))
-            return "over_cap"
-        cur = conn.execute("""UPDATE relay_tx SET status='sending', sig=?, last_valid_height=?, lamports=?, attempts=attempts+1,
-                              updated_at=? WHERE id=? AND status='queued' AND deadline_at >= ?""",
-                           (sig, int(last_valid), fee, int(now), row["id"], now))
-        if cur.rowcount != 1:
-            # past its deadline by now (the RPC calls above took their time): expired, never sent; otherwise the row was
-            # replaced or settled meanwhile and nothing was sent either
-            if not (int(row["deadline_at"]) < now and _finish(conn, row, "failed", "expired", int(now))):
-                return "moved"
-            expired = True
+            ended = ("over_cap", "budget")
         else:
-            _charge(conn, now, fee)
-    if expired:
-        if state is not None:
-            state.last_error = "expired"
-        log.info("relay: row %s (%s) → failed (expired) at the claim", row["id"], row["ref"])
-        return "expired"
+            cur = conn.execute("""UPDATE relay_tx SET status='sending', sig=?, last_valid_height=?, lamports=?,
+                                  attempts=attempts+1, updated_at=? WHERE id=? AND status='queued' AND deadline_at >= ?""",
+                               (sig, int(last_valid), fee, int(now), row["id"], now))
+            if cur.rowcount == 1:
+                _charge(conn, now, fee)
+                ended = None
+            elif int(row["deadline_at"]) < now:
+                # past its deadline by now (the RPC calls above took their time): expired, never sent
+                ended = ("failed", "expired")
+            else:
+                return "moved"                          # replaced or settled meanwhile: nothing was sent either
+    if ended:
+        status, reason = ended
+        what = _end(conn, rpc, row, status, reason, now, state)
+        if what == "ended" and reason == "expired":
+            log.info("relay: row %s (%s) → failed (expired) at the claim", row["id"], row["ref"])
+        return _ended(what, status if reason == "budget" else reason)
     try:
         rpc.send_transaction(bytes(tx))
     except RpcError as exc:
@@ -782,17 +942,25 @@ def process_row(conn, settings: Settings, rpc, state: RelayState | None, row: di
             log.warning("relay: row %s (%s) send outcome unknown (%s); waiting for its status", row["id"], row["ref"], _code(exc))
             return "unknown"
         program = _program_error(exc.error)
+        # a program error of a row with earlier attempts may be CounterNotIncreasing because one of them landed: the row
+        # goes back to queued (this copy never left the node) and _end looks them up before it is rejected
+        settle_later = bool(program) and bool(earlier_attempts(row))
         with transaction(conn):
             _charge(conn, now, -fee)
-            if program:
+            if program and not settle_later:
                 _finish(conn, row, "failed", "rejected", int(now), lamports=0, expect="sending")
             else:
-                delay = RETRY_BACKOFF_S[min(int(row["attempts"] or 0), len(RETRY_BACKOFF_S) - 1)]
+                delay = 0 if settle_later else RETRY_BACKOFF_S[min(int(row["attempts"] or 0), len(RETRY_BACKOFF_S) - 1)]
                 conn.execute("""UPDATE relay_tx SET status='queued', sig=NULL, last_valid_height=NULL, lamports=0, due_at=?,
                                 updated_at=? WHERE id=? AND status='sending'""", (int(now) + delay, int(now), row["id"]))
+        log.warning("relay: row %s (%s) not sent: %s", row["id"], row["ref"], program or _code(exc))
+        if settle_later:
+            fresh = get_row(conn, row["id"])
+            if not fresh or fresh["status"] != "queued":
+                return "moved"
+            return _ended(_end(conn, rpc, fresh, "failed", "rejected", now, state), "rejected")
         if state is not None:
             state.last_error = "rejected" if program else "rpc"
-        log.warning("relay: row %s (%s) not sent: %s", row["id"], row["ref"], program or _code(exc))
         return "rejected" if program else "retry"
     log.info("relay: row %s (%s) sent %s… fee ≈ %s lamports", row["id"], row["ref"], sig[:12], fee)
     return "sent"
@@ -849,7 +1017,7 @@ def relay_once(db, settings: Settings, rpc, state: RelayState, now: float | None
     if not out["enabled"]:
         return out
     with db.connect() as conn:
-        out["expired"] = expire_overdue(conn, int(now))
+        out["expired"] = expire_overdue(conn, int(now), rpc, state)
         out["confirm"] = confirm_sending(conn, settings, rpc, state, now)
         if not _holder_config_ready(settings, rpc, state, now):
             out["waiting"] = "holder_config"
@@ -858,7 +1026,7 @@ def relay_once(db, settings: Settings, rpc, state: RelayState, now: float | None
         if not state.cluster_matches(settings):
             state.last_error = "cluster_mismatch"
             for row in due:
-                _fail(conn, row, "failed", "cluster_mismatch", now, state)
+                _end(conn, rpc, row, "failed", "cluster_mismatch", now, state)
             out["clusterMismatch"] = len(due)
             return out
         check_balance(settings, rpc, state, now)

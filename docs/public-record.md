@@ -721,6 +721,7 @@ CREATE TABLE IF NOT EXISTS relay_tx (
   reason        TEXT,                             -- §9.6
   sig           TEXT,                             -- tx signature of the current attempt; the landed one once recorded
   last_valid_height INTEGER,                      -- lastValidBlockHeight of the current attempt
+  earlier_sigs  TEXT,                             -- JSON [{sig, estimate}]: attempts sent and given up on (§9.5)
   attempts      INTEGER NOT NULL DEFAULT 0,
   lamports      INTEGER NOT NULL DEFAULT 0,       -- fee actually paid (meta.fee)
   created_at    INTEGER NOT NULL,
@@ -733,8 +734,10 @@ CREATE TABLE IF NOT EXISTS relay_budget (day TEXT PRIMARY KEY, lamports INTEGER 
 ```
 The partial unique index is the idempotency guarantee: at most one live row per (seal, counter). `server_pubkey` is
 written when the row is signed (D13) and used for its Ed25519 instruction and the allowlist, so a scan-key rotation
-does not strand the rows signed before it (the program still checks `registry.server_key(key_id)` and its validity);
-`fv/db.py migrate` adds the column to a database of an earlier P1 build, whose rows fall back to the current key.
+does not strand the rows signed before it (the program still checks `registry.server_key(key_id)` and its validity).
+`earlier_sigs` keeps the signature and charged estimate of every attempt the row sent and then gave up on (§9.5), so a
+transaction that landed after all is never lost. `fv/db.py migrate` adds both columns to a database of an earlier P1
+build, whose rows fall back to the current key and have no earlier attempts.
 
 ### 9.4 Queueing (`fv/relayer.py`, called inside the existing write transactions)
 
@@ -784,7 +787,8 @@ Per due row (`now` is the wall clock when the row is processed, read again right
    `FV_RELAY_DAILY_LAMPORTS` → `over_cap`, `budget`.
 3. `getMultipleAccounts([passport, seal, holding])`: passport or seal missing → `failed`, `not_on_chain`; holding
    missing → `failed`, `no_holding`; `seal.last_counter ≥ counter` → `failed`, `counter_used`; seal dead or passport
-   void → `failed`, `rejected`.
+   void → `failed`, `rejected`. A row with earlier attempts looks them up first (below): the counter may be used by
+   one of them.
 4. Build `[SetComputeUnitLimit(FV_RELAY_CU_LIMIT), SetComputeUnitPrice(price), Ed25519(§3.6),
    record_scan_v2(key_id)]` with a `confirmed` blockhash, the relayer as fee payer and only signer, the Ed25519
    instruction with the row's `server_pubkey`; run `check_relay_shape` (§9.7) on the message; only then sign.
@@ -792,19 +796,46 @@ Per due row (`now` is the wall clock when the row is processed, read again right
    `sending`, store `sig`, `last_valid_height`; `relay_budget[today] += fee`. Past the deadline by now → `failed`,
    `expired`, nothing sent.
 6. `sendTransaction` with preflight (`preflightCommitment: confirmed`). Preflight program error → `failed`,
-   `rejected` (error name in `last_error` log only). A node's JSON-RPC error that is not a program error (including
-   blockhash not found) → back to `queued`, `attempts + 1`, retry with backoff 2, 4, 8, 16, 30 s, using
+   `rejected` (error name in `last_error` log only); a row with earlier attempts goes back to `queued` and looks them
+   up first (`CounterNotIncreasing` may mean one of them landed). A node's JSON-RPC error that is not a program error
+   (including blockhash not found) → back to `queued`, `attempts + 1`, retry with backoff 2, 4, 8, 16, 30 s, using
    `FV_SOLANA_RPC_FALLBACK` after a primary failure. A transport error (or AlreadyProcessed) → the outcome is unknown:
    the row stays `sending` with its signature until its status or the expiry of its blockhash is known; that includes
    a primary transport error followed by any failure of the fallback (the primary may have forwarded it).
 
-Confirmation (`confirm_sending`, also called by `reconcile_once` and at startup):
+Confirmation (`confirm_sending`, also called by `reconcile_once` and at startup). Status reads ask each RPC on its own,
+not through the generic fallback: `FV_SOLANA_RPC` (the primary) is the source with the full transaction history
+(`getSignatureStatuses` with `searchTransactionHistory: true`); `FV_SOLANA_RPC_FALLBACK` may keep none, so a "not
+found" from it alone never counts. The block height is always the primary's.
 - `getSignatureStatuses([sig])` confirmed/finalized with `err == null` → `recorded`: read `meta.fee` with
   `getTransaction`, correct the budget by `fee − estimate`, store `lamports`, then apply §9.8;
-- `err != null` → `failed`, `rejected` (budget corrected with the paid fee);
-- unknown and block height > `last_valid_height` → back to `queued` (re-sent with a new blockhash) or, past the
-  deadline, `failed`, `expired`. A row is never re-sent while its previous attempt could still land; if two ever
-  land, the second fails on chain with `CounterNotIncreasing`, so nothing is recorded twice.
+- `err != null` → `failed`, `rejected` (budget corrected with the paid fee), unless an earlier attempt of the row
+  landed with `err == null` (look-up below): then `recorded` with that attempt's signature;
+- not found by the primary, not found by the fallback either (asked as a second source; a fallback error leaves the
+  primary's answer standing), and the primary's finalized block height > `last_valid_height` → the attempt is given
+  up: its signature and estimate are appended to `earlier_sigs`, the estimate is refunded, and the row goes back to
+  `queued` (re-sent with a new blockhash) or, past the deadline, `failed`, `expired` (after the look-up below);
+- the primary's `getSignatureStatuses` fails → the fallback's answer counts only where it finds the signature
+  (confirmed/finalized, as above); a signature it does not know waits (no block height read, nothing requeued).
+
+A row is never re-sent while its previous attempt could still land; if two ever land, the second fails on chain with
+`CounterNotIncreasing`, so nothing is recorded twice.
+
+Earlier attempts (`earlier_sigs`): a row never ends without being recorded — `counter_used` above all, but also
+`rejected`, `expired`, `over_cap`, `not_on_chain`, `no_holding`, `cluster_mismatch` — while one of its own earlier
+attempts landed. Before such an end, a row with earlier attempts looks them up (`getSignatureStatuses`, full history,
+on the primary, then on the fallback for what the primary does not know):
+- one landed with `err == null` → `recorded` with its signature (the record's `txSig`), §9.8; nothing is sent again;
+- none landed → the end as before;
+- not known yet (the primary did not answer and the fallback does not know them all, or one is only `processed`) →
+  the row stays `queued` (`pending`) and is tried again after the backoff. `expire_overdue` without an RPC (DB only)
+  leaves such a row to the relay loop or the reconcile job, which look it up once its `due_at` has come.
+
+Budget: an attempt's estimate is charged at the claim and refunded when the attempt is given up; an earlier attempt
+found landed (with or without an error) is charged its `meta.fee` (else its estimate) once, when the row settles. So
+every landed transaction is paid exactly once in `relay_budget`, and `lamports` holds what the row's landed attempts
+paid. D13 holds throughout: the FVSCAN2 is never re-signed and nothing is sent after `ts + 570` s; recording a row with
+an attempt that landed in time sends nothing.
 
 Balance: `getBalance(relayer)` at most every 60 s and after each recorded row; below
 `FV_RELAY_LOW_BALANCE_LAMPORTS` → `log.warning` (at most hourly) and `lowBalance: true` in health/admin. On start the

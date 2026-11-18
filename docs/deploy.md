@@ -71,7 +71,7 @@ Read these before setting any variable.
 | `FV_RELAYER_KEY` | **secret**, a Solana keypair JSON (64 numbers) used for nothing else | fee payer of relay transactions only, no program authority; fund it with at most 0.5 SOL on devnet. Generate one with `solana-keygen new --no-bip39-passphrase -o <file>` outside the repo, paste the file's content into the variable, then delete the file. `GET /api/admin/status` shows its public key |
 | `FV_HOLDER_KEY` | **secret**, unset in P1 | holder-move key for P2; only parsed and validated now (its public key appears in `GET /api/admin/status`) |
 | `FV_ISSUER_KEY` | **secret**, unset in P1 | registry partner key for sealing at the counter (P2); only parsed and validated now |
-| `FV_SOLANA_RPC_FALLBACK` | a second RPC endpoint (optional) | relay sends and status reads switch to it after a failure of `FV_SOLANA_RPC` |
+| `FV_SOLANA_RPC_FALLBACK` | a second RPC endpoint (optional) | relay sends and status reads switch to it after a failure of `FV_SOLANA_RPC`; it needs no transaction history (a signature it does not find never counts as lost) |
 | `FV_RELAY_DAILY_LAMPORTS` | `10000000` (default) | global relay fee cap per UTC day; a scan above it is kept off chain (`over_cap` / `budget`) |
 | `FV_RELAY_LOW_BALANCE_LAMPORTS` | `100000000` (default, 0.1 SOL) | below this relayer balance the log warns (at most hourly) and `GET /health` reports `relay.ok: false` |
 | `FV_RELAY_CU_LIMIT` | `150000` (default) | compute unit limit of a relay transaction |

@@ -61,6 +61,7 @@ def migrate(conn: sqlite3.Connection, schema: str) -> None:
       * taps.adopt_hash / taps.adopted_at (one-time /t adoption tokens),
       * events.status CHECK constraint gains 'reported' — SQLite cannot alter a CHECK, so the table is rebuilt,
       * relay_tx.server_pubkey (the scan key that signed a row; rows of an earlier P1 build have none).
+      * relay_tx.earlier_sigs (the attempts a row sent and gave up on; none for rows of an earlier P1 build).
     New tables (relay_tx, relay_budget: the public-record relay) otherwise need nothing here: schema.sql creates them
     with CREATE TABLE IF NOT EXISTS before this runs. Idempotent; a no-op on a fresh database.
     """
@@ -68,8 +69,10 @@ def migrate(conn: sqlite3.Connection, schema: str) -> None:
     for col, decl in (("adopt_hash", "TEXT"), ("adopted_at", "INTEGER")):
         if col not in cols:
             conn.execute(f"ALTER TABLE taps ADD COLUMN {col} {decl}")
-    if "server_pubkey" not in {r["name"] for r in conn.execute("PRAGMA table_info(relay_tx)").fetchall()}:
-        conn.execute("ALTER TABLE relay_tx ADD COLUMN server_pubkey TEXT")
+    relay_cols = {r["name"] for r in conn.execute("PRAGMA table_info(relay_tx)").fetchall()}
+    for col in ("server_pubkey", "earlier_sigs"):
+        if col not in relay_cols:
+            conn.execute(f"ALTER TABLE relay_tx ADD COLUMN {col} TEXT")
     row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='events'").fetchone()
     if row and "'reported'" not in row["sql"]:
         m = re.search(r"CREATE TABLE IF NOT EXISTS events \((.*?)\n\);", schema, re.S)

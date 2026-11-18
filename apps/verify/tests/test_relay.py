@@ -82,6 +82,7 @@ class FakeRelayRpc:
         self.lost_answer = False                  # the node takes the tx (it lands once settled) but its answer is lost
         self.fail: dict[str, list[Exception]] = {}
         self.calls: list[str] = []
+        self.hidden: set[str] = set()             # landed, but getSignatureStatuses answers None (a lagging node)
 
     def _call(self, name: str) -> None:
         self.calls.append(name)
@@ -128,7 +129,7 @@ class FakeRelayRpc:
 
     def get_signature_statuses(self, sigs):
         self._call("get_signature_statuses")
-        return [self.statuses.get(s) for s in sigs]
+        return [None if s in self.hidden else self.statuses.get(s) for s in sigs]
 
     def get_transaction(self, sig):
         self._call("get_transaction")
@@ -148,6 +149,22 @@ class FakeRelayRpc:
 
     def get_signatures_for_address(self, pubkey, limit=5):
         return []
+
+
+class NoHistoryFallback:
+    """FV_SOLANA_RPC_FALLBACK on the same cluster (same accounts, block height and sends as the primary fake) that keeps no
+    transaction history: getSignatureStatuses answers None for every signature, also for one that landed."""
+
+    def __init__(self, fake: FakeRelayRpc):
+        self.fake = fake
+        self.status_reads = 0
+
+    def __getattr__(self, name):
+        return getattr(self.fake, name)
+
+    def get_signature_statuses(self, sigs):
+        self.status_reads += 1
+        return [None for _ in sigs]
 
 
 def plant_chain(fake: FakeRelayRpc, uid_hex: str, *, serial: str = SERIAL, cluster_tag: int = Cluster.LOCALNET, **seal_kw) -> None:
@@ -786,6 +803,187 @@ def test_a_send_lost_on_the_primary_is_never_sent_twice_whatever_the_fallback_sa
     r = rows(c)[0]
     assert r["status"] == "recorded" and r["sig"] == str(c.fake.sent[0].signatures[0]) and len(c.fake.sent) == 1
     assert event(c, r["event_id"])["tx_sig"] == r["sig"] and budget(c, row["due_at"]) == FEE - 3
+
+
+# ---------- earlier attempts: status sources, counter_used (§9.5) ----------
+
+def _first_attempt(c, rpc, *, landed: bool):
+    """A TAP sent once through `rpc` whose blockhash has expired since; landed=True: it landed (the seal counter is used),
+    False: it was dropped. → (uid, tapId, row, signature of that attempt)."""
+    c.fake.land = False
+    uid = attach(c)
+    tap_id, _ = t_tap(c, uid)
+    (row,) = rows(c)
+    assert REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=row["due_at"])["sent"] == {"sent": 1}
+    if landed:
+        c.fake.settle(c.fake.sent[0])
+    c.fake.block_height = c.fake.last_valid + 1
+    c.fake.last_valid += 1000
+    return uid, tap_id, row, str(c.fake.sent[0].signatures[0])
+
+
+def _given_up(c, rpc, sig: str, now) -> None:
+    """The primary does not find attempt `sig` once (and the fallback keeps no history): confirm_sending gives it up."""
+    c.fake.hidden = {sig}
+    with c.db.connect() as conn:
+        assert relayer.confirm_sending(conn, c.settings, rpc, c.state, now)["requeued"] == 1
+    c.fake.hidden = set()
+
+
+def test_a_landed_attempt_is_not_given_up_on_the_word_of_a_fallback_without_history(relay_client):
+    """getSignatureStatuses answered by the fallback (no history: None) while getBlockHeight came from the primary: the
+    landed attempt used to go back to queued, and its row then ended failed / counter_used without its txSig."""
+    c = relay_client
+    rpc = relayer.FallbackRpc(c.fake, NoHistoryFallback(c.fake))
+    _uid, tap_id, row, sig = _first_attempt(c, rpc, landed=True)
+    now = row["due_at"]
+    c.fake.fail["get_signature_statuses"] = [RpcError("getSignatureStatuses: timed out")]   # the primary, once
+    out = REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=now + 2)
+    r = rows(c)[0]
+    assert out["confirm"]["requeued"] == 0 and (r["status"], r["sig"]) == ("sending", sig) and len(c.fake.sent) == 1
+    assert rpc.fallback.status_reads == 1 and budget(c, now) == FEE
+    out = REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=now + 4)                      # the primary answers again
+    r = rows(c)[0]
+    assert out["confirm"]["recorded"] == 1 and len(c.fake.sent) == 1
+    assert (r["status"], r["reason"], r["sig"], r["lamports"]) == ("recorded", None, sig, FEE - 3) and budget(c, now) == FEE - 3
+    assert event(c, r["event_id"])["tx_sig"] == sig and c.get(f"/api/tap/{tap_id}").json()["record"]["txSig"] == sig
+
+
+def test_counter_used_by_an_earlier_attempt_records_the_row_with_it(relay_client):
+    c = relay_client
+    rpc = relayer.FallbackRpc(c.fake, NoHistoryFallback(c.fake))
+    _uid, tap_id, row, sig = _first_attempt(c, rpc, landed=True)
+    now = row["due_at"]
+    _given_up(c, rpc, sig, now + 2)                                    # the primary missed it once, the fallback agreed
+    r = rows(c)[0]
+    assert (r["status"], r["sig"], r["lamports"]) == ("queued", None, 0) and budget(c, now) == 0
+    assert json.loads(r["earlier_sigs"]) == [{"sig": sig, "estimate": FEE}]
+    # the counter is used on chain — by the row's own first attempt. While only the fallback (no history) answers the
+    # look-up, nothing ends: the row stays pending and backs off
+    c.fake.fail["get_signature_statuses"] = [RpcError("getSignatureStatuses: timed out")]
+    out = REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=now + 2)
+    r = rows(c)[0]
+    assert out["sent"] == {"wait": 1} and r["status"] == "queued" and r["due_at"] > now + 2
+    assert c.get(f"/api/tap/{tap_id}").json()["record"]["state"] == "pending"
+    out = REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=r["due_at"])                  # the primary answers: it landed
+    r = rows(c)[0]
+    assert out["sent"] == {"recorded": 1} and len(c.fake.sent) == 1                         # nothing sent again
+    assert (r["status"], r["reason"], r["sig"], r["lamports"]) == ("recorded", None, sig, FEE - 3)
+    assert budget(c, now) == FEE - 3                                    # refunded when given up, paid once now
+    ev = event(c, r["event_id"])
+    assert ev["tx_sig"] == sig and json.loads(ev["payload_json"])["msgHex"] == r["msg_hex"]
+    rec = c.get(f"/api/tap/{tap_id}").json()["record"]
+    assert rec["state"] == "recorded" and rec["txSig"] == sig and rec["reason"] is None
+
+
+@pytest.mark.parametrize("refused", ["on_chain", "preflight"])
+def test_a_later_attempt_refused_because_the_first_landed_records_the_first(relay_client, refused):
+    """The first attempt landed unseen and the accounts read lagged as well, so a second attempt went out: it fails with
+    CounterNotIncreasing (on chain, or at the preflight). The row is recorded with the first."""
+    c = relay_client
+    rpc = relayer.FallbackRpc(c.fake, NoHistoryFallback(c.fake))
+    uid, tap_id, row, sig = _first_attempt(c, rpc, landed=True)
+    now = row["due_at"]
+    _given_up(c, rpc, sig, now + 2)
+    uh = proof.uid_hash(bytes.fromhex(uid))
+    seal_key = str(pda_seal(PID, uh))
+    used = c.fake.accounts[seal_key]
+    c.fake.accounts[seal_key] = seal_account(SERIAL, uh)                # a lagging node: the counter looks free
+    counter_not_increasing = {"InstructionError": [3, {"Custom": 6020}]}
+    if refused == "preflight":
+        c.fake.fail["send_transaction"] = [RpcError("x", error={"code": -32002, "message": "Transaction simulation failed",
+                                                                 "data": {"err": counter_not_increasing, "logs": []}})]
+    out = REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=now + 2)
+    c.fake.accounts[seal_key] = used
+    if refused == "on_chain":
+        assert out["sent"] == {"sent": 1} and len(c.fake.sent) == 2
+        c.fake.settle(c.fake.sent[1], err=counter_not_increasing, fee=10_007)
+        assert REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=now + 4)["confirm"]["recorded"] == 1
+        paid = FEE - 3 + 10_007                                         # both landed: both paid, each once
+    else:
+        assert out["sent"] == {"recorded": 1} and len(c.fake.sent) == 1  # the refused copy never left the node
+        paid = FEE - 3
+    r = rows(c)[0]
+    assert (r["status"], r["reason"], r["sig"], r["lamports"]) == ("recorded", None, sig, paid) and budget(c, now) == paid
+    assert event(c, r["event_id"])["tx_sig"] == sig and c.get(f"/api/tap/{tap_id}").json()["record"]["txSig"] == sig
+
+
+def test_a_lost_attempt_is_given_up_on_the_primarys_word_and_sent_again_once(relay_client):
+    c = relay_client
+    fallback = NoHistoryFallback(c.fake)
+    rpc = relayer.FallbackRpc(c.fake, fallback)
+    _uid, _tap_id, row, first = _first_attempt(c, rpc, landed=False)  # dropped: it never lands
+    now = row["due_at"]
+    c.fake.fail["get_signature_statuses"] = [RpcError("getSignatureStatuses: timed out")]
+    out = REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=now + 2)  # the fallback alone cannot tell lost from unseen
+    assert out["confirm"]["requeued"] == 0 and rows(c)[0]["status"] == "sending" and len(c.fake.sent) == 1
+    reads = fallback.status_reads
+    out = REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=now + 4)  # the primary: not found, past lastValidBlockHeight
+    assert out["confirm"]["requeued"] == 1 and fallback.status_reads == reads + 1     # the fallback agreed (second source)
+    assert out["sent"] == {"sent": 1} and len(c.fake.sent) == 2         # sent again with a new blockhash
+    second = str(c.fake.sent[1].signatures[0])
+    r = rows(c)[0]
+    assert (r["status"], r["sig"], r["attempts"]) == ("sending", second, 2) and second != first
+    assert json.loads(r["earlier_sigs"]) == [{"sig": first, "estimate": FEE}] and budget(c, now) == FEE
+    c.fake.settle(c.fake.sent[1])
+    REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=now + 6)
+    r = rows(c)[0]
+    assert (r["status"], r["sig"], r["lamports"]) == ("recorded", second, FEE - 3) and budget(c, now) == FEE - 3
+
+
+def test_an_earlier_attempt_that_failed_on_chain_is_paid_once_when_a_later_one_records(relay_client):
+    c = relay_client
+    rpc = relayer.FallbackRpc(c.fake, NoHistoryFallback(c.fake))
+    _uid, _tap_id, row, first = _first_attempt(c, rpc, landed=False)
+    now = row["due_at"]
+    c.fake.settle(c.fake.sent[0], err={"InstructionError": [3, {"Custom": 6047}]}, fee=10_007)   # landed with an error
+    _given_up(c, rpc, first, now + 2)                                  # unseen: given up, its estimate refunded
+    assert budget(c, now) == 0
+    assert REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=now + 2)["sent"] == {"sent": 1}   # the counter is free
+    c.fake.settle(c.fake.sent[1])
+    assert REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=now + 4)["confirm"]["recorded"] == 1
+    r = rows(c)[0]
+    second = str(c.fake.sent[1].signatures[0])
+    assert (r["status"], r["sig"], r["lamports"]) == ("recorded", second, FEE - 3 + 10_007)
+    assert budget(c, now) == FEE - 3 + 10_007                           # each landed transaction paid once
+
+
+def test_a_lost_earlier_attempt_still_ends_counter_used(relay_client):
+    """Another transaction used the counter (the row's own attempt never landed): failed / counter_used as before, after
+    the look-up."""
+    c = relay_client
+    rpc = relayer.FallbackRpc(c.fake, NoHistoryFallback(c.fake))
+    uid, tap_id, row, first = _first_attempt(c, rpc, landed=False)
+    now = row["due_at"]
+    _given_up(c, rpc, first, now + 2)
+    uh = proof.uid_hash(bytes.fromhex(uid))
+    c.fake.accounts[str(pda_seal(PID, uh))] = seal_account(SERIAL, uh, last_counter=row["counter"])
+    reads = c.fake.calls.count("get_signature_statuses")
+    out = REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=now + 2)
+    r = rows(c)[0]
+    assert out["sent"] == {"counter_used": 1} and c.fake.calls.count("get_signature_statuses") == reads + 1
+    assert (r["status"], r["reason"], r["sig"], r["lamports"]) == ("failed", "counter_used", None, 0) and budget(c, now) == 0
+    assert len(c.fake.sent) == 1 and c.get(f"/api/tap/{tap_id}").json()["record"]["reason"] == "counter_used"
+
+
+@pytest.mark.parametrize("landed", [True, False])
+def test_an_overdue_row_with_an_earlier_attempt_expires_only_after_the_look_up(relay_client, landed):
+    c = relay_client
+    rpc = relayer.FallbackRpc(c.fake, NoHistoryFallback(c.fake))
+    _uid, _tap_id, row, sig = _first_attempt(c, rpc, landed=landed)
+    _given_up(c, rpc, sig, row["due_at"] + 2)
+    late = row["deadline_at"] + 1
+    with c.db.connect() as conn:
+        assert relayer.expire_overdue(conn, late) == 0                  # DB only: it cannot look the attempt up, so it waits
+    assert rows(c)[0]["status"] == "queued"
+    reconcile_once(c.db, c.settings, c.fake, ts=late)                   # the reconcile job has the primary RPC
+    r = rows(c)[0]
+    if landed:
+        assert (r["status"], r["reason"], r["sig"], r["lamports"]) == ("recorded", None, sig, FEE - 3)
+        assert budget(c, late) == FEE - 3 and event(c, r["event_id"])["tx_sig"] == sig
+    else:
+        assert (r["status"], r["reason"], r["sig"], r["lamports"]) == ("failed", "expired", None, 0)
+    assert len(c.fake.sent) == 1
 
 
 def test_daily_budget_cap(relay_client):

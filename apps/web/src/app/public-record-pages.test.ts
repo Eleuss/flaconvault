@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isValidElement, type ReactElement, type ReactNode } from "react";
+import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { EventType } from "@flaconvault/proof";
 import type { Passport } from "@/lib/api";
 import { eventLine } from "@/lib/format";
-import { DRAWER_TEXT, DRAWER_TITLE, PUBLIC_RECORD_LINK, SAVE_BUTTON, SCAN_BY_LABEL } from "@/lib/public-record";
+import { DRAWER_TEXT, DRAWER_TITLE, PUBLIC_RECORD_LINK, SAVE_BUTTON, SAVING, SAVING_TAP_SOON, SCAN_BY_LABEL, TAP_SEND_DELAY_S, type PublicRecord } from "@/lib/public-record";
 import { verifyBody } from "@/lib/verify-api";
 import PassportPage from "./p/[serial]/page";
 import PrivacyPage from "./privacy/page";
@@ -50,6 +51,25 @@ test("/t shows the tap's public record under the verdict (TAP pending, polled by
   assert.equal(rec[0].props.tapId, 31);
   assert.equal(rec[0].props.serial, "SN-2026-000001");
   assert.equal(typeof rec[0].props.serverNow, "number");
+  // "within about 3 minutes" is decided from the tap's own time, not from the record's dueAt
+  assert.equal(rec[0].props.tapTs, 1_790_000_000);
+});
+
+/** The /t record line as the server renders it (and the first client render hydrates). */
+const tapLine = (record: PublicRecord, serverNow: number, tapTs: number | null = 1_790_000_000): string =>
+  renderToStaticMarkup(createElement(TapRecord, { tapId: 31, tapTs, serial: "SN-2026-000001", initial: record, serverNow }));
+
+test("/t: a pending TAP says 'within about 3 minutes' until tap ts + 185 s, whatever its dueAt says", () => {
+  const ts = 1_790_000_000;
+  const tap = (dueAt: number | null): PublicRecord => ({ state: "pending", purpose: "TAP", eventId: 77, dueAt, txSig: null, reason: null, cluster: "DEVNET" });
+  assert.ok(tapLine(tap(ts + 185), ts + 5).includes(SAVING_TAP_SOON));
+  assert.ok(tapLine(tap(ts + 185), ts + TAP_SEND_DELAY_S - 1).includes(SAVING_TAP_SOON));
+  // a relayer retry pause put dueAt ahead again: the line stays "Saving…"
+  const retrying = tapLine(tap(ts + 330), ts + 300);
+  assert.ok(retrying.includes(SAVING) && !retrying.includes(SAVING_TAP_SOON), retrying);
+  assert.ok(!tapLine(tap(ts + 185), ts + TAP_SEND_DELAY_S).includes(SAVING_TAP_SOON));
+  // without the tap's time (an older page) never the 3-minute line
+  assert.ok(!tapLine(tap(ts + 185), ts + 5, null).includes(SAVING_TAP_SOON));
 });
 
 test("/t without a record (an older verifier, or nothing queued) shows no record line", async (t) => {
@@ -178,6 +198,20 @@ test("/privacy: the server keeps a scan without a wallet, photos leave the brows
   assert.equal(body.attester, null);
   assert.equal("note" in body, false);
   assert.deepEqual(body.location, { country: "DE", city: "Wickede" });   // the place goes to the verifier, which keeps it to itself
+});
+
+test("/privacy: the country of a scan without a wallet is public and permanent through the hash on Solana; the place never is", () => {
+  const text = privacySection(WALLET_FREE);
+  // FVSCAN2 carries the hash of the v2 bundle; with every other field of it public, the country can be worked out
+  assert.match(text, /On Solana, public and permanent:[^]*The hash of the signed public record fixes that record's content, so the country, if you typed one, can be worked out from it: the country is public and permanent as well, even if the record is later deleted from the verification server\./);
+  const solana = privacySection("Public and permanent: Solana (devnet)");
+  assert.match(solana, /The place is never part of a Solana transaction\./);
+  assert.doesNotMatch(solana, /Country and place are never part of a Solana transaction/);
+  assert.doesNotMatch(words(PrivacyPage()), /[Cc]ountry[^.]*never part of a Solana transaction/);
+});
+
+test("/privacy: a relay transaction that was sent and failed stays visible on Solana, although its entry has no link", () => {
+  assert.match(privacySection(WALLET_FREE), /Limits:[^]*A transaction that was sent and then failed on Solana stays visible there with the same signed data, although its entry is also listed without that link\./);
 });
 
 test("/privacy keeps to the wording rules (Dev-Briefing §16, spec §10.2)", () => {

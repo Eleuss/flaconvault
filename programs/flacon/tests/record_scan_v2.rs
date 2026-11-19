@@ -1,7 +1,8 @@
 //! LiteSVM tests of the v2 public record (docs/public-record.md §7, §13): `record_scan_v2` sent by a fee payer that
 //! appears in no instruction (the relayer), the actor rules, the freshness window and key validity under a `Clock`
 //! override, the top-level-only rule (a test builtin calls `record_scan_v2` through a CPI), and the setup
-//! instructions (`init_holder_config`, `set_holder_config` gated on the current registry authority, `init_holding_v1`,
+//! instructions (`init_holder_config`, `set_holder_config` gated on the current registry authority, `init_holding_v1`
+//! by the authority or a partner, also in one transaction with v1 `mint_passport` as the mint paths send it,
 //! `mint_passport_v2`, `attach_seal_v2`). `replays_the_v2_vectors` sends the six `docs/vectors.json` `v2.scans`
 //! byte for byte (their Ed25519 instruction data and TEST-key signatures) at their signed `ts` and checks grade, void
 //! and `scan_head` after each against the TypeScript generator.
@@ -353,6 +354,62 @@ impl Env {
         Pubkey::find_program_address(&[SEAL_SEED, uid_hash], &flacon::ID).0
     }
 
+    /// v1 `mint_passport` by `issuer` (who pays) of `asset`, a Core asset the issuer must own.
+    fn mint_v1_ix(&self, serial_hash: [u8; 32], asset: Pubkey, issuer: &Pubkey) -> Instruction {
+        Instruction {
+            program_id: flacon::ID,
+            accounts: flacon::accounts::MintPassport {
+                registry: self.registry,
+                passport: Env::pdas(&serial_hash).0,
+                issuer: *issuer,
+                system_program: anchor_lang::system_program::ID,
+                core_asset: asset,
+            }
+            .to_account_metas(None),
+            data: flacon::instruction::MintPassport { serial_hash, binding_hash: sha256(&serial_hash), asset }.data(),
+        }
+    }
+
+    /// `init_holding_v1` of `passport`: `authority` signs, `payer` pays.
+    fn init_holding_v1_ix(&self, passport: Pubkey, authority: &Pubkey, payer: &Pubkey) -> Instruction {
+        Instruction {
+            program_id: flacon::ID,
+            accounts: flacon::accounts::InitHoldingV1 {
+                registry: self.registry,
+                passport,
+                holding: Pubkey::find_program_address(&[HOLDING_SEED, passport.as_ref()], &flacon::ID).0,
+                authority: *authority,
+                payer: *payer,
+                system_program: anchor_lang::system_program::ID,
+            }
+            .to_account_metas(None),
+            data: flacon::instruction::InitHoldingV1 {}.data(),
+        }
+    }
+
+    /// v1 `attach_seal` (the signer pays).
+    fn attach_v1_ix(&self, passport: Pubkey, uid_hash: [u8; 32], kind: u8, signer: &Pubkey) -> Instruction {
+        Instruction {
+            program_id: flacon::ID,
+            accounts: flacon::accounts::AttachSeal {
+                registry: self.registry,
+                passport,
+                seal: Env::seal_pda(&uid_hash),
+                signer: *signer,
+                system_program: anchor_lang::system_program::ID,
+            }
+            .to_account_metas(None),
+            data: flacon::instruction::AttachSeal { uid_hash, kind }.data(),
+        }
+    }
+
+    /// `add_partner` / `remove_partner` by the registry authority.
+    fn partner_ix(&self, partner: Pubkey, add: bool) -> Instruction {
+        let accounts = flacon::accounts::AdminRegistry { registry: self.registry, authority: self.admin.pubkey() }.to_account_metas(None);
+        let data = if add { flacon::instruction::AddPartner { partner }.data() } else { flacon::instruction::RemovePartner { partner }.data() };
+        Instruction { program_id: flacon::ID, accounts, data }
+    }
+
     /// `attach_seal_v2` (NECK) by the partner; returns the uid hash.
     fn attach_v2(&mut self, p: &Pass, uid: &[u8]) -> [u8; 32] {
         let uid_hash = sha256(uid);
@@ -462,15 +519,22 @@ fn scan_proof_pda(uid_hash: &[u8; 32], counter: u32) -> Pubkey {
     Pubkey::find_program_address(&[SCAN_SEED, seal.as_ref(), &counter.to_le_bytes()], &flacon::ID).0
 }
 
-/// Makes `p` look like a pass moved to a wallet (P4): `passport.asset` = a Core `AssetV1` owned by `wallet`, Holding
-/// in state WALLET. Returns the asset address.
-fn move_to_wallet(env: &mut Env, p: &Pass, wallet: &Pubkey) -> Pubkey {
+/// A Metaplex Core `AssetV1` owned by `owner` (LiteSVM has no Core program; `mint_passport` and the WALLET actor rule
+/// only read the account's owner program, key byte and owner field). Returns its address.
+fn fake_core_asset(env: &mut Env, owner: &Pubkey) -> Pubkey {
     let asset = Pubkey::new_unique();
     let mut data = vec![MPL_CORE_KEY_ASSET_V1];
-    data.extend_from_slice(wallet.as_ref());
+    data.extend_from_slice(owner.as_ref());
     data.extend_from_slice(&[0u8; 64]);
     let lamports = env.svm.minimum_balance_for_rent_exemption(data.len());
     env.svm.set_account(asset, Account { lamports, data, owner: MPL_CORE_PROGRAM_ID, executable: false, rent_epoch: 0 }).unwrap();
+    asset
+}
+
+/// Makes `p` look like a pass moved to a wallet (P4): `passport.asset` = a Core `AssetV1` owned by `wallet`, Holding
+/// in state WALLET. Returns the asset address.
+fn move_to_wallet(env: &mut Env, p: &Pass, wallet: &Pubkey) -> Pubkey {
+    let asset = fake_core_asset(env, wallet);
     let mut passport = env.passport(p);
     passport.asset = asset;
     let acc = anchor_account(&env.svm, &passport, 8 + Passport::INIT_SPACE);
@@ -932,37 +996,110 @@ fn setup_instructions() {
     assert_eq!((seal.passport, seal.kind, seal.uid_hash, seal.last_counter, seal.dead), (passport_key, SEAL_KIND_NECK, uid_hash, 0, false));
     assert_eq!(env.passport(&p).seal_count, 2);
 
-    // init_holding_v1: the Holding of a v1 passport (written as mint_passport would), authority only, state WALLET
-    let v1_hash = sha256(b"SN-LSVM-V1");
-    let (v1_passport, v1_bump) = Pubkey::find_program_address(&[PASSPORT_SEED, &v1_hash], &flacon::ID);
-    let v1 = Passport {
-        serial_hash: v1_hash, binding_hash: [0u8; 32], asset: Pubkey::new_unique(), issuer: partner.pubkey(), grade: GRADE_A,
-        scan_count: 3, seal_count: 1, void: false, created_at: T0 - 86_400, bump: v1_bump,
+    // init_holding_v1: the Holding of a v1 passport (written as mint_passport would), state WALLET. The registry
+    // authority or a registered partner signs (the check mint_passport applies to its issuer), a separate payer pays.
+    let v1_passport = |env: &mut Env, serial: &str| {
+        let serial_hash = sha256(serial.as_bytes());
+        let (passport, bump) = Pubkey::find_program_address(&[PASSPORT_SEED, &serial_hash], &flacon::ID);
+        let v1 = Passport {
+            serial_hash, binding_hash: [0u8; 32], asset: Pubkey::new_unique(), issuer: partner.pubkey(), grade: GRADE_A,
+            scan_count: 3, seal_count: 1, void: false, created_at: T0 - 86_400, bump,
+        };
+        let acc = anchor_account(&env.svm, &v1, 8 + Passport::INIT_SPACE);
+        env.svm.set_account(passport, acc).unwrap();
+        (passport, Pubkey::find_program_address(&[HOLDING_SEED, passport.as_ref()], &flacon::ID).0, v1.asset)
     };
-    let acc = anchor_account(&env.svm, &v1, 8 + Passport::INIT_SPACE);
-    env.svm.set_account(v1_passport, acc).unwrap();
-    let v1_holding = Pubkey::find_program_address(&[HOLDING_SEED, v1_passport.as_ref()], &flacon::ID).0;
-    let init_v1 = |env: &Env, passport: Pubkey, holding: Pubkey, authority: Pubkey| Instruction {
-        program_id: flacon::ID,
-        accounts: flacon::accounts::InitHoldingV1 {
-            registry: env.registry, passport, holding, authority, payer: env.relayer.pubkey(), system_program: anchor_lang::system_program::ID,
-        }
-        .to_account_metas(None),
-        data: flacon::instruction::InitHoldingV1 {}.data(),
-    };
-    let ix = init_v1(&env, v1_passport, v1_holding, stranger.pubkey());
+    let (v1, v1_holding, v1_asset) = v1_passport(&mut env, "SN-LSVM-V1");
+    let (by_admin, by_admin_holding, _) = v1_passport(&mut env, "SN-LSVM-V1-ADMIN");
+    let (by_former, by_former_holding, _) = v1_passport(&mut env, "SN-LSVM-V1-FORMER");
+    let relayer = env.relayer.pubkey();
+    // neither the authority nor a partner
+    let ix = env.init_holding_v1_ix(v1, &stranger.pubkey(), &relayer);
     env.expect_error(vec![ix], &[&stranger], FlaconError::Unauthorized);
-    let ix = init_v1(&env, v1_passport, v1_holding, partner.pubkey());
-    env.expect_error(vec![ix], &[&partner], FlaconError::Unauthorized);
-    let ix = init_v1(&env, v1_passport, v1_holding, admin.pubkey());
-    env.send(vec![ix], &[&admin]).expect("init_holding_v1");
+    assert!(!env.exists(&v1_holding));
+    // a partner signs, the relayer pays the rent
+    let partner_before = env.balance(&partner.pubkey());
+    let ix = env.init_holding_v1_ix(v1, &partner.pubkey(), &relayer);
+    env.send(vec![ix], &[&partner]).expect("init_holding_v1 by a partner");
+    assert_eq!(env.balance(&partner.pubkey()), partner_before, "the partner pays nothing");
     let h: Holding = env.account(&v1_holding);
-    assert_eq!((h.passport, h.state, h.epoch, h.commitment, h.head_count), (v1_passport, HOLDING_STATE_WALLET, 0, [0u8; 32], 0));
-    assert!(env.send(vec![init_v1(&env, v1_passport, v1_holding, admin.pubkey())], &[&admin]).is_err(), "only once");
-    assert!(env.send(vec![init_v1(&env, passport_key, holding_key, admin.pubkey())], &[&admin]).is_err(), "a v2 passport has its Holding");
-    // the v1 passport untouched; a HOLDER scan on its Holding is refused (no commitment, not held in an account)
-    let after: Passport = env.account(&v1_passport);
-    assert_eq!((after.asset, after.scan_count), (v1.asset, 3));
+    assert_eq!((h.passport, h.state, h.epoch, h.commitment, h.head_count), (v1, HOLDING_STATE_WALLET, 0, [0u8; 32], 0));
+    assert_eq!((h.scan_head, h.last_scan_ts, h.pending_kind, h.unlock_at), ([0u8; 32], 0, 0, 0));
+    // the registry authority
+    let ix = env.init_holding_v1_ix(by_admin, &admin.pubkey(), &relayer);
+    env.send(vec![ix], &[&admin]).expect("init_holding_v1 by the authority");
+    assert_eq!(env.account::<Holding>(&by_admin_holding).state, HOLDING_STATE_WALLET);
+    // the registry's current partner list decides, as for mint_passport: a removed partner is out
+    let former = Keypair::new();
+    let ix = env.partner_ix(former.pubkey(), true);
+    env.send(vec![ix], &[&admin]).expect("add_partner");
+    let ix = env.partner_ix(former.pubkey(), false);
+    env.send(vec![ix], &[&admin]).expect("remove_partner");
+    let ix = env.init_holding_v1_ix(by_former, &former.pubkey(), &relayer);
+    env.expect_error(vec![ix], &[&former], FlaconError::Unauthorized);
+    assert!(!env.exists(&by_former_holding));
+    // once per passport, whoever signs; never for a v2 passport (mint_passport_v2 created its Holding)
+    assert!(env.send(vec![env.init_holding_v1_ix(v1, &admin.pubkey(), &relayer)], &[&admin]).is_err(), "only once");
+    assert!(env.send(vec![env.init_holding_v1_ix(v1, &partner.pubkey(), &relayer)], &[&partner]).is_err(), "only once");
+    assert!(env.send(vec![env.init_holding_v1_ix(passport_key, &partner.pubkey(), &relayer)], &[&partner]).is_err(), "a v2 passport has its Holding");
+    // the v1 passport is untouched
+    let after: Passport = env.account(&v1);
+    assert_eq!((after.asset, after.scan_count), (v1_asset, 3));
+}
+
+#[test]
+#[ignore = "needs an SBPF v2 build of flacon: run scripts/test-flacon-litesvm.sh"]
+fn v1_mint_with_init_holding_takes_relay_scans() {
+    // Every v1 mint path (the partner console, scripts/bind-chip.ts, scripts/seed-passports.ts) sends
+    // [mint_passport, init_holding_v1] in one transaction, signed by the partner wallet that also pays, so a bottle
+    // minted after the public-record rollout takes relay scans at once. Without its Holding no record_scan_v2 lands.
+    let mut env = Env::devnet();
+    let partner = env.partner.insecure_clone();
+    let me = partner.pubkey();
+    let mint_v1 = |env: &mut Env, serial: &str, with_holding: bool| -> (Pass, [u8; 32]) {
+        let serial_hash = sha256(serial.as_bytes());
+        let (passport, holding) = Env::pdas(&serial_hash);
+        let asset = fake_core_asset(env, &me);
+        let mut ixs = vec![env.mint_v1_ix(serial_hash, asset, &me)];
+        if with_holding {
+            ixs.push(env.init_holding_v1_ix(passport, &me, &me));
+        }
+        env.send(ixs, &[&partner]).unwrap_or_else(|e| panic!("mint {serial}: {e}"));
+        let uid_hash = sha256(format!("uid:{serial}").as_bytes());
+        let ix = env.attach_v1_ix(passport, uid_hash, SEAL_KIND_NECK, &me);
+        env.send(vec![ix], &[&partner]).expect("attach_seal");
+        (Pass { serial_hash, passport, holding, commitment: [0u8; 32] }, uid_hash)
+    };
+
+    // mint_passport + init_holding_v1 in one transaction: a WALLET Holding next to the Core asset
+    let (p, uid) = mint_v1(&mut env, "SN-LSVM-V1-MINT", true);
+    let passport = env.passport(&p);
+    let h = env.holding(&p);
+    assert_eq!((h.passport, h.state, h.head_count, h.commitment), (p.passport, HOLDING_STATE_WALLET, 0, [0u8; 32]));
+    assert_eq!((passport.issuer, passport.seal_count, passport.scan_count), (me, 1, 0));
+    assert_ne!(passport.asset, p.holding, "a v1 pass keeps its Core asset");
+    // a visitor TAP sent by the relayer (in no instruction) is recorded and folded
+    let tap = env.tap(&p, &uid, 1, T0);
+    env.record(&p, &uid, &tap);
+    let h = env.holding(&p);
+    assert_eq!((h.head_count, h.scan_head), (1, fold_scan_head(&[0u8; 32], &build_scan_message_v2(&tap))));
+    assert_eq!((h.last_actor_kind, h.last_purpose, h.last_scan_ts), (ACTOR_KIND_NONE, PURPOSE_TAP, T0));
+    assert_eq!(env.passport(&p).scan_count, 1);
+
+    // mint_passport alone (the mint paths before this fix): the Holding is missing and no relay scan can land
+    let (q, uid_q) = mint_v1(&mut env, "SN-LSVM-V1-NOHOLDING", false);
+    assert!(!env.exists(&q.holding));
+    let ixs = env.scan_ixs(&q, &uid_q, &env.tap(&q, &uid_q, 1, T0));
+    let not_initialized = anchor_lang::error::ErrorCode::AccountNotInitialized as u32;
+    match env.send(ixs, &[]) {
+        Ok(_) => panic!("record_scan_v2 without a Holding succeeded"),
+        Err(got) => assert!(got.contains(&format!("InstructionError(1, Custom({not_initialized}))")), "expected AccountNotInitialized, got {got}"),
+    }
+    // the mint paths' recovery (the passport exists, its Holding does not): init_holding_v1 alone, then the scan lands
+    let ix = env.init_holding_v1_ix(q.passport, &me, &me);
+    env.send(vec![ix], &[&partner]).expect("init_holding_v1 alone");
+    env.record(&q, &uid_q, &env.tap(&q, &uid_q, 1, T0));
+    assert_eq!(env.holding(&q).head_count, 1);
 }
 
 #[test]

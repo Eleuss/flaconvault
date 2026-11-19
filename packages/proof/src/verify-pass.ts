@@ -8,7 +8,9 @@
  * 3. In each, every top-level `record_scan_v2` instruction for this Holding: the instruction before it is an Ed25519
  *    precompile instruction; its signature verifies here; the FVSCAN2 message names this program, this cluster and
  *    this passport; the seal account is the PDA of the signed uid hash; the key id is a registry key with that
- *    public key, valid at the signed ts.
+ *    public key under which the program could have accepted the signed ts (`serverKeyCouldAcceptAt`: valid_from ≤ ts,
+ *    and ts ≤ valid_to + MAX_SCAN_TS_SKEW_S + 1 once the key is closed, because a scan may be dated up to 600 s ahead
+ *    of the clock that accepted it and a later revocation sets valid_to to its own clock − 1).
  * 4. Fold the accepted messages from zero and compare with Holding.scan_head and head_count.
  *
  * What this cannot show: the seal's secret check (SUN/CMAC) itself, which only FlaconVault can do, and v1 scans
@@ -25,7 +27,7 @@ import {
 import { foldScanHead, SCAN_HEAD_ZERO } from "./holding.ts";
 import { ed25519Verify } from "./sign.ts";
 import {
-  decodeHolding, decodePassport, decodeRegistry, RECORD_SCAN_V2_DISCRIMINATOR, serverKeyValidAt,
+  decodeHolding, decodePassport, decodeRegistry, RECORD_SCAN_V2_DISCRIMINATOR, serverKeyCouldAcceptAt,
   type HoldingAccount, type RegistryAccount,
 } from "./accounts.ts";
 
@@ -142,7 +144,8 @@ function inspectInstruction(tx: RpcTransaction, index: number, keys: string[], c
   const key = ctx.registry.serverKeys.find((k) => k.keyId === keyId);
   if (!key) return reject(`server key ${keyId} is not in the registry`);
   if (!bytesEqual(key.pubkey, payload.pubkey)) return reject(`server key ${keyId} has another public key`);
-  if (!serverKeyValidAt(key, m.ts)) return reject(`server key ${keyId} was not valid at ts ${m.ts}`);
+  // today's registry, which a revocation after this scan may have closed: what the program could have accepted
+  if (!serverKeyCouldAcceptAt(key, m.ts)) return reject(`server key ${keyId} was not valid at ts ${m.ts}`);
   return {
     accepted: {
       signature, slot: tx.slot, instruction: index, ts: Number(m.ts), counter: m.counter,

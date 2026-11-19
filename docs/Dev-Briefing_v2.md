@@ -183,6 +183,7 @@ UNREADABLE senkt nicht, setzt Flag "Prüfung empfohlen"
 
 **Logik `/api/verify`, in dieser Reihenfolge**
 1. Nonce existiert, nicht abgelaufen, nicht verbraucht → sonst `NONCE_INVALID`.
+   Danach bei Tier ≥ 2: `mediaHash` muss ein Upload dieser Session sein (`POST /api/media` mit derselben Nonce), sonst 422 `media_not_uploaded`; nichts wird verbraucht.
 2. Schlüssel: `factory` = 16×0x00; `diversified` = AN10922 `CMAC(K_master, 0x01‖UID‖AppID‖SysID)`.
 3. CMAC nach AN12196 prüfen → sonst `INVALID`.
 4. `ctr > last_counter[uid]` → sonst `REPLAY`. Zähler fortschreiben.

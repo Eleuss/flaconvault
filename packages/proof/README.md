@@ -19,7 +19,9 @@ FlaconVault's scan key and folds that message into the pass's Holding account (`
 `verify-pass` reads only public chain data and checks that:
 
 - each scan carries a valid signature by a FlaconVault scan key listed in the on-chain registry, valid at the
-  scan's time, and names this program, this cluster, this pass and the seal it was written to;
+  scan's time as the program could have accepted it (the program allows a time up to 600 s ahead of its clock, so a
+  key revoked right after a scan still covers it: up to `valid_to` + 601 s), and names this program, this cluster,
+  this pass and the seal it was written to;
 - the scans it found, folded oldest first, give exactly the Holding's `scan_head` and `head_count`: the list is
   complete and in order.
 

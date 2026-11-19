@@ -5,11 +5,10 @@ from nacl.signing import VerifyKey
 
 from fv import proof
 from fv.enums import EventType
-from tests.conftest import post_media, sig
+from tests.conftest import MEDIA, post_media, sig, with_photo
 
 SERIAL = "SN-2026-000001"
 SELLER = "7GhXQ2fV4d1eo9yq1vQdD9Zk9sHkYd8qz2pM4hN6FaK2"
-MEDIA = "0x358bd5e49a401b60105ca4fe2f6fd4563c617295f4704debe35da7844cd5b380"
 
 
 def _body(tap, nonce, **over):
@@ -18,6 +17,11 @@ def _body(tap, nonce, **over):
          "mediaHash": MEDIA, "location": {"country": "DE", "city": "Wickede"}, "attester": SELLER, "platform": "SIMULATOR"}
     b.update(over)
     return b
+
+
+def _post_verify(client, body: dict):
+    """POST /api/verify as the web sends it: a tier ≥ 2 scan uploads its photo under its nonce first."""
+    return client.post("/api/verify", json=with_photo(client, body))
 
 
 def _nonce(client) -> str:
@@ -48,7 +52,7 @@ def test_full_simulated_flow(chain_client, vectors, monkeypatch):
     assert pv2["verdict"] == "VALID", "preview must not consume the counter"
 
     nonce = _nonce(client)
-    r = client.post("/api/verify", json=_body(tap, nonce))
+    r = _post_verify(client, _body(tap, nonce))
     assert r.status_code == 200, r.text
     v = r.json()
     assert v["verdict"] == "VALID" and v["counter"] == 1 and v["serial"] == SERIAL and v["grade"] == 0 and v["heatMask"] == 3
@@ -68,12 +72,12 @@ def test_full_simulated_flow(chain_client, vectors, monkeypatch):
     assert v["message"] == "Seal genuine · tap 1"
 
     # same tap again → REPLAY, unsigned, HTTP 200
-    r = client.post("/api/verify", json=_body(tap, _nonce(client)))
+    r = _post_verify(client, _body(tap, _nonce(client)))
     assert r.status_code == 200 and r.json()["verdict"] == "REPLAY" and r.json()["serverSig"] is None and r.json()["grade"] == 4
 
     # reused nonce → NONCE_INVALID
     tap2 = client.post("/api/dev/tap", json={"uid": tag["uid"]}).json()
-    r = client.post("/api/verify", json=_body(tap2, nonce))
+    r = _post_verify(client, _body(tap2, nonce))
     assert r.json()["verdict"] == "NONCE_INVALID" and r.json()["serverSig"] is None
     # ...and the tap was not consumed by a failed nonce check
     assert client.post("/api/preview", json={"uid": tap2["uid"], "ctr": tap2["ctrHex"], "cmac": tap2["cmac"]}).json()["verdict"] == "VALID"
@@ -83,28 +87,28 @@ def test_full_simulated_flow(chain_client, vectors, monkeypatch):
     import fv.routes_api as ra
     real_now = ra.now
     monkeypatch.setattr(ra, "now", lambda: real_now() + 1000)
-    assert client.post("/api/verify", json=_body(tap2, n_exp)).json()["verdict"] == "NONCE_INVALID"
+    assert _post_verify(client, _body(tap2, n_exp)).json()["verdict"] == "NONCE_INVALID"
     monkeypatch.setattr(ra, "now", real_now)
 
     # unknown nonce / garbage nonce
-    assert client.post("/api/verify", json=_body(tap2, "0x" + "ab" * 32)).json()["verdict"] == "NONCE_INVALID"
-    assert client.post("/api/verify", json=_body(tap2, "nope")).json()["verdict"] == "NONCE_INVALID"
+    assert _post_verify(client, _body(tap2, "0x" + "ab" * 32)).json()["verdict"] == "NONCE_INVALID"
+    assert _post_verify(client, _body(tap2, "nope")).json()["verdict"] == "NONCE_INVALID"
 
     # bad CMAC → INVALID
     bad = dict(tap2, cmac="00" * 8)
-    assert client.post("/api/verify", json=_body(bad, _nonce(client))).json()["verdict"] == "INVALID"
+    assert _post_verify(client, _body(bad, _nonce(client))).json()["verdict"] == "INVALID"
 
     # heat inconsistency → 422 (malformed), tier 2 without media → 422
-    r = client.post("/api/verify", json=_body(tap2, _nonce(client), indicators={"heat": 1, "humidity": 0, "uv": 3}))
+    r = _post_verify(client, _body(tap2, _nonce(client), indicators={"heat": 1, "humidity": 0, "uv": 3}))
     assert r.status_code == 422
-    r = client.post("/api/verify", json=_body(tap2, _nonce(client), mediaHash=None))
+    r = _post_verify(client, _body(tap2, _nonce(client), mediaHash=None))
     assert r.status_code == 422
     # wrong serial claim → 409
-    r = client.post("/api/verify", json=_body(tap2, _nonce(client), serial="SN-2026-000002"))
+    r = _post_verify(client, _body(tap2, _nonce(client), serial="SN-2026-000002"))
     assert r.status_code == 409
 
     # tier 1 (no media, zero media hash), heat UNREADABLE trusted → review flag, grade by fill
-    r = client.post("/api/verify", json=_body(tap2, _nonce(client), tier=1, mediaHash=None, fill=70,
+    r = _post_verify(client, _body(tap2, _nonce(client), tier=1, mediaHash=None, fill=70,
                                               indicators={"heat": 2, "humidity": 0, "uv": 3}, heatLevels=[0, 0, 0, 0, 0, 0]))
     v2 = r.json()
     assert v2["verdict"] == "VALID" and v2["grade"] == 1 and v2["reviewRecommended"] is True and v2["bundle"]["media"] == []
@@ -112,9 +116,9 @@ def test_full_simulated_flow(chain_client, vectors, monkeypatch):
 
     # unregistered uid → UNREGISTERED (counter still returned), then REPLAY on the same tap
     u = client.post("/api/dev/tap", json={"uid": "04FFEEDDCCBBAA"}).json()
-    r = client.post("/api/verify", json=_body(u, _nonce(client)))
+    r = _post_verify(client, _body(u, _nonce(client)))
     assert r.json()["verdict"] == "UNREGISTERED" and r.json()["counter"] == u["ctr"] and r.json()["serial"] is None and r.json()["serverSig"] is None
-    assert client.post("/api/verify", json=_body(u, _nonce(client))).json()["verdict"] == "REPLAY"
+    assert _post_verify(client, _body(u, _nonce(client))).json()["verdict"] == "REPLAY"
 
     # kill → dev/tap responds:false → /api/tap/<id> NO_RESPONSE
     k = client.post("/api/dev/kill", json={"uid": tag["uid"]}).json()
@@ -274,7 +278,7 @@ def test_media_upload(client, settings):
     assert not (settings.media_dir / (sha + ".bin")).exists()
     tag = client.post("/api/dev/tag", json={"serial": SERIAL, "kind": 1}).json()
     tap = client.post("/api/dev/tap", json={"uid": tag["uid"]}).json()
-    v = client.post("/api/verify", json=_body(tap, nonce, mediaHash=j["sha256"])).json()
+    v = _post_verify(client, _body(tap, nonce, mediaHash=j["sha256"])).json()
     assert v["verdict"] == "VALID"
     assert (settings.media_dir / (sha + ".bin")).read_bytes() == data
     assert not (settings.media_dir / "staging" / nonce[2:]).exists()

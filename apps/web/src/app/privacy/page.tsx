@@ -45,12 +45,12 @@ export default function PrivacyPage() {
           minutes, unless a scan of the same tap takes its place.
         </p>
         <ul className="list-disc space-y-1 pl-5">
-          <li><strong>On Solana, public and permanent</strong>: a hash of the serial number and of the chip UID, the chip counter, the purpose (tap or check), tier and role, a hash of the signed public record, a random one-time code, the time, and our server key and signature; for a check also the indicator readings (heat, humidity, light), the fill level and a hash of the photos, if any. The only wallet address in the transaction is our relayer&apos;s; the field for who scanned stays empty.</li>
+          <li><strong>On Solana, public and permanent</strong>: a hash of the serial number and of the chip UID, the chip counter, the purpose (tap or check), tier and role, a hash of the signed public record, a random one-time code, the time, and our server key and signature; for a check also the indicator readings (heat, humidity, light), the fill level and a hash of the photos, if any. The hash of the signed public record fixes that record&apos;s content, so the country, if you typed one, can be worked out from it: the country is public and permanent as well, even if the record is later deleted from the verification server. The only wallet address in the transaction is our relayer&apos;s; the field for who scanned stays empty.</li>
           <li><strong>In the signed public record</strong>, a document the verification server serves with the passport&apos;s public data (Solana holds only its hash): also the serial number, the seal (box or neck) and the country, if you typed one.</li>
           <li><strong>Only on the verification server</strong>: the place you typed, your device type, the card photos themselves, and a note or wallet address if one is sent along (the scan page sends neither). They are not in the transaction, not in the signed public record and not shown on the passport page.</li>
           <li><strong>Not on Arweave</strong>: at present these scans and their photos are not uploaded to the archive.</li>
           <li><strong>On the passport page</strong>: the date, the label &ldquo;{SCAN_BY_LABEL.VISITOR}&rdquo;, the chip counter, what it was (a tap is listed as &ldquo;Sighting&rdquo;, a check as a scan with its readings), the country, and the link &ldquo;{PUBLIC_RECORD_LINK}&rdquo; to the transaction.</li>
-          <li><strong>Limits</strong>: per seal, at most 3 taps and 1 check within 24 hours are sent to Solana. An entry beyond that, or one that could not be sent, is kept by FlaconVault only: on the verification server, and listed on the passport page without that link.</li>
+          <li><strong>Limits</strong>: per seal, at most 3 taps and 1 check within 24 hours are sent to Solana. An entry beyond that, or one that could not be sent, is kept by FlaconVault only: on the verification server, and listed on the passport page without that link. A transaction that was sent and then failed on Solana stays visible there with the same signed data, although its entry is also listed without that link.</li>
         </ul>
         <p>
           What is on Solana cannot be changed or deleted by anyone, including us. What stays on the verification server is
@@ -69,7 +69,7 @@ export default function PrivacyPage() {
           <li><strong>Passports and seals</strong>: a hash of the serial number, the issuer wallet, the linked digital asset, a <strong>hash of the chip UID</strong> and its counter, and whether the seal stopped responding.</li>
           <li><strong>Escrow orders</strong>: seller and buyer wallets, price, state and times.</li>
         </ul>
-        <p>Country and place are never part of a Solana transaction.</p>
+        <p>The place is never part of a Solana transaction.</p>
       </Section>
 
       <Section title="Public and permanent: Arweave archive">

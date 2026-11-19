@@ -32,10 +32,10 @@ Words: **visitor** = actor kind NONE. **holder** = HOLDER or WALLET. **relay sca
 | D8 | `record_scan_v2` must be a top-level instruction (stack height 1), error `CpiNotAllowed`. | The Ed25519 check reads the top-level instruction list; and `verify-pass` then only has to read top-level instructions. |
 | D9 | `verify-pass` lists transactions with `getSignaturesForAddress` on the **Holding PDA**, not the seal PDAs. | Every `record_scan_v2` writes the Holding, so one address covers both seals and nothing else is needed. |
 | D10 | Holding gains `head_count u32` and `last_actor_kind u8`; the plan's `pending_wallet` becomes `pending_target` (wallet for CLAIM, new commitment for NOTAP). Size 221 + 8 bytes. | `head_count` lets `verify-pass` say "found 11 of 12"; P3 NOTAP must store its new commitment until finalize. |
-| D11 | `init_holding_v1` creates the Holding of a v1 passport in state `WALLET` (= "Passport.asset is not this Holding; the Core-asset owner rule applies"). | v1 passports point at a Core asset (or, for very old ones, a placeholder). |
+| D11 | `init_holding_v1` creates the Holding of a v1 passport in state `WALLET` (= "Passport.asset is not this Holding; the Core-asset owner rule applies"). The registry authority or a registered partner signs (the check `mint_passport` applies to its issuer), a separate payer pays. Every v1 mint path (partner console, `scripts/bind-chip.ts`, `scripts/seed-passports.ts`) sends it in the mint transaction right after `mint_passport` once the cluster's HolderConfig exists, and alone for an existing passport without a Holding. | v1 passports point at a Core asset (or, for very old ones, a placeholder). P1 still mints with v1 `mint_passport` (`POST /api/events` takes no v2 MINT in P1, and there is no sealing script, D17), so a bottle minted after the rollout needs its Holding from the mint path itself; the Holding's content is fixed, so a partner signing it gains no power over any pass. |
 | D12 | RPC env: primary stays `FV_SOLANA_RPC` (exists); the fallback is `FV_SOLANA_RPC_FALLBACK`. The plan's `FV_RPC_URL` / `FV_RPC_FALLBACK_URL` are not introduced. | One name per setting, matching the existing variable. |
 | D13 | The FVSCAN2 message is built and signed once, when the relay row is created (TAP at `/t`, CHECK at `/api/verify`), with `ts` = the time of that event. It is never re-signed. Sending stops at `ts + 570` s. | `ts` keeps meaning "when the seal was checked"; the program accepts ±600 s. |
-| D14 | Visitor scans (NONE) never change the passport grade, void flag, or the passport header reading in the verifier either; P1 does not archive relay scans to Arweave. | Same rule off chain as on chain; the archived v1 bundle carries city/note/platform/attester, which v2 keeps out of public bundles. |
+| D14 | Visitor scans (NONE) never change the passport grade, void flag, or the passport header reading in the verifier either; P1 does not archive relay scans to Arweave, nor their photos through another scan (a scan commits only to photos its own session uploaded, §9.9 `media_not_uploaded`). | Same rule off chain as on chain; the archived v1 bundle carries city/note/platform/attester, which v2 keeps out of public bundles. A photo hash is public (FVSCAN2 `media_hash`, bundles). |
 | D15 | The verifier never signs FVSCAN1 (`anchor: "wallet"`) for a passport held in an account (`passports.asset` = its Holding PDA): 409 `wallet_anchor_not_allowed`. | v1 `record_scan` stays unchanged and lets any attester change the grade; the verifier signature is the only gate. |
 | D16 | Visitor caps are code constants (3 TAP + 1 CHECK per seal per rolling 24 h), not env variables. | Owner decision; no drift between deployments. |
 | D17 | `FV_HOLDER_KEY` and `FV_ISSUER_KEY` are parsed and validated in P1 and shown as public keys in the admin status; nothing uses them. No sealing script in P1. | Sealing at the counter is flow (b), P2. |
@@ -255,7 +255,10 @@ order. Every accepted `record_scan_v2` folds, whatever its actor.
 
 The bundle is the off-chain detail document whose sha256 is signed as `bundle_hash`. It contains no server
 signature (it is hashed before signing) and none of: free-text note, city, device platform, attester pubkey, Arweave
-links, logger, a second top-level `ts`. Those stay only in SQLite (erasable). Exactly these keys (strict, no others):
+links, logger, a second top-level `ts`. Those stay only in SQLite (erasable). The bundle's sha256 stays on chain for
+good, and its fields other than the country are public or nearly so (`session.issuedAt` lies at most the nonce
+lifetime before `ts`), so a country typed with the scan can be worked out from `bundle_hash`: it is public and
+permanent even after the verifier deletes the bundle (`/privacy` says so). Exactly these keys (strict, no others):
 
 | key | value |
 |---|---|
@@ -446,20 +449,28 @@ Checks: `authority == registry.authority` (`Unauthorized`) — the *current* reg
 `last_heartbeat` are not changeable here. Event `HolderConfigUpdated { guardian, holder_key, registrar_key,
 claim_delay_s, notap_delay_s }`.
 
-### 7.3 `init_holding_v1()` (existing v1 passports)
+### 7.3 `init_holding_v1()` (v1 passports)
 
 | # | account | flags | constraint |
 |---|---|---|---|
 | 0 | registry | | seeds |
 | 1 | passport | | seeds `["passport", passport.serial_hash]` |
 | 2 | holding | mut, init, payer = payer, space 8 + 221 | seeds `["holding", passport]` |
-| 3 | authority | signer | |
+| 3 | authority | signer | the registry authority or a registered partner |
 | 4 | payer | signer, mut | |
 | 5 | system_program | | |
 
-Checks: `authority == registry.authority` (`Unauthorized`). Writes: passport, state WALLET, epoch 0, everything else
-zero, bump. A v2 passport already has its Holding, so `init` fails there. Event `HoldingInitialized { passport,
-holding, state, epoch, commitment }`.
+Checks: `registry.is_partner_or_authority(authority)`, the registry authority or a registered partner: the same check
+`mint_passport` applies to its issuer; anyone else → `Unauthorized`. Writes: passport, state WALLET, epoch 0,
+everything else zero, bump. A v2 passport already has its Holding, so `init` fails there. Event `HoldingInitialized {
+passport, holding, state, epoch, commitment }`.
+
+Every v1 mint path (the partner console, `scripts/bind-chip.ts`, `scripts/seed-passports.ts`) sends it in the same
+transaction right after `mint_passport`, signed and paid by the minting wallet, once the cluster's HolderConfig exists
+(an account the flacon program owns at `["holder_config"]`; an address someone merely funded does not count). A
+program from before the rollout does not know the instruction and would fail the whole mint. For a passport that
+already exists (their recovery paths) they send it alone when the Holding is missing, and nothing when it exists or the
+passport is a v2 one. `scripts/init-holdings.ts` covers the passports minted before.
 
 ### 7.4 `mint_passport_v2(serial_hash: [u8;32], binding_hash: [u8;32], commitment: [u8;32])`
 
@@ -600,7 +611,10 @@ Must ship in the same devnet upgrade as `mint_passport_v2` (owner's deploy).
 ## 8. `packages/proof`
 
 New or changed (TS source of truth, no new dependencies, Node ≥ 22.18 type stripping as today):
-- `enums.ts`: §2 enums and constants, `PDA_SEEDS` + `holder_config`, `holding`.
+- `enums.ts`: §2 enums and constants, `PDA_SEEDS` + `holder_config`, `holding`; `MAX_SCAN_TS_SKEW_S = 600`, the
+  program's IDL constant (not in `vectors.constants`), for verify-pass.
+- `accounts.ts`: Anchor discriminators and the decoders of Registry, Passport, Seal, HolderConfig and Holding (§6);
+  `serverKeyCouldAcceptAt` (§8.2 step 3).
 - `message2.ts`: `ScanMessageV2Fields`, `buildScanMessageV2`, `parseScanMessageV2`, `MSG2_OFFSETS`,
   `buildEd25519InstructionData(pubkey, sig, msg)`, `parseEd25519InstructionData(data)` (§3.6).
 - `holding.ts`: `commitment(passport32, epoch, secret32)`, `foldScanHead(head32, msg256)`, `SCAN_HEAD_ZERO`.
@@ -650,8 +664,13 @@ in order, 1 = not, 2 = input/RPC error. Steps:
 3. For each `getTransaction(sig, {maxSupportedTransactionVersion: 0})`, every **top-level** instruction to the flacon
    program whose data starts with `047bf48d93f81ff1`: the previous instruction must be Ed25519; parse §3.6; verify
    the Ed25519 signature locally; check prefix, `program_id`, `cluster_tag`, `serial_hash` = passport's, seal account
-   (index 3) = PDA of `msg.uid_hash`, key id from the ix data present in the registry with that pubkey and
-   `is_valid_at(msg.ts)` (`valid_from ≤ ts` and (`valid_to == 0` or `ts ≤ valid_to`)).
+   (index 3) = PDA of `msg.uid_hash`, key id from the ix data present in the registry with that pubkey and valid for
+   `msg.ts` as `record_scan_v2` could have accepted it: `valid_from ≤ ts` and (`valid_to == 0` or
+   `ts ≤ valid_to + MAX_SCAN_TS_SKEW_S + 1`) (`serverKeyCouldAcceptAt`). verify-pass reads today's registry, while the
+   program checked the registry of the moment: a scan may be dated up to 600 s ahead of the cluster clock C that
+   accepted it, and a later `revoke_server_key` at clock R ≥ C sets `valid_to = R − 1`, so every accepted scan has
+   `ts ≤ valid_to + 601`. A plain `is_valid_at(msg.ts)` would drop such a scan once its key is revoked right after it,
+   although `scan_head` folded it for good, and report a complete record as incomplete.
 4. Fold all accepted messages from zero; compare with `Holding.scan_head` and `head_count`.
 5. Print each scan (ts, counter, purpose, actor kind) and the verdict: `complete and in order` on a match, otherwise
    `incomplete or out of order (found N, holding says M)`. v1 ScanProof scans are not covered and are not listed.
@@ -672,7 +691,7 @@ and `docs/deploy.md`, which `tests/test_deploy_config.py` enforces):
 | `FV_RELAYER_KEY` | empty, **secret** | Solana keypair JSON (64 numbers); fee payer only, no program authority |
 | `FV_HOLDER_KEY` | empty, **secret** | P2; parsed and validated only (D17) |
 | `FV_ISSUER_KEY` | empty, **secret** | registry partner key for sealing (P2); parsed and validated only |
-| `FV_SOLANA_RPC_FALLBACK` | empty | second RPC for relay sends and status reads (D12) |
+| `FV_SOLANA_RPC_FALLBACK` | empty | second RPC for relay sends and status reads (D12), in the relay loop and the reconcile job alike (§9.5) |
 | `FV_RELAY_DAILY_LAMPORTS` | `10000000` | global fee cap per UTC day |
 | `FV_RELAY_LOW_BALANCE_LAMPORTS` | `100000000` | relayer balance alert threshold (0.1 SOL) |
 | `FV_RELAY_CU_LIMIT` | `150000` | compute unit limit of a relay transaction |
@@ -809,14 +828,18 @@ Per due row (`now` is the wall clock when the row is processed, read again right
    `rejected` (error name in `last_error` log only); a row with earlier attempts goes back to `queued` and looks them
    up first (`CounterNotIncreasing` may mean one of them landed). A node's JSON-RPC error that is not a program error
    (including blockhash not found) → back to `queued`, `attempts + 1`, retry with backoff 2, 4, 8, 16, 30 s, using
-   `FV_SOLANA_RPC_FALLBACK` after a primary failure. A transport error (or AlreadyProcessed) → the outcome is unknown:
+   `FV_SOLANA_RPC_FALLBACK` after a primary failure. Both apply only while the row is still `sending` this attempt
+   (same `sig`): the reconcile job confirms rows in its own thread and may have given the attempt up meanwhile (Budget,
+   below); then the handler changes nothing. A transport error (or AlreadyProcessed) → the outcome is unknown:
    the row stays `sending` with its signature until its status or the expiry of its blockhash is known; that includes
    a primary transport error followed by any failure of the fallback (the primary may have forwarded it).
 
-Confirmation (`confirm_sending`, also called by `reconcile_once` and at startup). Status reads ask each RPC on its own,
-not through the generic fallback: `FV_SOLANA_RPC` (the primary) is the source with the full transaction history
-(`getSignatureStatuses` with `searchTransactionHistory: true`); `FV_SOLANA_RPC_FALLBACK` may keep none, so a "not
-found" from it alone never counts. The block height is always the primary's.
+Confirmation (`confirm_sending`, also called by `reconcile_once` and at startup; every caller uses the relay's own RPC
+client, `relayer.relay_rpc_client`: `FV_SOLANA_RPC` with `FV_SOLANA_RPC_FALLBACK`, so the rules below hold whichever
+loop reaches a row first). Status reads ask each RPC on its own, not through the generic fallback: `FV_SOLANA_RPC`
+(the primary) is the source with the full transaction history (`getSignatureStatuses` with
+`searchTransactionHistory: true`); `FV_SOLANA_RPC_FALLBACK` may keep none, so a "not found" from it alone never
+counts. The block height is always the primary's.
 - `getSignatureStatuses([sig])` confirmed/finalized with `err == null` → `recorded`: read `meta.fee` with
   `getTransaction`, correct the budget by `fee − estimate`, store `lamports`, then apply §9.8;
 - `err != null` → `failed`, `rejected` (budget corrected with the paid fee), unless an earlier attempt of the row
@@ -846,10 +869,12 @@ scan that adopts its tap is answered `REPLAY`, and the row stays to be recorded 
 sent again.
 
 Budget: an attempt's estimate is charged at the claim and refunded when the attempt is given up; an earlier attempt
-found landed (with or without an error) is charged its `meta.fee` (else its estimate) once, when the row settles. So
-every landed transaction is paid exactly once in `relay_budget`, and `lamports` holds what the row's landed attempts
-paid. D13 holds throughout: the FVSCAN2 is never re-signed and nothing is sent after `ts + 570` s; recording a row with
-an attempt that landed in time sends nothing.
+found landed (with or without an error) is charged its `meta.fee` (else its estimate) once, when the row settles. An
+attempt the node refused at `sendTransaction` (a JSON-RPC error) is refunded by its handler only while the row is still
+`sending` that attempt; when the reconcile job gave the attempt up meanwhile, the refund happened there and the handler
+changes nothing. So every landed transaction is paid exactly once in `relay_budget`, and `lamports` holds what the
+row's landed attempts paid. D13 holds throughout: the FVSCAN2 is never re-signed and nothing is sent after `ts + 570`
+s; recording a row with an attempt that landed in time sends nothing.
 
 Balance: `getBalance(relayer)` at most every 60 s and after each recorded row; below
 `FV_RELAY_LOW_BALANCE_LAMPORTS` → `log.warning` (at most hourly) and `lowBalance: true` in health/admin. On start the
@@ -903,8 +928,11 @@ P2 extends this list; nothing else may be signed by the relayer.
 - Visitor scans never set the passport header (`latest_scan_with_indicators`) and never count in
   `newer_confirmed_scan_exists`; v1 rules for v1 scans are unchanged.
 - Reconcile: `scan_events_to_reconcile` excludes events with `payload.anchor == "relay"` (they never get a
-  ScanProof and must not time out to `failed`); a new step calls `confirm_sending`. Arweave backfill skips relay
-  events in P1 (D14). Resume (`GET /api/verify/{id}?token=`) answers 404 `resume_not_found` for relay events.
+  ScanProof and must not time out to `failed`); a new step calls `expire_overdue` and `confirm_sending` through the
+  relay loop's own RPC client (primary plus fallback). Arweave backfill skips relay events in P1 (D14), and no other
+  scan can carry a relay scan's photos there: `POST /api/verify` signs a tier ≥ 2 scan only for an upload of its own
+  session (§9.9, `media_not_uploaded`). Resume (`GET /api/verify/{id}?token=`) answers 404 `resume_not_found` for
+  relay events.
 
 ### 9.9 API contract
 
@@ -919,6 +947,11 @@ P2 extends this list; nothing else may be signed by the relayer.
 Checked before any tap is consumed, in this order: `purpose_invalid` (422); a ticket present → 403 `ticket_invalid`
 (always in P1); relay without ticket and purpose ≠ CHECK → 403 `ticket_required`; relay (actor NONE) with tier ≥ 3 or
 role VAULT/PARTNER → 422 `relay_not_for_certified`. `attester` is ignored for the relay path (kept in SQLite only).
+Inside the transaction, right after the nonce check and before the tap is used (either anchor): a tier ≥ 2 scan whose
+`mediaHash` is not an upload staged under the request's own session nonce (`POST /api/media` with that nonce) → 422
+`media_not_uploaded`, nothing consumed. A hash is public (FVSCAN2 `media_hash`, bundles), so a scan that only names one
+must never get another scan's photos archived (D14). The upload is checked again when it is kept: one purged in
+between (its nonce expired meanwhile) → the same 422, and the transaction rolls back.
 After the tap check, inside the transaction (rolled back on error): `anchor: "wallet"` on a passport held in an
 account → 409 `wallet_anchor_not_allowed` (D15); adoption refused per §9.4 → verdict `REPLAY`.
 `TicketClaims` (P2 fills it): `aud`, `jti`, `exp`, `serial`, `purpose`, `actor_kind`, `actor_commitment`,
@@ -927,7 +960,8 @@ account → 409 `wallet_anchor_not_allowed` (D15); adoption refused per §9.4 �
 VALID answer: every existing key, plus `anchor`, `purpose` (null for wallet), `actorKind` (null for wallet),
 `cluster` (`"DEVNET"`…), `record` (null for wallet). For relay, `msgHex`/`serverSig` are the FVSCAN2 message and its
 signature, `bundle`/`bundleHash` the v2 bundle; `resumeToken` is issued as before (used by the record endpoint).
-Non-VALID answers carry `record: null`. The wallet path is otherwise byte-for-byte unchanged.
+Non-VALID answers carry `record: null`. The wallet path is otherwise byte-for-byte unchanged; its one new input rule is
+`media_not_uploaded` (above), which the web app always meets: it uploads the frames under the session nonce first.
 
 **Record object**:
 ```json
@@ -949,14 +983,16 @@ CHECK's once it replaced the TAP), or null.
 
 **`GET /health`** gains `"cluster": "devnet"` and `"relay": {"enabled": bool, "ok": bool}` (ok = enabled, balance
 not low, budget left, cluster matches). No balances, no keys. It keeps answering when the relay is off (TapGate
-uses it).
+uses it), and it sends `relay` then too: the scan page offers "Save to the public record" only when `relay` is there
+(§10.3).
 
 **`GET /api/admin/status`** gains `relay`: `enabled`, `cluster`, `holderConfigCluster`, `relayer`, `holderKey`,
 `issuerKey` (public keys or null), `balanceLamports`, `lowBalance`, `spentTodayLamports`, `dailyCapLamports`,
 `queued`, `sending`, `recorded24h`, `overCap24h`, `failed24h`, `lastError` (short code).
 
 New error codes: `purpose_invalid` 422, `ticket_invalid` 403, `ticket_required` 403, `relay_not_for_certified` 422,
-`wallet_anchor_not_allowed` 409, `record_not_found` 404, and `scan_fields_invalid` 422 (integration note: a relay
+`wallet_anchor_not_allowed` 409, `record_not_found` 404, `media_not_uploaded` 422 (both anchors, see the check order
+above), and `scan_fields_invalid` 422 (integration note: a relay
 body whose fields break §3.4 for a visitor CHECK, refused after the existing input checks (heat consistency,
 `mediaHash`) and before the tap is used).
 
@@ -976,19 +1012,25 @@ row in the `docs/deploy.md` web table is written by the verify group exactly as:
 
 ### 10.2 Exact user-facing strings
 
-Put them in one module (e.g. `src/lib/public-record.ts`). Characters: `…` is U+2026, `✓` U+2713, `·` U+00B7.
+Put them in one module (e.g. `src/lib/public-record.ts`); the lines of the wallet flow (inside Advanced, and its place
+note), which may name the wallet, stay with that flow (`src/lib/scan-steps.ts`). Characters: `…` is U+2026, `✓`
+U+2713, `·` U+00B7.
 
 | where | string |
 |---|---|
-| TapGate, health check failed | `Seal check unavailable right now. Try again in a minute.` + button `Try again` |
+| TapGate, health check failed | `Seal check unavailable right now. Try again in a minute.` + `Nothing is lost: trying again checks this same tap.` + button `Try again` |
 | scan-flow consumer button | `Save to the public record` |
-| record pending (CHECK, or a TAP being sent) | `Saving…` |
-| record pending (TAP, `dueAt` in the future) | `Saving to the public record within about 3 minutes.` |
+| scan-flow place note (relay) | `Optional. No GPS. The signed public record keeps only the country; the place stays in FlaconVault's own database.` |
+| scan-flow note for seller and buyer (relay) | `Shipping or receipt scan for an order? Use Advanced: the order needs a scan you sign yourself.` |
+| record pending (CHECK, or a TAP from its `ts` + 185 s on) | `Saving…` |
+| record pending (TAP on `/t`, before the tap's `ts` + 185 s; once left, never shown again) | `Saving to the public record within about 3 minutes.` |
 | record recorded | `Saved to the public record ✓ · view record` (`view record` links to `/p/<serial>#e<eventId>`) |
 | record over_cap, reason `seal_daily` | `Kept by FlaconVault only: this seal already has its public entries for the last 24 hours.` |
-| record failed; over_cap with any other reason (`budget`, none, unknown); a VALID relay answer with `record` null | `Not saved to the public record this time. FlaconVault keeps the check.` |
+| record failed; over_cap with any other reason (`budget`, none, unknown); a VALID relay answer with `record` null; scan-flow record polling answered `record: null` | `Not saved to the public record this time. FlaconVault keeps the check.` |
 | scan-flow disclosure (collapsed) | `Advanced` |
 | first line inside Advanced | `For partners and your own wallet: sign and pay for this scan yourself.` |
+| place note inside Advanced | `Signed with your own wallet, country and place are not in the Solana transaction, but they are part of the public scan record and its permanent archive.` |
+| place note of the wallet flow (certified and order scans; every scan while the verifier reports no public record) | `Optional. Country and place are not in the Solana transaction, but they are part of the public scan record and its permanent archive. No GPS.` |
 | history labels (`scanBy`) | `Visitor` · `Holder` · `Partner` · `Recipient` |
 | history link of a recorded scan (was `tx`) | `Public record` |
 | /p drawer title | `How this record is checked` |
@@ -999,8 +1041,10 @@ Put them in one module (e.g. `src/lib/public-record.ts`). Characters: `…` is U
 | error `ticket_invalid` / `ticket_required` | `This kind of scan needs a FlaconVault account. It is not available yet.` |
 | error `relay_not_for_certified` | `Certified scans are signed by the partner (Advanced).` |
 | error `wallet_anchor_not_allowed` | `This pass is held in a FlaconVault account. Use "Save to the public record".` |
-| error `record_not_found` | `The public record status of this scan is not available.` |
+| error `record_not_found`; scan-flow record polling that runs out of its schedule (§10.3) | `The public record status of this scan is not available.` |
 | error `scan_fields_invalid` | `This scan cannot be saved to the public record with these readings. Start a new scan.` |
+| error `purpose_invalid` | `This kind of scan is not available here. Reload the page and start the scan again.` |
+| error `media_not_uploaded` (both anchors) | `The card photos did not reach the server with this scan session. Photograph the card again, then try again.` |
 
 Rules: never "guaranteed" or "trustless" anywhere. The consumer path (TapGate, `/t` result, scan-flow outside
 Advanced, the `/p` header, history and notice) never says blockchain, wallet, NFT, token or crypto; "public record"
@@ -1014,14 +1058,26 @@ is the term. Inside Advanced and inside the proof drawer's technical block the e
   `ok === true`. Otherwise show the fallback string; `Try again` reloads the same URL (the tap was not consumed). The
   hand-over to a running scan session is unchanged and needs no health check. Keep the decision a pure function.
 - **`/t` result**: a client component under the verdict shows the record line for `tap.record` (polls
-  `GET /api/tap/{tapId}` every 5 s while pending, at most 10 minutes) and the test-phase notice.
+  `GET /api/tap/{tapId}` every 5 s while pending, at most 10 minutes) and the test-phase notice. "within about 3
+  minutes" is decided from the tap's own `ts` (+ 185 s, when the verifier sends the TAP), never from `dueAt` (the
+  relayer moves it for retry pauses), and does not come back once the line has left it. The tap's `ts` is the
+  verifier's clock; the page compares it with the web server's time at render, then with the device clock shifted onto
+  that time, never going back. The line and the notice disappear when the record does (`record: null`, or a 404 for
+  the tap); when the 10 minutes run out the line stays without its spinner and is loaded once more each time the tab
+  becomes visible again.
 - **scan-flow**: for tier ≤ 2 and roles OWNER/SELLER/BUYER the save step shows `Save to the public record` →
   `POST /api/verify` with `anchor: "relay"`, `purpose: "CHECK"`, no `attester`, no ticket → `Saving…` → poll
   `GET /api/verify/{eventId}/record?token=<resumeToken>` every 2 s for 2 minutes, then every 10 s up to 10 minutes,
   stop at a terminal state → the record line, the notice and "View passport with history". No wallet connect, no
-  wallet gate on this path. A VALID answer with `anchor: "relay"` always goes to the record step; with `record` null
-  (nothing queued, e.g. a void passport) it shows the failed string. Only an answer without `anchor` (an older
-  verifier, FVSCAN1) goes to the wallet's tx step. `Advanced` (collapsed) holds today's wallet flow unchanged
+  wallet gate on this path. The relay button and its place note are offered only when `GET /health` reports `relay`
+  (an answer TapGate would accept that carries `relay` with a boolean `enabled`, also while the relay is off; decided
+  once per page load, 5 s timeout, no relay button before): a verifier without the public record ignores `anchor` and
+  would sign a v1 scan whose place and device type are public, so without that answer (an older verifier, or none in
+  time) the page is today's wallet flow with its own place note. Polling that ends without a terminal state clears the
+  pending line: a 404 or the end of the schedule leaves `The public record status of this scan is not available.`, a
+  `record: null` answer the failed string. A VALID answer with `anchor: "relay"` always goes to the record step; with
+  `record` null (nothing queued, e.g. a void passport) it shows the failed string. Only an answer without `anchor` (an
+  older verifier, FVSCAN1) goes to the wallet's tx step. `Advanced` (collapsed) holds today's wallet flow unchanged
   (`anchor` omitted or `"wallet"`). Certified scans (tier ≥ 3 or VAULT/PARTNER) keep today's wallet flow directly,
   without the relay button, and so do an escrow order's shipping and receipt scans: the order page links to
   `/scan?role=1&flow=wallet` and `/scan?role=2&flow=wallet` (the order needs a v1 ScanProof signed by the order party;
@@ -1030,6 +1086,11 @@ is the term. Inside Advanced and inside the proof drawer's technical block the e
 - **`/p/[serial]`**: each SCAN row shows its `scanBy` label; rows get `id="e<eventId>"`; the drawer (`<details>`,
   closed by default) holds the drawer text plus the existing "On-chain" block and "Check live on-chain"; the
   test-phase notice sits under the header. Nothing else on `/p` changes in P1.
+- **`/certify`** (partner console, v1 `mint_passport` as before): once the cluster's HolderConfig exists (§7.3), the
+  mint transaction carries `init_holding_v1` right after `mint_passport` (the connected partner wallet signs and pays),
+  so the bottle's taps can reach the public record at once. A passport of this wallet that is already on chain without
+  its Holding (the recovery path) gets `init_holding_v1` alone; nothing when the Holding exists or the passport is a
+  v2 one.
 
 ---
 
@@ -1037,13 +1098,17 @@ is the term. Inside Advanced and inside the proof drawer's technical block the e
 
 Order, documented in `docs/devnet.md` and `docs/deploy.md`: (1) upgrade flacon and escrow together, escrow first (two
 upgrades are two transactions; the escrow's `PassHeldInAccount` guard must be live before flacon can run
-`mint_passport_v2`); (2)
-`init_holder_config(DEVNET, …)` by the registry authority; (3) `init_holding_v1` for every existing devnet passport
-(script `scripts/init-holdings.ts`, written in P1, run by the owner); (4) set the verifier variables, fund the relayer
-with at most 0.5 SOL, set `FV_RELAY_ENABLED=true`; (5) check `/health` → `relay.ok`. Builders do not deploy, send
-transactions, airdrop or call paid APIs; local validator and LiteSVM only. No keypair files in the repo
-(`target/deploy/*.json` stays untracked), no secrets in docs, no absolute home paths and no machine PATH lines in
-tracked files (`.github/scripts/hygiene.sh`).
+`mint_passport_v2`); (2) `init_holder_config(DEVNET, …)` by the registry authority; (3) `init_holding_v1` for every
+existing devnet passport (script `scripts/init-holdings.ts`, written in P1, run by the owner); passports minted after
+step 2 get their Holding in the mint transaction (§7.3), and the script stays re-runnable for any passport left
+without one; (4) set the verifier variables, fund the relayer with at most 0.5 SOL, set `FV_RELAY_ENABLED=true`;
+(5) check `/health` → `relay.ok`. Rollback: `FV_RELAY_ENABLED=false` on the P1 build; a verifier build from before P1
+runs on the same volume only after the steps in `docs/deploy.md` (Rolling back), which park the visitor scans it would
+otherwise show, archive and use as the passport header.
+
+Builders do not deploy, send transactions, airdrop or call paid APIs; local validator and LiteSVM only. No keypair
+files in the repo (`target/deploy/*.json` stays untracked), no secrets in docs, no absolute home paths and no machine
+PATH lines in tracked files (`.github/scripts/hygiene.sh`).
 
 ---
 
@@ -1081,7 +1146,9 @@ vectors; fresh ephemeral keypairs for fee payers, partners, wallets and new serv
   the message;
 - verify-pass with a fake RPC built from the vectors: complete → match; a missing tx → incomplete; swapped order →
   mismatch; wrong cluster, wrong program id, key not in registry, key not valid at ts, bad signature → scan
-  rejected; CPI-only instruction ignored.
+  rejected; a key revoked right after a scan dated ahead of the cluster clock (`valid_to < ts ≤ valid_to + 601`) →
+  still counted, record complete; `serverKeyCouldAcceptAt` holds for every (key, clock, ts) `record_scan_v2` accepts,
+  also after any later revocation, and `MAX_SCAN_TS_SKEW_S` equals the IDL constant; CPI-only instruction ignored.
 
 **programs** (`cargo test -p flacon -p escrow`, `anchor test --validator legacy`, LiteSVM tests `#[ignore]`d and run
 by a script like `scripts/test-escrow-time-travel.sh`)
@@ -1089,9 +1156,12 @@ by a script like `scripts/test-escrow-time-travel.sh`)
   256 for v1; field rules (every error in step 3); `passport_after_scan_v2` table incl. FILL_NONE; fold and
   commitment vs vectors; layout size asserts; escrow `check_not_held_in_account`.
 - Local validator: `init_holder_config` (authority only, invalid tag, no second init); `set_holder_config` (authority
-  only, delay bounds, tag unchanged); `init_holding_v1` on a v1 passport (state WALLET, authority only, separate
-  payer); `mint_passport_v2` (partner, separate payer pays, asset = holding, zero commitment and non-partner
-  refused); `attach_seal_v2` (separate payer); `record_scan_v2` from an ephemeral fee payer that is in no
+  only, delay bounds, tag unchanged); `init_holding_v1` on a v1 passport (state WALLET, the registry authority or a
+  partner, anyone else → `Unauthorized`, separate payer); v1 `mint_passport` + `init_holding_v1` in one transaction,
+  then a `record_scan_v2` on that passport is accepted; `mint_passport` alone → the relay scan fails
+  (`AccountNotInitialized`) until `init_holding_v1` alone adds the Holding; `mint_passport_v2` (partner, separate
+  payer pays, asset = holding, zero commitment and non-partner refused); `attach_seal_v2` (separate payer);
+  `record_scan_v2` from an ephemeral fee payer that is in no
   instruction: visitor TAP and CHECK leave grade/void unchanged and advance `last_counter`, `scan_count`,
   `scan_head` (= TS fold), `head_count`, `last_*`; `ScanRecordedV2` decoded from the inner instruction with the full
   message; HOLDER scan with the right commitment changes the grade, wrong commitment → `ActorMismatch`, on a WALLET
@@ -1104,7 +1174,12 @@ by a script like `scripts/test-escrow-time-travel.sh`)
 - LiteSVM with a clock override: ±600 s boundaries (600 ok, 601 `StaleScanTimestamp`) and key validity at ts vs now;
   `record_scan_v2` via CPI (a test builtin forwarding it) → `CpiNotAllowed`, nothing changed, the same scan at top
   level accepted; `set_holder_config` after `transfer_authority`: the old key → `Unauthorized`, the new one succeeds
-  and `holder_config.authority` follows it.
+  and `holder_config.authority` follows it; v1 `mint_passport` + `init_holding_v1` signed and paid by a partner in one
+  transaction, a relay TAP lands at once; without the Holding → `AccountNotInitialized` until `init_holding_v1` alone.
+- Scripts (`npm run mocha:unit`, `tests/scripts-cli.ts`): `mintHoldingPlan` → `with_mint` for a new passport once the
+  HolderConfig exists, `alone` for an existing v1 passport without its Holding, `none` when the Holding exists, for a
+  v2 passport and on a cluster without a HolderConfig (an account the program does not own does not count); the
+  builders send `[mint_passport, init_holding_v1]` with the wallet as issuer, authority and payer.
 - Escrow (`tests/escrow.ts`): `list` and `reserve` of a `mint_passport_v2` passport fail with `PassHeldInAccount`;
   all v1 escrow tests pass.
 - IDL test (g) passes with the new enum groups and seeds; `.github/scripts/idl-check.sh` passes with the
@@ -1129,17 +1204,28 @@ by a script like `scripts/test-escrow-time-travel.sh`)
   sent → `REPLAY`; wallet adoption replaces the TAP;
 - events: a relay CHECK adopting a `/t` tap shows that tap once, also with the relay off; the public passport view
   of a relay scan carries no note, place, platform or attester pubkey;
-- API: existing `/api/verify` tests unchanged (default wallet); relay answer shape; ticket → 403 without consuming
-  the tap; purpose without ticket → 403; relay tier 3 → 422; `wallet_anchor_not_allowed`; `/record` states and token
-  checks; `/api/tap` record; `/api/passport` `scanBy`; `/health` and admin relay blocks contain no secret;
+- API: existing `/api/verify` tests unchanged (default wallet), except that a tier ≥ 2 scan first uploads its photo
+  under its nonce, as the web does; relay answer shape; ticket → 403 without consuming the tap; purpose without
+  ticket → 403; relay tier 3 → 422; `wallet_anchor_not_allowed`; `/record` states and token checks; `/api/tap`
+  record; `/api/passport` `scanBy`; `/health` and admin relay blocks contain no secret;
+- media: a tier ≥ 2 scan naming a hash it did not upload under its own nonce (uploaded under another session's nonce,
+  kept by an earlier scan, or never uploaded) → 422 `media_not_uploaded`, nothing consumed (both anchors); an upload
+  purged between the check and the keep → the same 422, rolled back; a relay scan's photos never reach the archiving
+  sidecar through a wallet scan that names their hash;
 - reconcile ignores relay events in the v1 ScanProof pass and confirms `sending` rows; a recorded or off-chain
   visitor CHECK leaves passport grade and header unchanged; a recorded TAP counts in `onChainScanCount`;
+- the reconcile job (its loop and `POST /api/reconcile`) asks `FV_SOLANA_RPC_FALLBACK` before giving an attempt up,
+  like the relay loop; a send error (node or program error) after the reconcile job gave the attempt up (requeued or
+  expired) refunds the estimate once and leaves the row as the job left it;
 - startup refusals of §9.1; `test_deploy_config.py` (all new `FV_*` documented); `test_enums.py` after the sync.
 
 **web** (`npm run web:typecheck`, `web:lint`, `web:test`, `web:build`)
 - TapGate gate function: ok → redirect; timeout at 2 s, non-2xx, `ok !== true`, network error → fallback string;
-- record state → string mapping (incl. TAP pending with future `dueAt`, over_cap `seal_daily` vs `budget`); the
-  step after a VALID relay answer with `record` null; the order page's `flow=wallet`; `scanBy` → label; notice shown for
+- record state → string mapping (incl. a TAP pending before its `ts` + 185 s, one way and never from `dueAt`;
+  over_cap `seal_daily` vs `budget`); `TAP_SEND_DELAY_S` equals the verifier's `TAP_DUE_DELAY_S`; how record polling
+  ends (gone, timeout, stopped) and what the scan page and `/t` then show (no spinner once polling ended, a reload when
+  the tab becomes visible again); the relay button only when `/health` reports `relay` (5 s); the step after a VALID
+  relay answer with `record` null; the order page's `flow=wallet`; `scanBy` → label; notice shown for
   `devnet`/`localnet`, hidden for `mainnet`; `CLUSTER` parsing; explorer cluster parameter;
 - the strings module contains none of: blockchain, wallet, NFT, token, crypto, guaranteed, trustless (except the
   Advanced line, which may say wallet, kept separate);

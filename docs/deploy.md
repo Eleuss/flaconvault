@@ -71,7 +71,7 @@ Read these before setting any variable.
 | `FV_RELAYER_KEY` | **secret**, a Solana keypair JSON (64 numbers) used for nothing else | fee payer of relay transactions only, no program authority; fund it with at most 0.5 SOL on devnet. Generate one with `solana-keygen new --no-bip39-passphrase -o <file>` outside the repo, paste the file's content into the variable, then delete the file. `GET /api/admin/status` shows its public key |
 | `FV_HOLDER_KEY` | **secret**, unset in P1 | holder-move key for P2; only parsed and validated now (its public key appears in `GET /api/admin/status`) |
 | `FV_ISSUER_KEY` | **secret**, unset in P1 | registry partner key for sealing at the counter (P2); only parsed and validated now |
-| `FV_SOLANA_RPC_FALLBACK` | a second RPC endpoint (optional) | relay sends and status reads switch to it after a failure of `FV_SOLANA_RPC`; it needs no transaction history (a signature it does not find never counts as lost) |
+| `FV_SOLANA_RPC_FALLBACK` | a second RPC endpoint (optional) | relay sends and status reads switch to it after a failure of `FV_SOLANA_RPC`, and before an attempt is given up it is asked as a second source, by the relay loop and the reconcile job alike; it needs no transaction history (a signature it does not find never counts as lost) |
 | `FV_RELAY_DAILY_LAMPORTS` | `10000000` (default) | global relay fee cap per UTC day; a scan above it is kept off chain (`over_cap` / `budget`) |
 | `FV_RELAY_LOW_BALANCE_LAMPORTS` | `100000000` (default, 0.1 SOL) | below this relayer balance the log warns (at most hourly) and `GET /health` reports `relay.ok: false` |
 | `FV_RELAY_CU_LIMIT` | `150000` (default) | compute unit limit of a relay transaction |
@@ -106,7 +106,7 @@ Read these before setting any variable.
 3. `curl -s -D - -o /dev/null -H 'Origin: http://localhost:3000' https://verify.flaconvault.com/health | grep -i access-control-allow-origin` prints nothing (localhost is not an allowed origin).
 4. Tap a real sticker (iPhone: background NFC opens Safari): `/t` shows "Seal genuine · Tap N". For the replay check, read the sticker with an NFC reader app (NFC Tools, TagInfo), copy its tap URL (`…/t?picc_data=…&cmac=…`) and open it twice: the second time shows "Repeated tap". Reopening the result page (`/t?tap=…`) only shows the stored result again.
 5. On that sticker's passport page, "Check live on-chain" reads the Passport account from devnet.
-6. With the public record on: `curl -s https://verify.flaconvault.com/health` shows `"cluster": "devnet"` and `"relay": {"enabled": true, "ok": true}`; a sticker tap shows "Saving to the public record within about 3 minutes." and, a few minutes later, "Saved to the public record ✓".
+6. With the public record on: `curl -s https://verify.flaconvault.com/health` shows `"cluster": "devnet"` and `"relay": {"enabled": true, "ok": true}`; a sticker tap shows "Saving to the public record within about 3 minutes." and, a few minutes later, "Saved to the public record ✓". On `/scan`, "Save to the public record" appears only while `/health` reports `relay` (the page asks once per load); against a verifier without it the page shows the wallet flow.
 
 ## Public record relay (devnet rollout)
 
@@ -114,11 +114,81 @@ The public record (`docs/public-record.md`) lets every genuine tap land on chain
 
 1. Upgrade `flacon` and `escrow` on devnet, escrow first (the escrow refuses passes held in an account, and that guard must be live before flacon can run `mint_passport_v2`; `docs/devnet.md`).
 2. `init_holder_config` with cluster tag DEVNET (2), signed by the registry authority (`docs/devnet.md`).
-3. `init_holding_v1` for every existing devnet passport (`scripts/init-holdings.ts`, run by the owner).
+3. `init_holding_v1` for every existing devnet passport (`scripts/init-holdings.ts`, run by the owner). Bottles minted afterwards get their Holding in the mint transaction (the partner console, `scripts/bind-chip.ts`, `scripts/seed-passports.ts`), so the script needs no re-run after each mint.
 4. Set the verifier variables: `FV_CLUSTER=devnet`, `FV_PROGRAM_ID`, a fresh `FV_RELAYER_KEY` (and optionally `FV_SOLANA_RPC_FALLBACK`); fund the relayer with at most 0.5 SOL; then `FV_RELAY_ENABLED=true` and redeploy. Startup refuses an incomplete relay configuration (no relayer key or program id, a malformed key, two roles sharing one key, a cluster that does not match the RPC) with one clear error in `railway logs`.
 5. `curl -s https://verify.flaconvault.com/health` → `"relay": {"enabled": true, "ok": true}`. `ok` turns true once the verifier has read HolderConfig with the matching cluster tag, the relayer balance is above `FV_RELAY_LOW_BALANCE_LAMPORTS` and the daily budget is not used up. `GET /api/admin/status` (admin token) shows the relayer's public key, balance, today's spend and the row counts.
 
 To stop sending at once, set `FV_RELAY_ENABLED=false` and redeploy: relay scans are then kept off chain, and the web shows "Not saved to the public record this time. FlaconVault keeps the check."
+
+### Rolling back
+
+The rollback for the public record is `FV_RELAY_ENABLED=false` on this build (above), never an older verifier build on the same volume. A verifier from before the public record (main `8fc705b` or older) does not know visitor scans: it shows their city, note and device on the passport page, takes a visitor's off-chain reading as the passport header, and with `FV_ARWEAVE=true` uploads those scans to Arweave for good, and a visitor's card photos as soon as any wallet scan names their hash. This build's web offers "Save to the public record" only while `/health` reports `relay`, so against an older verifier it shows the wallet flow; but a scan page opened before the switch still offers the button, and the older verifier signs that visitor's scan as an ordinary scan and shows the city typed with it.
+
+If an older verifier must run on this volume anyway:
+
+1. Roll the web back first, to a build from before the public record.
+2. Set `FV_RELAY_ENABLED=false`, `FV_ARWEAVE=false` and `FV_MEDIA_RETENTION_S=0` (`railway variable set FV_RELAY_ENABLED=false FV_ARWEAVE=false FV_MEDIA_RETENTION_S=0 --service verify`; this redeploys this build). Keep all three until this build or a later one runs again: the older build must not archive anything, and with retention `0` it does not delete the visitors' photos it no longer sees.
+3. Wait until `GET /api/admin/status` shows `relay.queued` and `relay.sending` at `0` (queued rows expire at their deadline, within about 10 minutes).
+4. Open a shell in the running container (`railway ssh --service verify`) and run the park command below. It moves every visitor scan from `events` into `events_relay_parked`, and the photos only visitor scans use from `media` into `media_relay_parked`, so the older build neither shows, archives nor reads them. It refuses while a relay row is still queued or sending.
+5. Deploy the older build ([Deploying](#deploying), from its commit) and run the park command once more in its container: it parks the visitor scans saved in between.
+6. Rolling forward: deploy this build (or a later one) with the three variables unchanged, run the restore command in its container (every parked scan comes back as it was, with its record), then set the three variables back to their production values.
+
+Park:
+
+```sh
+/app/apps/verify/docker-entrypoint.sh python3 - <<'PY'
+import sqlite3
+db = sqlite3.connect("/data/flaconvault.db", isolation_level=None, timeout=30)
+busy = db.execute("SELECT COUNT(*) FROM relay_tx WHERE status IN ('queued','sending')").fetchone()[0]
+if busy:
+    raise SystemExit(f"{busy} relay rows are still queued or sending: wait, then run this again")
+db.executescript("""
+PRAGMA foreign_keys=OFF;
+BEGIN IMMEDIATE;
+CREATE TABLE IF NOT EXISTS events_relay_parked AS SELECT * FROM events WHERE 0;
+CREATE TABLE IF NOT EXISTS media_relay_parked AS SELECT * FROM media WHERE 0;
+INSERT INTO events_relay_parked SELECT * FROM events
+ WHERE type=2 AND json_extract(payload_json,'$.anchor')='relay' AND json_extract(payload_json,'$.indicators') IS NOT NULL;
+DELETE FROM events WHERE id IN (SELECT id FROM events_relay_parked);
+INSERT INTO media_relay_parked SELECT * FROM media
+ WHERE sha256 IN (SELECT lower(substr(json_extract(payload_json,'$.media[0].sha256'),3)) FROM events_relay_parked)
+   AND sha256 NOT IN (SELECT lower(substr(json_extract(payload_json,'$.media[0].sha256'),3)) FROM events
+                       WHERE json_extract(payload_json,'$.media[0].sha256') IS NOT NULL);
+DELETE FROM media WHERE sha256 IN (SELECT sha256 FROM media_relay_parked);
+COMMIT;
+""")
+print(db.execute("SELECT COUNT(*) FROM events_relay_parked").fetchone()[0], "visitor scans parked,",
+      db.execute("""SELECT COUNT(*) FROM events WHERE type=2 AND json_extract(payload_json,'$.anchor')='relay'
+                    AND json_extract(payload_json,'$.indicators') IS NOT NULL""").fetchone()[0], "left (0 expected)")
+PY
+```
+
+Restore:
+
+```sh
+/app/apps/verify/docker-entrypoint.sh python3 - <<'PY'
+import sqlite3
+db = sqlite3.connect("/data/flaconvault.db", isolation_level=None, timeout=30)
+db.executescript("""
+PRAGMA foreign_keys=ON;
+BEGIN IMMEDIATE;
+INSERT INTO events(id, serial, type, ts, actor_pubkey, actor_label, tx_sig, status, seal_uid_hash, payload_json, ar_bundle,
+                   ar_media, grade_after, country, city, resume_hash)
+ SELECT id, serial, type, ts, actor_pubkey, actor_label, tx_sig, status, seal_uid_hash, payload_json, ar_bundle,
+        ar_media, grade_after, country, city, resume_hash
+ FROM events_relay_parked WHERE id NOT IN (SELECT id FROM events) AND serial IN (SELECT serial FROM passports);
+INSERT OR IGNORE INTO media(sha256, bytes, files, content_type, ar, url, ar_preview, created_at)
+ SELECT sha256, bytes, files, content_type, ar, url, ar_preview, created_at FROM media_relay_parked;
+DROP TABLE events_relay_parked;
+DROP TABLE media_relay_parked;
+COMMIT;
+""")
+print(db.execute("SELECT COUNT(*) FROM relay_tx WHERE event_id IS NOT NULL AND event_id NOT IN (SELECT id FROM events)").fetchone()[0],
+      "relay rows without their scan (0 expected)")
+PY
+```
+
+Both use Python's own `sqlite3` (the image has no `sqlite3` command); the entrypoint runs them as the app user. Parking with `foreign_keys=OFF` keeps each relay row pointing at its parked scan, so the restore needs no re-linking. Rehearsed on a copy of a database written by this build: with the scans parked, main `8fc705b` (even with `FV_ARWEAVE=true`) showed and archived none of them and its header was the last wallet scan again; after the restore this build showed every visitor scan and record as before.
 
 ### Removing demo data from an older production database
 

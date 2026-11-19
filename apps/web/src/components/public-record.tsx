@@ -4,13 +4,17 @@ import { CLUSTER, type ClusterName } from "@/lib/config";
 import { TEST_PHASE_NOTICE, recordLine, showTestNotice, type PublicRecord } from "@/lib/public-record";
 import { cn } from "@/lib/cn";
 
-/** The public record line under a scan result (/t and the scan page): pending, saved, kept off the record, not saved. */
-export function RecordLine({ record, serial, nowS, className }: { record: PublicRecord; serial: string | null | undefined; nowS: number; className?: string }) {
-  const l = recordLine(record, serial, nowS);
+/**
+ * The public record line under a scan result (/t and the scan page): pending, saved, kept off the record, not saved.
+ * `soon`: a pending TAP still waits for its send time (lib/public-record.ts tapSendsSoon, /t only). `live`: the record
+ * is still being asked for; a pending line that is no longer polled shows no spinner.
+ */
+export function RecordLine({ record, serial, soon = false, live = true, className }: { record: PublicRecord; serial: string | null | undefined; soon?: boolean; live?: boolean; className?: string }) {
+  const l = recordLine(record, serial, soon);
   if (l.kind === "pending") {
     return (
       <p className={cn("flex items-center gap-2 text-sm text-muted", className)} role="status">
-        {l.soon ? <Clock className="h-4 w-4 shrink-0" aria-hidden /> : <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />}
+        {l.soon ? <Clock className="h-4 w-4 shrink-0" aria-hidden /> : live ? <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden /> : null}
         {l.text}
       </p>
     );

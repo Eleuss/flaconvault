@@ -526,8 +526,8 @@ export type Flacon = {
     {
       "name": "initHoldingV1",
       "docs": [
-        "Registry authority only, separate payer. The Holding (state WALLET) of a passport minted with v1",
-        "`mint_passport`, so it can take `record_scan_v2` scans."
+        "Registry authority or a registered partner, separate payer. The Holding (state WALLET) of a passport minted",
+        "with v1 `mint_passport`, so it can take `record_scan_v2` scans; v1 mints send it right after `mint_passport`."
       ],
       "discriminator": [
         205,
@@ -612,7 +612,7 @@ export type Flacon = {
         {
           "name": "authority",
           "docs": [
-            "Must be the registry authority."
+            "The registry authority or a registered partner (as the issuer of `mint_passport`)."
           ],
           "signer": true
         },

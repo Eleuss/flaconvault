@@ -7,7 +7,7 @@
  */
 import * as anchor from "@anchor-lang/core";
 import { Program } from "@anchor-lang/core";
-import { Connection, Keypair, PublicKey, type VersionedTransactionResponse } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, SystemProgram, type VersionedTransactionResponse } from "@solana/web3.js";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -343,6 +343,59 @@ export function planHoldings(rows: HoldingRow[]): HoldingStep[] {
     if (r.holdingExists) return { op: "skip", passport: r.passport, reason: "holding exists" };
     return { op: "init", passport: r.passport, holding: r.holding };
   });
+}
+
+/** `["holder_config"]` of the flacon program (docs/public-record.md §6.1). */
+export const holderConfigPdaOf = (programId: PublicKey) =>
+  PublicKey.findProgramAddressSync([Buffer.from("holder_config")], programId)[0];
+
+/** An account the program owns. A PDA address that someone merely funded with SOL belongs to the system program. */
+export const ownedBy = (info: { owner: PublicKey; data: Uint8Array } | null, programId: PublicKey) =>
+  !!info && info.owner.equals(programId) && info.data.length > 0;
+
+export type MintHolding = "with_mint" | "alone" | "none";
+/**
+ * The Holding of a v1 mint (docs/public-record.md §7.3) in scripts/bind-chip.ts and scripts/seed-passports.ts; the
+ * partner console (apps/web/src/components/certify-console.tsx) decides the same way. A new passport gets
+ * `init_holding_v1` in the mint transaction, right after `mint_passport` (`with_mint`), so it takes relay scans at
+ * once. An existing one (the recovery path) gets it alone when its Holding is missing (`alone`), and nothing when the
+ * Holding exists or it is a v2 passport (`none`). Only on a cluster that has the public record (its HolderConfig exists:
+ * rollout step 2, never closed): a program from before the rollout does not know `init_holding_v1` and would fail the
+ * whole mint, and scripts/init-holdings.ts covers the passports minted before.
+ */
+export function mintHoldingPlan(o: { publicRecord: boolean; passport: PublicKey; existing: { asset: PublicKey } | null; holding: PublicKey; holdingExists: boolean }): MintHolding {
+  if (!o.publicRecord) return "none";
+  if (!o.existing) return "with_mint";
+  const [step] = planHoldings([{ passport: o.passport, asset: o.existing.asset, holding: o.holding, holdingExists: o.holdingExists }]);
+  return step.op === "init" ? "alone" : "none";
+}
+
+/** What mintHoldingPlan reads from the chain: the passport's Holding PDA, whether it exists, and whether the cluster has the public record. */
+export async function holdingState(connection: Connection, programId: PublicKey, passport: PublicKey): Promise<{ holding: PublicKey; holdingExists: boolean; publicRecord: boolean }> {
+  const holding = holdingPdaOf(programId, passport);
+  const [h, cfg] = await connection.getMultipleAccountsInfo([holding, holderConfigPdaOf(programId)], "confirmed");
+  return { holding, holdingExists: ownedBy(h, programId), publicRecord: ownedBy(cfg, programId) };
+}
+
+/** `init_holding_v1` of `passport` (an Anchor method builder): `wallet`, the registry authority or a partner, signs and pays. */
+export function initHoldingV1(program: Program<any>, o: { registry: PublicKey; passport: PublicKey; wallet: PublicKey }) {
+  return program.methods.initHoldingV1().accountsStrict({
+    registry: o.registry, passport: o.passport, holding: holdingPdaOf(program.programId, o.passport), authority: o.wallet, payer: o.wallet,
+    systemProgram: SystemProgram.programId,
+  });
+}
+
+/**
+ * v1 `mint_passport` of `asset` by `wallet` (issuer and payer) as the scripts send it: with `init_holding_v1` for the new
+ * passport right after it, in the same transaction, when `withHolding` (mintHoldingPlan says `with_mint`).
+ */
+export async function mintPassportV1(program: Program<any>, o: {
+  registry: PublicKey; passport: PublicKey; serialHash: Uint8Array; bindingHash: Uint8Array; asset: PublicKey; wallet: PublicKey; withHolding: boolean;
+}) {
+  const mint = program.methods
+    .mintPassport(Array.from(o.serialHash), Array.from(o.bindingHash), o.asset)
+    .accountsStrict({ registry: o.registry, passport: o.passport, issuer: o.wallet, systemProgram: SystemProgram.programId, coreAsset: o.asset });
+  return o.withHolding ? mint.postInstructions([await initHoldingV1(program, o).instruction()]) : mint;
 }
 
 /** cluster enum of docs/enums.json (`FV_CLUSTER` names are lowercase). */

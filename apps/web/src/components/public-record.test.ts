@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import Link from "next/link";
+import { Clock, Loader2 } from "lucide-react";
 import { NOT_SAVED, SAVED, SAVING, SAVING_TAP_SOON, TEST_PHASE_NOTICE, VIEW_RECORD, type PublicRecord } from "@/lib/public-record";
 import { RecordLine, TestPhaseNotice } from "./public-record";
 
@@ -23,14 +24,25 @@ const words = (node: ReactNode): string => {
 const rec = (o: Partial<PublicRecord>): PublicRecord => ({ state: "pending", purpose: "CHECK", eventId: 5, ...o });
 
 test("the record line says saving, saved with 'view record' to the history row, or not saved", () => {
-  assert.equal(words(RecordLine({ record: rec({}), serial: "SN-1", nowS: 100 })), SAVING);
-  assert.equal(words(RecordLine({ record: rec({ purpose: "TAP", dueAt: 200 }), serial: "SN-1", nowS: 100 })), SAVING_TAP_SOON);
-  const saved = RecordLine({ record: rec({ state: "recorded", txSig: "Sig" }), serial: "SN-1", nowS: 100 });
+  assert.equal(words(RecordLine({ record: rec({}), serial: "SN-1" })), SAVING);
+  assert.equal(words(RecordLine({ record: rec({ purpose: "TAP" }), serial: "SN-1", soon: true })), SAVING_TAP_SOON);
+  // dueAt alone (the relayer's retry pauses move it) never brings back "within about 3 minutes"
+  assert.equal(words(RecordLine({ record: rec({ purpose: "TAP", dueAt: 4_000_000_000 }), serial: "SN-1" })), SAVING);
+  const saved = RecordLine({ record: rec({ state: "recorded", txSig: "Sig" }), serial: "SN-1" });
   assert.equal(words(saved), "Saved to the public record \u2713 \u00b7 view record");
   assert.equal(words(saved), `${SAVED} · ${VIEW_RECORD}`);
   const link = all(saved).find((el) => el.type === Link);
   assert.equal(link?.props.href, "/p/SN-1#e5");
-  assert.equal(words(RecordLine({ record: rec({ state: "failed", reason: "relay_off" }), serial: "SN-1", nowS: 100 })), NOT_SAVED);
+  assert.equal(words(RecordLine({ record: rec({ state: "failed", reason: "relay_off" }), serial: "SN-1" })), NOT_SAVED);
+});
+
+test("a pending line spins only while the record is still asked for; a waiting TAP shows the clock", () => {
+  const icons = (el: ReactNode) => all(el).filter((x) => x.type === Loader2 || x.type === Clock).map((x) => (x.type === Clock ? "clock" : "spinner"));
+  assert.deepEqual(icons(RecordLine({ record: rec({}), serial: "SN-1" })), ["spinner"]);
+  assert.deepEqual(icons(RecordLine({ record: rec({}), serial: "SN-1", live: false })), [], "polling over: no spinner for good");
+  assert.equal(words(RecordLine({ record: rec({}), serial: "SN-1", live: false })), SAVING);
+  assert.deepEqual(icons(RecordLine({ record: rec({ purpose: "TAP" }), serial: "SN-1", soon: true })), ["clock"]);
+  assert.deepEqual(icons(RecordLine({ record: rec({ state: "recorded", txSig: "S" }), serial: "SN-1", live: false })), []);
 });
 
 test("the test-phase notice is shown off mainnet and gone on mainnet", () => {

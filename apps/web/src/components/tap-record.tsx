@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { PUBLIC_VERIFY_URL } from "@/lib/config";
 import { ApiError, apiError } from "@/lib/errors";
-import { asRecord, isTerminalRecord, startRecordPoll, tapRecordPollDelay, type PublicRecord } from "@/lib/public-record";
+import { asRecord, isTerminalRecord, tapSendsSoon, watchTapRecord, type PublicRecord, type TapLine } from "@/lib/public-record";
 import { RecordLine, TestPhaseNotice } from "./public-record";
 
 /**
@@ -16,31 +16,50 @@ async function tapRecord(tapId: number): Promise<PublicRecord | null> {
   return asRecord(((await r.json()) as { record?: unknown }).record);
 }
 
+/** "The tab became visible again" (lib/public-record.ts watchTapRecord). */
+function onTabVisible(cb: () => void): () => void {
+  const h = () => { if (document.visibilityState === "visible") cb(); };
+  document.addEventListener("visibilitychange", h);
+  return () => document.removeEventListener("visibilitychange", h);
+}
+
 /**
  * Under the /t verdict: the public record of this tap. While pending it asks GET /api/tap/{tapId} every 5 s for at
  * most 10 minutes (the TAP is sent once the 180 s adoption window is over; a scan that adopts the tap replaces it with
- * its CHECK, whose record the tap then shows). `serverNow` is the server's clock at render, so the first client render
- * matches the server's ("within about 3 minutes" depends on the time).
+ * its CHECK, whose record the tap then shows). The line goes when the record does (null, or the tap's 404); when the
+ * 10 minutes run out it stays without its spinner and is loaded once more whenever the tab becomes visible again
+ * (lib/public-record.ts watchTapRecord).
+ *
+ * "within about 3 minutes" is decided from the tap's own time `tapTs` (verifier clock) on `now`, the server's clock:
+ * `serverNow` at render — so the first client render matches the server's — then the device clock shifted onto it.
+ * `now` never goes back, and once the line has left "within about 3 minutes" it never returns to it (`leftSoon`).
  */
-export function TapRecord({ tapId, serial, initial, serverNow }: { tapId: number; serial: string | null; initial: PublicRecord; serverNow: number }) {
-  const [record, setRecord] = useState<PublicRecord>(initial);
+export function TapRecord({ tapId, tapTs, serial, initial, serverNow }: { tapId: number; tapTs: number | null; serial: string | null; initial: PublicRecord; serverNow: number }) {
+  const [line, setLine] = useState<TapLine | null>({ record: initial, live: !isTerminalRecord(initial) });
   const [now, setNow] = useState(serverNow);
+  const [leftSoon, setLeftSoon] = useState(false);
   const settled = isTerminalRecord(initial);
   useEffect(() => {
     if (settled) return;
-    const tick = setInterval(() => setNow(Date.now() / 1000), 5000);
-    const stop = startRecordPoll({
+    const offset = serverNow - Date.now() / 1000;
+    const clock = () => setNow((n) => Math.max(n, Date.now() / 1000 + offset));
+    const tick = setInterval(clock, 5000);
+    const stop = watchTapRecord({
+      initial,
       load: () => tapRecord(tapId),
-      delay: tapRecordPollDelay,
-      onRecord: (r) => { setRecord(r); setNow(Date.now() / 1000); },
-      // the tap is gone (404): keep the last line, stop asking
-      stopOn: (e) => e instanceof ApiError && e.status === 404,
+      // the tap is gone (404): so is its record
+      isGone: (e) => e instanceof ApiError && e.status === 404,
+      show: (l) => { setLine(l); clock(); },
+      onVisible: onTabVisible,
     });
     return () => { clearInterval(tick); stop(); };
-  }, [tapId, settled]);
+  }, [tapId, settled, initial, serverNow]);
+  const soon = tapSendsSoon(line?.record ?? null, tapTs, now, leftSoon);
+  useEffect(() => { if (!soon) setLeftSoon(true); }, [soon]);
+  if (!line) return null;
   return (
     <div className="mt-6 flex flex-col items-start gap-3">
-      <RecordLine record={record} serial={serial} nowS={now} />
+      <RecordLine record={line.record} serial={serial} soon={soon} live={line.live} />
       <TestPhaseNotice />
     </div>
   );

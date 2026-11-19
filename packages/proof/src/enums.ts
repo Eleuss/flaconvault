@@ -99,6 +99,9 @@ export const COMMITMENT_PREFIX = "FVHOLD1";
 export const FILL_NONE = 255;
 export const BUNDLE2_SCHEMA = "flaconvault.scanbundle.v2";
 export const NONCE_TTL_S = 90;
+/** `record_scan` / `record_scan_v2` accept a signed `ts` only while |ts − cluster clock| ≤ this (seconds; the IDL
+ * constant `MAX_SCAN_TS_SKEW_S`). */
+export const MAX_SCAN_TS_SKEW_S = 600;
 /** Key diversification (AN10922, only when FV_KEY_MODE=diversified): CMAC(K_master, 0x01 ‖ UID ‖ APP_ID ‖ SYS_ID). */
 export const KEY_DIV_APP_ID_HEX = "D2760000850101";
 export const KEY_DIV_SYS_ID = "FlaconVault";

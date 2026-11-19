@@ -4,6 +4,7 @@
  * from docs/public-record.md §6. Registry, Passport and Seal are frozen.
  */
 import { bytesEqual, sha256Bytes, utf8 } from "./bytes.ts";
+import { MAX_SCAN_TS_SKEW_S } from "./enums.ts";
 
 /** First 8 bytes of sha256(`<namespace>:<name>`): Anchor's account, instruction and event discriminators. */
 export function anchorDiscriminator(namespace: "account" | "global" | "event", name: string): Uint8Array {
@@ -80,6 +81,17 @@ export function decodeRegistry(data: Uint8Array): RegistryAccount {
 /** `valid_from ≤ t` and (`valid_to == 0` or `t ≤ valid_to`), as `ServerKey::is_valid_at`. */
 export function serverKeyValidAt(k: ServerKeyEntry, t: bigint): boolean {
   return t >= k.validFrom && (k.validTo === 0n || t <= k.validTo);
+}
+/**
+ * Could `record_scan_v2` have accepted a message signed at `ts` under this key, judged from the registry entry as it
+ * is today? `valid_from ≤ ts` and (`valid_to == 0` or `ts ≤ valid_to + MAX_SCAN_TS_SKEW_S + 1`). The program checked
+ * the key at `ts` and at its clock C (|ts − C| ≤ MAX_SCAN_TS_SKEW_S) against the registry of that moment. `valid_from`
+ * never changes and `valid_to` only drops: `revoke_server_key` at clock R ≥ C sets it to R − 1, so every accepted scan
+ * has ts ≤ C + 600 ≤ valid_to + 601. A plain `serverKeyValidAt(ts)` would drop a scan dated ahead of the cluster clock
+ * once its key is revoked right after it, although the chain folded that scan into the Holding for good.
+ */
+export function serverKeyCouldAcceptAt(k: ServerKeyEntry, ts: bigint): boolean {
+  return ts >= k.validFrom && (k.validTo === 0n || ts <= k.validTo + BigInt(MAX_SCAN_TS_SKEW_S) + 1n);
 }
 
 export interface HolderConfigAccount {

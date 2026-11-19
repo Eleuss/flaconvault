@@ -76,7 +76,7 @@ npx tsx scripts/server-key.ts revoke <keyId>        # valid_to = now − 1; the 
 npx tsx scripts/partner.ts add|remove <pubkey>      # registry partners; partner.ts list shows them
 ```
 
-The scripts honour `ANCHOR_PROVIDER_URL` and `ANCHOR_WALLET` (default `~/.config/solana/id.json`); for example `ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 npx tsx scripts/seed-devnet.ts --test-key` after `anchor localnet --validator legacy`. Other helpers: `scripts/bind-chip.ts <serial> <uid14hex> <brand> <name> <batch> <coreAsset|new> [kind] [verifyUrl]` (mint a passport with a Metaplex Core asset and attach a real chip from the CLI; an existing asset must be owned by the wallet and not back another passport, `new` mints one whose uri is the verifier's `/api/passport/<serial>/metadata.json`; when the passport or seal already exists it re-posts the MINT/SEAL_ATTACH event for the `mint_passport` / `attach_seal` transaction that created it, signed by the wallet), `scripts/list-order.ts <serial> <priceUsdc> [--no-deposit] [--no-event] [verifyUrl]` (list a passport on the escrow, deposit its Core asset and post the LIST event), `scripts/seed-passports.ts` (attaches every seal of a passport before it marks the seed's dead ones), `scripts/core-transfer.ts <asset> <newOwner>` (move a Core asset away from the CLI wallet), `scripts/fund-dev-wallet.ts <pubkey> [sol] [usdc]` (SOL and test USDC for a demo wallet).
+The scripts honour `ANCHOR_PROVIDER_URL` and `ANCHOR_WALLET` (default `~/.config/solana/id.json`); for example `ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 npx tsx scripts/seed-devnet.ts --test-key` after `anchor localnet --validator legacy`. Other helpers: `scripts/bind-chip.ts <serial> <uid14hex> <brand> <name> <batch> <coreAsset|new> [kind] [verifyUrl]` (mint a passport with a Metaplex Core asset and attach a real chip from the CLI; an existing asset must be owned by the wallet and not back another passport, `new` mints one whose uri is the verifier's `/api/passport/<serial>/metadata.json`; once the cluster has a HolderConfig (public-record rollout step 2) `init_holding_v1` goes in the mint transaction right after `mint_passport`, and an existing passport of the wallet without its Holding gets it alone; when the passport or seal already exists it re-posts the MINT/SEAL_ATTACH event for the `mint_passport` / `attach_seal` transaction that created it, signed by the wallet), `scripts/list-order.ts <serial> <priceUsdc> [--no-deposit] [--no-event] [verifyUrl]` (list a passport on the escrow, deposit its Core asset and post the LIST event), `scripts/seed-passports.ts` (attaches every seal of a passport before it marks the seed's dead ones; `init_holding_v1` as in bind-chip), `scripts/core-transfer.ts <asset> <newOwner>` (move a Core asset away from the CLI wallet), `scripts/fund-dev-wallet.ts <pubkey> [sol] [usdc]` (SOL and test USDC for a demo wallet).
 
 ## flacon: program surface
 
@@ -174,15 +174,23 @@ and CI never run them.
 
 0. Before: the manual CI run passes (it includes `scripts/test-flacon-litesvm.sh` and the escrow LiteSVM tests). The
    verifier and the web app of the same commit can be deployed first: with `FV_RELAY_ENABLED` unset nothing is sent,
-   and the new web app keeps working against the old programs (the relay records stay "failed").
-1. Upgrade both programs, **escrow first**: `anchor build --verifiable`, then
-   `anchor upgrade target/verifiable/escrow.so --program-id 9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL --provider.cluster devnet`
-   (escrow, 420,384 bytes, still fits its 432,296). Then flacon, which grows from 342,384 bytes (the devnet
-   ProgramData) to about 465,000 (a plain build of P1 is 464,976): compare `ls -l target/verifiable/flacon.so` with
-   `solana program show 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL --url devnet` (Data Length), run
-   `solana program extend 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL <difference plus a few KB> --url devnet`
-   (about 0.86 SOL of rent for 123 kB), then
+   and the new web app keeps working against the old programs (the relay records stay "failed"; `/certify` adds
+   `init_holding_v1` to a mint only once the HolderConfig of step 2 exists, as do the scripts).
+1. Upgrade both programs, **escrow first**: `anchor build --verifiable`, then size each upgrade from the file you
+   deploy, at rollout time (every build differs; never copy a number from this page). Escrow:
+   `NEW=$(wc -c < target/verifiable/escrow.so)`, `OLD=` the `Data Length` printed by
+   `solana program show 9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL --url devnet`; only when `NEW` is larger, run
+   `solana program extend 9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL $((NEW - OLD + 4096)) --url devnet`
+   (`solana rent $((NEW - OLD + 4096)) --url devnet` shows the rent it costs), then
+   `anchor upgrade target/verifiable/escrow.so --program-id 9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL --provider.cluster devnet`.
+   Then flacon, which no longer fits its devnet ProgramData: `NEW=$(wc -c < target/verifiable/flacon.so)`, `OLD=` the
+   `Data Length` printed by `solana program show 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL --url devnet`; when
+   `NEW` is larger, run `solana program extend 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL $((NEW - OLD + 4096)) --url devnet`
+   (again `solana rent $((NEW - OLD + 4096)) --url devnet` shows the rent), then
    `anchor upgrade target/verifiable/flacon.so --program-id 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL --provider.cluster devnet`.
+   Example from 2026-11-19 (a plain `anchor build`; the verifiable build may differ, use its size): flacon 466,592
+   bytes against a devnet `Data Length` of 342,384, so extend by 124,208 + 4,096 = 128,304 bytes (`solana rent` on
+   devnet: about 0.65 SOL); escrow 420,384 bytes, fits its 432,296.
    Check both with `anchor verify` against the pushed commit, copy the IDLs and record the commit, as in
    [Upgrading devnet](#upgrading-devnet) step 1. The escrow goes first so its `PassHeldInAccount` guard is live before
    flacon can run `mint_passport_v2` (two upgrades are two transactions, never atomic; the new escrow reads only the
@@ -191,7 +199,11 @@ and CI never run them.
 2. `npx tsx scripts/holder-config.ts init devnet` (`init_holder_config`, cluster tag 2, immutable; guardian, holder
    and registrar keys zero until P2), then `npx tsx scripts/holder-config.ts show`.
 3. `npx tsx scripts/init-holdings.ts --dry-run`, then without `--dry-run`: `init_holding_v1` (state WALLET) for every
-   existing passport, about 0.0025 SOL of rent each. Re-runnable.
+   existing passport (rent for 229 bytes each: `solana rent 229 --url devnet`, 0.0018 SOL on 2026-11-19).
+   Re-runnable. From then on the partner console, `scripts/bind-chip.ts` and `scripts/seed-passports.ts` send
+   `init_holding_v1` in the mint transaction (the HolderConfig of step 2 exists) and add it alone to an existing
+   passport without one, so new bottles need no re-run; run it again only for a passport whose relay scans end
+   `failed` / `no_holding` (minted by an older client).
 4. Set the verifier's relay variables ([`deploy.md`](deploy.md)), fund the relayer with at most 0.5 SOL, set
    `FV_RELAY_ENABLED=true`.
 5. Check `GET /health` → `relay.ok`, then tap a seal and run `npm run verify-pass -- --rpc https://api.devnet.solana.com --serial <serial>`.

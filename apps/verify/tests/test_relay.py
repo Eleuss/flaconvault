@@ -26,7 +26,7 @@ from fv.db import get_seal_by_uid, transaction
 from fv.enums import ActorKind, Cluster, Grade, Purpose
 from fv.reconcile import reconcile_once
 from fv.views import scan_by
-from tests.conftest import ADMIN, PROGRAM_ID, TEST_SEED_HEX, FakeRpc
+from tests.conftest import ADMIN, MEDIA, PROGRAM_ID, TEST_SEED_HEX, FakeRpc, upload_photo, with_photo
 
 SERIAL = "SN-2026-000001"
 LOCAL_RPC = "http://127.0.0.1:8899"
@@ -806,6 +806,50 @@ def test_a_send_lost_on_the_primary_is_never_sent_twice_whatever_the_fallback_sa
     assert event(c, r["event_id"])["tx_sig"] == r["sig"] and budget(c, row["due_at"]) == FEE - 3
 
 
+@pytest.mark.parametrize("given_up", ["requeued", "expired"])
+@pytest.mark.parametrize("error", [
+    {"code": -32002, "message": "Transaction simulation failed: Blockhash not found", "data": {"err": "BlockhashNotFound", "logs": []}},
+    {"code": -32002, "message": "Transaction simulation failed: Error processing Instruction 3: custom program error",
+     "data": {"err": {"InstructionError": [3, {"Custom": 6047}]}, "logs": []}},
+], ids=["node_error", "program_error"])
+def test_a_send_error_after_a_concurrent_give_up_refunds_the_estimate_once(relay_client, given_up, error):
+    """The reconcile job's confirm_sending (its own thread and connection) gives an attempt up while sendTransaction is
+    still running — a blockhash already past its lastValidBlockHeight, handed out by a lagging backend — and refunds the
+    estimate. The send then fails with a node or program error: the relay thread must neither refund the estimate a
+    second time (it used to: one estimate of daily-cap headroom per occurrence) nor move the row."""
+    c = relay_client
+    uid = attach(c)
+    t_tap(c, uid)
+    (row,) = rows(c)
+    now = row["due_at"]
+    fake = c.fake
+    fake.land = False
+    fake.block_height = fake.last_valid + 1
+    with c.db.connect() as conn:
+        relayer._charge(conn, now, 50_000)                              # today's spend so far (another row's fee)
+    seen: dict = {}
+
+    def send(raw):
+        fake._call("send_transaction")
+        fake.sent.append(Transaction.from_bytes(raw))
+        with c.db.connect() as other:                                   # the reconcile thread, meanwhile
+            at = now if given_up == "requeued" else row["deadline_at"] + 1
+            seen["confirm"] = relayer.confirm_sending(other, c.settings, fake, None, at)
+        seen["budget"] = budget(c, now)
+        raise RpcError("x", error=error)
+    fake.send_transaction = send
+    out = run(c, now)
+    r = rows(c)[0]
+    sig = str(fake.sent[0].signatures[0])
+    assert seen["confirm"][given_up] == 1 and seen["budget"] == 50_000     # given up there, its estimate refunded there
+    assert budget(c, now) == 50_000                                       # … and not a second time here
+    assert out["sent"] == {"moved": 1}
+    if given_up == "requeued":
+        assert (r["status"], r["sig"]) == ("queued", None) and json.loads(r["earlier_sigs"]) == [{"sig": sig, "estimate": FEE}]
+    else:
+        assert (r["status"], r["reason"], r["sig"], r["lamports"]) == ("failed", "expired", None, 0)
+
+
 # ---------- earlier attempts: status sources, counter_used (§9.5) ----------
 
 def _send_once(c, rpc, row: dict, *, landed: bool) -> str:
@@ -983,7 +1027,7 @@ def test_an_overdue_row_with_an_earlier_attempt_expires_only_after_the_look_up(r
     with c.db.connect() as conn:
         assert relayer.expire_overdue(conn, late) == 0                  # DB only: it cannot look the attempt up, so it waits
     assert rows(c)[0]["status"] == "queued"
-    reconcile_once(c.db, c.settings, c.fake, ts=late)                   # the reconcile job has the primary RPC
+    reconcile_once(c.db, c.settings, c.fake, ts=late)                   # the reconcile job, no fallback configured
     r = rows(c)[0]
     if landed:
         assert (r["status"], r["reason"], r["sig"], r["lamports"]) == ("recorded", None, sig, FEE - 3)
@@ -991,6 +1035,100 @@ def test_an_overdue_row_with_an_earlier_attempt_expires_only_after_the_look_up(r
     else:
         assert (r["status"], r["reason"], r["sig"], r["lamports"]) == ("failed", "expired", None, 0)
     assert len(c.fake.sent) == 1
+
+
+class LaggingPrimary(FakeRelayRpc):
+    """FV_SOLANA_RPC behind a load balancer: the next `lag` status reads come from a backend that has not seen the
+    transaction yet (None for every signature)."""
+    lag = 0
+
+    def get_signature_statuses(self, sigs):
+        self._call("get_signature_statuses")
+        if self.lag > 0:
+            self.lag -= 1
+            return [None for _ in sigs]
+        return [None if s in self.hidden else self.statuses.get(s) for s in sigs]
+
+
+class FullHistoryFallback:
+    """FV_SOLANA_RPC_FALLBACK with the full history of the same cluster (it knows every transaction that landed)."""
+
+    def __init__(self, fake: FakeRelayRpc):
+        self.fake = fake
+        self.status_reads = 0
+
+    def __getattr__(self, name):
+        return getattr(self.fake, name)
+
+    def get_signature_statuses(self, sigs):
+        self.status_reads += 1
+        return [self.fake.statuses.get(s) for s in sigs]
+
+
+@pytest.mark.parametrize("who", ["relay_loop", "reconcile_with_the_relay_client", "post_reconcile", "reconcile_primary_only"])
+def test_the_fallback_is_asked_before_an_attempt_is_given_up_whoever_settles_the_row(relay_client, monkeypatch, who):
+    """§9.5: an attempt is given up only when neither the primary nor FV_SOLANA_RPC_FALLBACK knows it. The reconcile job
+    used to settle relay rows on the primary's word alone, so whichever loop reached a row first decided whether a
+    configured fallback protected it: a TAP that landed, read once from a lagging primary backend after its deadline,
+    ended failed/expired without its txSig. Now every path asks the fallback and records it."""
+    import fv.reconcile as rc
+    c = relay_client
+    primary = LaggingPrimary()
+    primary.accounts = c.fake.accounts
+    c.fake = primary
+    fallback = FullHistoryFallback(primary)
+    relay_rpc = relayer.FallbackRpc(primary, fallback)
+    uid = attach(c)
+    tap_id, _ = t_tap(c, uid)
+    (row,) = rows(c)
+    assert REAL_RELAY_ONCE(c.db, c.settings, relay_rpc, c.state, now=row["deadline_at"] - 30)["sent"] == {"sent": 1}
+    landed = str(primary.sent[0].signatures[0])
+    primary.block_height = primary.last_valid + 1                   # past its lastValidBlockHeight …
+    primary.lag = 1                                                 # … and the next status read hits a lagging backend
+    late = row["deadline_at"] + 20                                  # past the deadline: "not found" would end it
+    if who == "relay_loop":
+        REAL_RELAY_ONCE(c.db, c.settings, relay_rpc, c.state, now=late)
+    elif who == "reconcile_with_the_relay_client":                  # main.py's reconcile loop
+        reconcile_once(c.db, c.settings, c.app.state.rpc, ts=late, relay_rpc=relay_rpc)
+    elif who == "post_reconcile":                                   # POST /api/reconcile: app.state.relay_rpc
+        c.app.state.relay_rpc = relay_rpc
+        monkeypatch.setattr(rc, "now", lambda: late)
+        assert c.post("/api/reconcile", headers=ADMIN).status_code == 200
+    else:                                                           # a caller with the primary only: the configured
+        c.settings.solana_rpc_fallback = "http://127.0.0.1:18899"   # fallback is put next to it
+        monkeypatch.setattr(relayer, "Rpc", lambda url, *a, **k: fallback if url == c.settings.solana_rpc_fallback else None,
+                            raising=False)
+        reconcile_once(c.db, c.settings, primary, ts=late)
+    r = rows(c)[0]
+    assert fallback.status_reads >= 1 and len(primary.sent) == 1
+    assert (r["status"], r["reason"], r["sig"], r["lamports"]) == ("recorded", None, landed, FEE - 3)
+    assert event(c, r["event_id"])["tx_sig"] == landed and c.get(f"/api/tap/{tap_id}").json()["record"]["txSig"] == landed
+
+
+def test_the_reconcile_loop_settles_relay_rows_through_the_relay_client(settings, monkeypatch):
+    """main.py's reconcile loop hands reconcile_once the relay loop's own client (app.state.relay_rpc, primary plus
+    FV_SOLANA_RPC_FALLBACK) for the relay step, not the primary-only app.state.rpc."""
+    import fv.main as fm
+    seen: list = []
+
+    def recorder(*a, **k):
+        seen.append(k.get("relay_rpc"))
+        return {"checked": 0, "failed": 0, "refreshed": {"passports": 0, "seals": 0}, "media": None}
+    monkeypatch.setattr(fm, "reconcile_once", recorder)
+    settings.program_id = PROGRAM_ID
+    settings.reconcile_interval_s = 0.05
+    app = fm.create_app(settings)
+    app.state.rpc = FakeRpc()
+    with TestClient(app):
+        for _ in range(100):
+            if seen:
+                break
+            time.sleep(0.05)
+    assert seen and seen[0] is app.state.relay_rpc and isinstance(seen[0], relayer.FallbackRpc)
+    s = Settings(server_seed_hex=TEST_SEED_HEX, solana_rpc="http://127.0.0.1:8899", solana_rpc_fallback="http://127.0.0.1:8898")
+    client = relayer.relay_rpc_client(s)
+    assert (client.primary.url, client.fallback.url) == ("http://127.0.0.1:8899", "http://127.0.0.1:8898")
+    assert relayer.relay_rpc_client(s, client) is client and relayer.relay_rpc_client(Settings(server_seed_hex=TEST_SEED_HEX)).fallback is None
 
 
 def test_daily_budget_cap(relay_client):
@@ -1369,8 +1507,8 @@ def test_relay_answer_and_bundle(relay_client):
     uid = attach(c)
     tap = c.post("/api/dev/tap", json={"uid": uid}).json()
     attester = str(Keypair().pubkey())
-    v = c.post("/api/verify", json=body(c, tap=tap, tier=2, role=1, mediaHash="0x" + "ab" * 32, note="kept private",
-                                         location={"country": "de", "city": "Wickede"}, attester=attester)).json()
+    v = c.post("/api/verify", json=with_photo(c, body(c, tap=tap, tier=2, role=1, mediaHash=MEDIA, note="kept private",
+                                                      location={"country": "de", "city": "Wickede"}, attester=attester))).json()
     assert v["verdict"] == "VALID" and v["anchor"] == "relay" and v["purpose"] == "CHECK" and v["actorKind"] == "NONE"
     assert v["cluster"] == "LOCALNET" and v["resumeToken"]
     rec = v["record"]
@@ -1380,7 +1518,7 @@ def test_relay_answer_and_bundle(relay_client):
     assert proof.verify(bytes.fromhex(v["serverPubkey"]), msg, bytes.fromhex(v["serverSig"][2:]))
     m = proof.parse_message_v2(msg)
     assert (m["purpose"], m["actor_kind"], m["tier"], m["role"], m["fill"], m["cluster_tag"]) == (1, 0, 2, 1, 92, 3)
-    assert m["media_hash"] == b"\xab" * 32
+    assert m["media_hash"] == bytes.fromhex(MEDIA[2:])
     canonical = proof.canonical_json(v["bundle"])
     assert set(v["bundle"]) == set(proof.BUNDLE2_KEYS) and v["bundle"]["schema"] == proof.BUNDLE2_SCHEMA
     for private in ("kept private", "Wickede", "IOS_WEB", attester, "platform", "note", "city"):
@@ -1590,12 +1728,70 @@ def test_arweave_queue_skips_relay_scans(relay_client):
     c = relay_client
     uid = attach(c)
     tap = c.post("/api/dev/tap", json={"uid": uid}).json()
-    v = c.post("/api/verify", json=body(c, tap=tap, tier=2, mediaHash="0x" + "cd" * 32)).json()
+    v = c.post("/api/verify", json=with_photo(c, body(c, tap=tap, tier=2, mediaHash=MEDIA))).json()
     run(c, v["record"]["dueAt"])
     run(c, v["record"]["dueAt"] + 1)
     assert event(c, v["eventId"])["status"] == "confirmed"
     with c.db.connect() as conn:
         assert v["eventId"] not in [e["id"] for e in arweave_queue(conn, int(time.time()) + 10, 100)]
+
+
+def test_a_relay_scans_photos_never_reach_arweave_through_a_scan_that_names_their_hash(relay_client, monkeypatch):
+    """D14: the photos of a wallet-free scan stay on the verification server. Their hash is public (FVSCAN2 media_hash,
+    the passport view), so a wallet scan of any passport that only names it, without uploading the bytes under its own
+    nonce, is refused (422 media_not_uploaded, its tap unused) and nothing of the visitor's ever reaches the archiving
+    sidecar. The other way round, a relay scan cannot name a wallet scan's photos either."""
+    import io
+
+    import fv.arweave as aw
+    c = relay_client
+    uid = attach(c)
+    frames = [b"\xff\xd8visitor-photo-1" * 40, b"\xff\xd8visitor-photo-2" * 40]
+    n = nonce(c)
+    h = c.post("/api/media", data={"nonce": n}, files=[("files", (f"f{i}.jpg", io.BytesIO(f), "image/jpeg"))
+                                                         for i, f in enumerate(frames)]).json()["sha256"]
+    tap = c.post("/api/dev/tap", json={"uid": uid}).json()
+    v = c.post("/api/verify", json=body(c, tap=tap, tier=2, mediaHash=h, nonce=n)).json()
+    assert v["verdict"] == "VALID" and v["anchor"] == "relay"
+    run(c, v["record"]["dueAt"])
+    run(c, v["record"]["dueAt"] + 1)
+    assert event(c, v["eventId"])["status"] == "confirmed" and event(c, v["eventId"])["tx_sig"]
+    shown = [e for e in c.get(f"/api/passport/{SERIAL}").json()["events"] if e["id"] == v["eventId"]][0]
+    assert shown["payload"]["media"][0]["sha256"] == h                     # the hash is public
+    blob = c.settings.media_dir / f"{h[2:]}.bin"
+    assert blob.read_bytes() == b"".join(frames)                           # the photos stay on the server
+
+    # archiving on: a stub sidecar records every file it is handed
+    handed: list[str] = []
+
+    def sidecar(args, settings):
+        handed.append(args[-1])
+        i = f"FAKE{len(handed):02d}" + "x" * 37
+        return {"id": i, "url": f"https://gateway.irys.xyz/{i}", "ar": f"ar://{i}", "bytes": 1}
+    monkeypatch.setattr(aw, "_run_sidecar", sidecar)
+    c.settings.arweave, c.settings.irys_key = True, str(c.settings.media_dir / "no-irys-key.json")   # never read: stub
+    assert c.post("/api/reconcile", headers=ADMIN).json()["arweave"]["attempted"] == 0      # relay scans: never archived
+
+    # someone else: a wallet scan of another passport that names the visitor's hash without uploading the bytes
+    other = "SN-2026-000002"
+    other_uid = c.post("/api/dev/tag", json={"serial": other, "kind": 1}).json()["uid"]
+    tap2 = c.post("/api/dev/tap", json={"uid": other_uid}).json()
+    r = c.post("/api/verify", json=body(c, tap=tap2, anchor=None, tier=2, mediaHash=h, attester=str(Keypair().pubkey())))
+    assert r.status_code == 422 and r.json()["detail"] == "media_not_uploaded"
+    assert c.post("/api/preview", json={"uid": tap2["uid"], "ctr": tap2["ctrHex"], "cmac": tap2["cmac"]}).json()["verdict"] == "VALID"
+    # the other way round: a wallet scan's photos (uploaded under its own nonce) cannot be named by a relay scan
+    n2 = nonce(c)
+    w = upload_photo(c, n2).json()["sha256"]
+    assert c.post("/api/verify", json=body(c, tap=tap2, anchor=None, tier=2, mediaHash=w, nonce=n2,
+                                           attester=str(Keypair().pubkey()))).json()["verdict"] == "VALID"
+    tap3 = c.post("/api/dev/tap", json={"uid": uid}).json()
+    r = c.post("/api/verify", json=body(c, tap=tap3, tier=2, mediaHash=w))
+    assert r.status_code == 422 and r.json()["detail"] == "media_not_uploaded"
+
+    c.post("/api/reconcile", headers=ADMIN)
+    assert str(blob) not in handed and not any(h[2:] in a for a in handed)
+    with c.db.connect() as conn:
+        assert tuple(conn.execute("SELECT ar, url, ar_preview FROM media WHERE sha256=?", (h[2:],)).fetchone()) == (None, None, None)
 
 
 # ---------- startup refusals (§9.1) ----------

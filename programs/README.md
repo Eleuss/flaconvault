@@ -37,11 +37,12 @@ the same source for SBPF v2 into `target/sbf-v2/` first; a plain `cargo test` li
 
 `programs/flacon/tests/record_scan_v2.rs` (`scripts/test-flacon-litesvm.sh`, same SBPF v2 build) sends
 `record_scan_v2` from a fee payer that is in no instruction: the ±600 s boundaries and key validity at `ts` and at the
-clock under a `Clock` override, every actor rule, the setup instructions, and the six `docs/vectors.json` `v2.scans`
-byte for byte at their signed `ts` (grade, void and `scan_head` after each equal the TypeScript generator). This
-LiteSVM build has no precompiles, so the test registers a builtin at the Ed25519 program id that verifies each
-signature itself; the real precompile runs in `tests/public-record.ts`. The vectors are signed for `7dCr…`, so this
-script runs before `anchor keys sync` (CI does).
+clock under a `Clock` override, every actor rule, the setup instructions (`init_holding_v1` by the registry authority
+or a partner, and in one transaction with v1 `mint_passport` followed by an accepted relay scan), and the six
+`docs/vectors.json` `v2.scans` byte for byte at their signed `ts` (grade, void and `scan_head` after each equal the
+TypeScript generator). This LiteSVM build has no precompiles, so the test registers a builtin at the Ed25519 program
+id that verifies each signature itself; the real precompile runs in `tests/public-record.ts`. The vectors are signed
+for `7dCr…`, so this script runs before `anchor keys sync` (CI does).
 
 ## Verifiable builds
 
@@ -91,10 +92,12 @@ account readable. Behaviour that changed for existing accounts:
   program, i.e. its `Holding`): `PassHeldInAccount`. Ship it in the same upgrade as `mint_passport_v2`. v1 passports are
   not affected.
 - v1 `record_scan` is unchanged and does not fold into `Holding.scan_head`; a v1 passport takes v2 scans once
-  `init_holding_v1` created its Holding.
+  `init_holding_v1` created its Holding (`scripts/init-holdings.ts` for the passports minted before the rollout; later
+  v1 mints send it together with `mint_passport`).
 
-The public record makes flacon larger: a plain `anchor build` of P1 is 464,976 bytes (328,936 before P1; the devnet
-ProgramData holds 342,384), escrow 420,384 (417,992; devnet 432,296). Extend flacon before `anchor upgrade` (see
+The public record makes flacon larger than its devnet ProgramData (342,384 bytes): on 2026-11-19 a plain
+`anchor build` of P1 was 466,592 bytes (328,936 before P1), escrow 420,384 (devnet 432,296). Sizes change with every
+build, so the rollout computes the extension from the file it deploys and extends flacon before `anchor upgrade` (see
 [`docs/devnet.md`](../docs/devnet.md#public-record-p1-rollout)).
 
 ## flacon instructions
@@ -113,7 +116,7 @@ ProgramData holds 342,384), escrow 420,384 (417,992; devnet 432,296). Extend fla
 | `record_scan(args)` | any attester (partner for tier ≥ 3 / VAULT / PARTNER) | `[Ed25519, record_scan]`; key valid at ts and now; fresh ts; counter ≤ 0xFFFFFF; VOID and C sticky, A/B/D from the latest fill; OPENED tamper voids; every accepted scan increments `scan_count` |
 | `init_holder_config(cluster_tag, guardian, holder_key, registrar_key)` | registry authority (separate payer) | once; `cluster_tag` 1 MAINNET / 2 DEVNET / 3 LOCALNET, immutable; delays 72 h / 7 days |
 | `set_holder_config(guardian, holder_key, registrar_key, claim_delay_s, notap_delay_s)` | the current registry authority (account `registry` appended last) | delays 1 day ..= 30 days; `holder_config.authority` is re-synced to the registry authority, so a `transfer_authority` also moves this; the tag and pause stay |
-| `init_holding_v1()` | registry authority (separate payer) | the Holding of a v1 passport, state WALLET (the Core-asset owner rule applies), no commitment |
+| `init_holding_v1()` | registry authority or partner (separate payer) | the Holding of a v1 passport, state WALLET (the Core-asset owner rule applies), no commitment; the v1 mint paths send it in the `mint_passport` transaction |
 | `mint_passport_v2(serial_hash, binding_hash, commitment)` | partner or authority (separate payer) | no Core asset: `passport.asset` = the new Holding PDA (state ACCOUNT, epoch 0); `commitment` ≠ 0 |
 | `attach_seal_v2(uid_hash, kind)` | as `attach_seal` (separate payer) | same checks and order as `attach_seal` |
 | `record_scan_v2(server_key_id)` | anyone pays the fee; WALLET / PARTNER actors co-sign (`actor_signer`) | top level only; `[Ed25519 over the 256-byte FVSCAN2, record_scan_v2]`; program id and HolderConfig cluster tag signed; same key, freshness, counter, seal and void checks as `record_scan`; creates nothing; folds `holding.scan_head`; only HOLDER, WALLET and PARTNER scans change grade and void (a scan without fill reading keeps A/B/D); event `ScanRecordedV2` via `emit_cpi!` (accounts `event_authority`, `program` last) |
@@ -165,3 +168,5 @@ key_id so it can be re-run after a rotation), `scripts/server-key.ts` (add / rev
 `scripts/holder-config.ts` (init / show) and `scripts/init-holdings.ts` (`init_holding_v1` for every v1 passport,
 `--dry-run`). All honour `ANCHOR_PROVIDER_URL`
 (default devnet) and `ANCHOR_WALLET`; set `ANCHOR_PROVIDER_URL=http://127.0.0.1:8899` to work against a local validator.
+Once the cluster has a HolderConfig, `seed-passports` and `bind-chip` send `init_holding_v1` in the `mint_passport`
+transaction and add it alone to an existing passport without one (`scripts/lib/cli.ts` `mintHoldingPlan`).

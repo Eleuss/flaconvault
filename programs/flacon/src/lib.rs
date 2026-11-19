@@ -129,8 +129,8 @@ pub mod flacon {
         instructions::holder_config::handle_set_holder_config(ctx, guardian, holder_key, registrar_key, claim_delay_s, notap_delay_s)
     }
 
-    /// Registry authority only, separate payer. The Holding (state WALLET) of a passport minted with v1
-    /// `mint_passport`, so it can take `record_scan_v2` scans.
+    /// Registry authority or a registered partner, separate payer. The Holding (state WALLET) of a passport minted
+    /// with v1 `mint_passport`, so it can take `record_scan_v2` scans; v1 mints send it right after `mint_passport`.
     pub fn init_holding_v1(ctx: Context<InitHoldingV1>) -> Result<()> {
         instructions::init_holding_v1::handle_init_holding_v1(ctx)
     }

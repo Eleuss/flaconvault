@@ -71,7 +71,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 except Exception:  # noqa: BLE001
                     log.exception("arweave probe failed")
             try:
-                summary = await asyncio.to_thread(reconcile_once, db, settings, app.state.rpc)
+                # the public-record step settles relay rows through the relay loop's own client (primary + fallback)
+                summary = await asyncio.to_thread(reconcile_once, db, settings, app.state.rpc, relay_rpc=app.state.relay_rpc)
                 media = summary.get("media") or {}
                 if (summary["checked"] or summary["failed"] or summary["refreshed"]["passports"] or summary["refreshed"]["seals"]
                         or media.get("rows") or media.get("files")):
@@ -149,9 +150,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.db = db
     app.state.rpc = Rpc(settings.solana_rpc)
-    # the relay sends through the primary RPC and falls back to FV_SOLANA_RPC_FALLBACK (tests inject a fake)
-    app.state.relay_rpc = relayer.FallbackRpc(Rpc(settings.solana_rpc),
-                                              Rpc(settings.solana_rpc_fallback) if settings.solana_rpc_fallback else None)
+    # the relay sends through the primary RPC and falls back to FV_SOLANA_RPC_FALLBACK (tests inject a fake); the
+    # reconcile job's relay step (loop and POST /api/reconcile) settles rows through the same client
+    app.state.relay_rpc = relayer.relay_rpc_client(settings)
     app.state.relay = relayer.RelayState()
     # The body limit runs before routing and any body parsing (every route except POST /api/media); CORS is added last,
     # so it is the outermost layer and its headers reach the 413 too (otherwise a browser cannot read the error code).

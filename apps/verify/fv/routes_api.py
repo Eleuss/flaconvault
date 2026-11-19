@@ -254,6 +254,9 @@ def verify(body: VerifyBody, request: Request, conn=Depends(get_conn), settings:
         marks it failed); a scan without a claimed attester is confirmed by whichever wallet anchors the signature;
       * VALID answers carry `resumeToken` (GET /api/verify/{eventId}?token=… while pending); a dead seal answers
         NO_RESPONSE without a signature;
+      * a tier ≥ 2 scan (either anchor) is signed only for photos its own session uploaded: its mediaHash must be
+        staged under `nonce` (POST /api/media with that nonce), else 422 media_not_uploaded and nothing is consumed — a
+        hash is public, and naming one would otherwise let a scan get another scan's photos archived with it (D14);
       * the media upload staged under `nonce` with this mediaHash is kept, everything else staged under it is deleted.
     Public record (docs/public-record.md §9.4, §9.9): `anchor` "wallet" (the default, D1) is the v1 path above, byte for
     byte plus the keys anchor/purpose/actorKind/cluster/record; "relay" signs an FVSCAN2 (visitor CHECK, actor NONE) and
@@ -337,6 +340,10 @@ def verify(body: VerifyBody, request: Request, conn=Depends(get_conn), settings:
                 g, _ = proof.compute_grade(verdict=NONCE_INVALID, tamper=tamper, heat=heat, hum=hum, fill=body.fill)
                 return {**base, "verdict": NONCE_INVALID, "counter": None, "serial": None, "serialHash": None, "uidHash": None,
                         "sealKind": None, "sealDead": None, "grade": g, "message": tap_message(NONCE_INVALID)}
+            # 1b. the photos of a tier ≥ 2 scan: an upload of this session (staged under this nonce), never a hash it only
+            #     names (bundles and FVSCAN2 show them) — before the tap is used, so nothing is consumed
+            if body.tier >= 2 and not media_store.is_staged(settings, nonce_b.hex(), media_hash.hex()):
+                raise HTTPException(422, "media_not_uploaded")
             # 2.–5. key, CMAC, counter (advances), seal — or adopt the tap /t already verified and consumed
             if body.tapId is not None:
                 chk = adopt_tap(conn, body.tapId, body.tapToken, ts)
@@ -398,7 +405,10 @@ def verify(body: VerifyBody, request: Request, conn=Depends(get_conn), settings:
             consume_nonce(conn, nonce_b.hex(), ts)
             # the upload this scan commits to leaves staging; anything else staged under the nonce is deleted
             if body.tier >= 2:
-                media_store.promote(conn, settings, nonce_b.hex(), media_hash.hex(), ts)
+                try:
+                    media_store.promote(conn, settings, nonce_b.hex(), media_hash.hex(), ts)
+                except media_store.NotStaged as exc:     # purged since step 1b (its nonce expired meanwhile): rolled back
+                    raise HTTPException(422, "media_not_uploaded") from exc
             else:
                 media_store.discard(settings, nonce_b.hex())
             if relay:
@@ -497,7 +507,8 @@ async def media(request: Request, conn=Depends(get_conn), settings: Settings = D
     session nonce (unexpired, not yet used by /api/verify; at most 6 files per nonce). The body size is checked from
     Content-Length before anything is read, together with the free space and the byte budgets (fv.media_store: 507
     storage_full · 429 media_limited · 503 media_busy). The upload is only *staged* under its nonce: it is kept when a
-    VALID /api/verify consumes that nonce with this mediaHash, and deleted otherwise once the nonce has expired. Nothing
+    VALID /api/verify consumes that nonce with this mediaHash, and deleted otherwise once the nonce has expired; a scan
+    under another nonce cannot use it (422 media_not_uploaded: every scan uploads its own photos). Nothing
     is archived to Arweave here: the reconcile job's archiving queue does that once the scan is confirmed, and its media
     retention deletes kept frames no scan references any more (FV_MEDIA_RETENTION_S).
     """

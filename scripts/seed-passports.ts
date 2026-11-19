@@ -4,6 +4,9 @@
  *   then mark_seal_dead for every seal the seed marks `dead: true` (so the chain agrees with the verifier's VOID).
  *   All seals are attached before any is marked dead: a dead seal voids the passport, and a void passport takes no
  *   further seal.
+ *   On a cluster with the public record (its HolderConfig exists), init_holding_v1 goes in the mint transaction right
+ *   after mint_passport; an existing passport without its Holding gets init_holding_v1 alone (scripts/lib/cli.ts
+ *   mintHoldingPlan).
  * mint_passport only accepts a Metaplex Core asset owned by the issuer: a seed `asset` that is not one on this cluster
  * (or belongs to someone else, or already backs another passport) is replaced by a freshly minted Core asset owned by
  * the wallet, whose uri is the verifier's metadata JSON (<FV_VERIFY_URL>/api/passport/<serial>/metadata.json).
@@ -17,7 +20,10 @@ import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { createCoreAssetIx, fetchCoreAsset } from "./lib/core";
-import { ROOT, SERIAL_RE, UID_RE, existingAssetProblem, loadIdl, loadWallet, passportsUsingAsset, programFor, providerFor, rpcUrl, sealSeedPlan, verifyUrl } from "./lib/cli";
+import {
+  ROOT, SERIAL_RE, UID_RE, existingAssetProblem, holderConfigPdaOf, holdingState, initHoldingV1, loadIdl, loadWallet, mintHoldingPlan, mintPassportV1,
+  ownedBy, passportsUsingAsset, programFor, providerFor, rpcUrl, sealSeedPlan, verifyUrl,
+} from "./lib/cli";
 import { coreAssetUri } from "../apps/web/src/lib/escrow-rules";
 
 const sha256 = (b: Buffer) => createHash("sha256").update(b).digest();
@@ -37,6 +43,9 @@ async function main() {
   const idl = loadIdl("flacon");
   const [registryPda] = PublicKey.findProgramAddressSync([Buffer.from("registry")], programId);
   console.log(`rpc ${url}\nwallet ${wallet.toBase58()} (${(await connection.getBalance(wallet)) / 1e9} SOL)\nprogram ${programId.toBase58()}`);
+  if (!ownedBy(await connection.getAccountInfo(holderConfigPdaOf(programId)), programId)) {
+    console.log("no holder_config on this cluster: no init_holding_v1 (scripts/init-holdings.ts creates the Holdings after the public-record rollout)");
+  }
 
   const seed = JSON.parse(fs.readFileSync(path.join(ROOT, "docs/seed/passports.json"), "utf8")) as { passports: SeedPassport[] };
   for (const p of seed.passports) {
@@ -54,6 +63,8 @@ async function main() {
     const bindingHash = sha256(Buffer.concat([Buffer.from(p.serial, "utf8"), Buffer.from(p.batch ?? "", "utf8"), firstUidHash]));
 
     const existing = await passportAccount.fetchNullable(passportPda);
+    const holding = await holdingState(connection, programId, passportPda);
+    const holdingPlan = mintHoldingPlan({ ...holding, passport: passportPda, existing });
     if (!existing) {
       let asset: PublicKey | null = null;
       try { asset = p.asset ? new PublicKey(p.asset) : null; } catch { asset = null; }
@@ -69,13 +80,16 @@ async function main() {
         asset = assetKp.publicKey;
         console.log(`${p.serial}  core asset  ${asset.toBase58()}  ${sig}`);
       }
-      const sig = await program.methods
-        .mintPassport(Array.from(serialHash), Array.from(bindingHash), asset)
-        .accountsStrict({ registry: registryPda, passport: passportPda, issuer: wallet, systemProgram: SystemProgram.programId, coreAsset: asset })
-        .rpc();
-      console.log(`${p.serial}  mint_passport  ${passportPda.toBase58()}  ${sig}`);
+      const withHolding = holdingPlan === "with_mint";
+      const mint = await mintPassportV1(program, { registry: registryPda, passport: passportPda, serialHash, bindingHash, asset, wallet, withHolding });
+      const sig = await mint.rpc();
+      console.log(`${p.serial}  mint_passport${withHolding ? " + init_holding_v1" : ""}  ${passportPda.toBase58()}  ${sig}`);
     } else {
       console.log(`${p.serial}  mint_passport  skipped (exists, grade ${existing.grade}, scans ${existing.scanCount}${existing.void ? ", void" : ""})`);
+      if (holdingPlan === "alone") {
+        const sig = await initHoldingV1(program, { registry: registryPda, passport: passportPda, wallet }).rpc();
+        console.log(`${p.serial}  init_holding_v1 (its Holding was missing)  ${holding.holding.toBase58()}  ${sig}`);
+      }
     }
     const sealPdaOf = (uid: string) => PublicKey.findProgramAddressSync([Buffer.from("seal"), sha256(Buffer.from(uid, "hex"))], programId)[0];
     // every seal is attached before any is marked dead (a dead seal voids the passport, which then takes no new seal)

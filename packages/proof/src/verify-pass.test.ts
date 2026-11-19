@@ -1,7 +1,8 @@
 /**
  * verify-pass against a fake RPC built from docs/vectors.json `v2` (no network): a complete history matches; a
  * missing or reordered transaction does not; forged entries (wrong cluster, wrong program id, unknown key, key not
- * valid at ts, bad signature) are not counted; record_scan_v2 inside a CPI is ignored.
+ * valid at ts, bad signature) are not counted; a key revoked right after a scan the program accepted (dated ahead of
+ * the cluster clock) still covers it; record_scan_v2 inside a CPI is ignored.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -17,6 +18,7 @@ import {
   foldScanHeads, hexToBytes, bytesToHex, i64le, u16le, u32le, concatBytes, sha256Bytes, utf8, serialHash, pdaHolding,
   pdaPassport, pdaRegistry, pdaSeal, verifyPass, formatVerifyPass, jsonRpcPassClient, READ_ONLY_RPC_METHODS,
   RECORD_SCAN_V2_ACCOUNTS, RECORD_SCAN_V2_DISCRIMINATOR, VERDICT_COMPLETE, VerifyPassError, RpcError, ED25519_PROGRAM_ID,
+  MAX_SCAN_TS_SKEW_S, serverKeyCouldAcceptAt, serverKeyValidAt,
   type PassRpc, type RpcAccountInfo, type RpcSignatureInfo, type RpcTransaction, type ScanMessageV2Fields,
 } from "./index.ts";
 
@@ -252,8 +254,9 @@ test("forged entries are not counted; the folded history still matches", async (
 });
 
 test("key validity at ts, wrong cluster for every scan", async () => {
-  // key 1 expired at 1790000350: the scans at 400, 500 and 600 are not FlaconVault-signed for this record
-  const r = await run(fakeRpc({ txs: history(), keys: [{ ...testKey, to: 1790000350 }] }));
+  // key 1 closed with valid_to 1789999749: the program accepted ts ≤ clock + 600 at a clock ≤ valid_to + 1, so a scan
+  // under it is dated 1790000350 at the latest; the scans at 400, 500 and 600 are not FlaconVault-signed for this record
+  const r = await run(fakeRpc({ txs: history(), keys: [{ ...testKey, to: 1790000350 - MAX_SCAN_TS_SKEW_S - 1 }] }));
   assert.deepEqual([r.complete, r.found], [false, 3]);
   assert.deepEqual(r.rejected.map((x) => x.reason), Array(3).fill("server key 1 was not valid at ts", 0).map((s, i) => `${s} ${1790000400 + i * 100}`));
   const early = await run(fakeRpc({ txs: history(), keys: [{ ...testKey, from: 1790000150 }] }));
@@ -262,6 +265,61 @@ test("key validity at ts, wrong cluster for every scan", async () => {
   assert.deepEqual([otherKey.found, otherKey.rejected[0].reason], [0, "server key 1 has another public key"]);
   const mainnet = await run(fakeRpc({ txs: history() }), Cluster.MAINNET);
   assert.deepEqual([mainnet.complete, mainnet.found, mainnet.rejected.length], [false, 0, 6]);
+});
+
+test("a key revoked right after a scan dated ahead of the cluster clock: the folded scan still counts", async () => {
+  // The last scan (ts 1790000600, the verifier's clock) landed while the cluster clock read 1790000580 (20 s behind),
+  // and the owner revoked key 1 at cluster clock 1790000590: valid_to = 1790000589 < ts. The program accepted the scan
+  // (key valid at ts and at 1790000580, |ts − clock| ≤ 600) and folded it into scan_head for good, so the record is
+  // complete; reading the revoked key as "not valid at ts" made it "found 5, holding says 6" forever.
+  const last = Number(parseScanMessageV2(msgs[5]).ts);
+  assert.equal(last, 1790000600);
+  const revokedAfter = await run(fakeRpc({ txs: history(), keys: [{ ...testKey, to: last - 11 }] }));
+  assert.deepEqual([revokedAfter.complete, revokedAfter.found, revokedAfter.rejected.length], [true, 6, 0]);
+  assert.equal(revokedAfter.verdict, VERDICT_COMPLETE);
+  // the latest ts any clock could have accepted under the key: revoked in the same second as the scan landed, signed
+  // 600 s ahead of that clock (valid_to + 601); one second later the scan cannot be the program's
+  const edge = await run(fakeRpc({ txs: history(), keys: [{ ...testKey, to: last - MAX_SCAN_TS_SKEW_S - 1 }] }));
+  assert.deepEqual([edge.complete, edge.found], [true, 6]);
+  const past = await run(fakeRpc({ txs: history(), keys: [{ ...testKey, to: last - MAX_SCAN_TS_SKEW_S - 2 }] }));
+  assert.deepEqual([past.complete, past.found, past.rejected.map((x) => x.reason)], [false, 5, [`server key 1 was not valid at ts ${last}`]]);
+  assert.equal(past.verdict, "incomplete or out of order (found 5, holding says 6)");
+  // valid_from never moves, so it has no slack
+  const first = Number(parseScanMessageV2(msgs[0]).ts);
+  const late = await run(fakeRpc({ txs: history(), keys: [{ ...testKey, from: first + 1 }] }));
+  assert.deepEqual([late.complete, late.found, late.rejected[0].reason], [false, 5, `server key 1 was not valid at ts ${first}`]);
+});
+
+test("serverKeyCouldAcceptAt covers every scan record_scan_v2 accepted, under the key as any later revocation left it", () => {
+  // check_key_and_freshness: valid at ts and at the clock c (registry of that moment), |ts − c| ≤ MAX_SCAN_TS_SKEW_S.
+  // revoke_server_key at a clock r ≥ c: allowed while valid_to == 0 or valid_to ≥ r, then valid_to = max(r − 1, 1).
+  const S = MAX_SCAN_TS_SKEW_S, T = 1_790_000_000;
+  const isValidAt = (from: number, to: number, t: number) => t >= from && (to === 0 || t <= to);
+  const key = (from: number, to: number) => ({ keyId: 1, pubkey: serverPub, validFrom: BigInt(from), validTo: BigInt(to) });
+  let accepted = 0;
+  for (const [from, to] of [[0, 0], [T - 700, 0], [0, T + 300], [T - 100, T + 900]]) {
+    for (let c = T - 1400; c <= T + 1400; c++) {
+      if (!isValidAt(from, to, c)) continue;
+      for (const ts of [c - S - 1, c - S, c - 1, c, c + 1, c + S, c + S + 1]) {
+        if (!isValidAt(from, to, ts) || Math.abs(ts - c) > S) continue; // the program refused it
+        accepted++;
+        assert.ok(serverKeyCouldAcceptAt(key(from, to), BigInt(ts)), `key ${from}..${to}, clock ${c}, ts ${ts}`);
+        for (const r of [c, c + 1, c + S, c + 3 * S]) {
+          if (to !== 0 && to < r) continue; // ServerKeyAlreadyRevoked
+          assert.ok(serverKeyCouldAcceptAt(key(from, Math.max(r - 1, 1)), BigInt(ts)), `key ${from}..${to}, clock ${c}, ts ${ts}, revoked at ${r}`);
+        }
+      }
+    }
+  }
+  assert.ok(accepted > 10_000);
+  // the bounds themselves; an open key is ServerKey::is_valid_at
+  assert.deepEqual([T + 600, T + 601, T + 602].map((ts) => serverKeyCouldAcceptAt(key(0, T), BigInt(ts))), [true, true, false]);
+  assert.deepEqual([T - 1, T, T + 10 ** 9].map((ts) => serverKeyCouldAcceptAt(key(T, 0), BigInt(ts))), [false, true, true]);
+  for (const ts of [T - 1, T, T + 10 ** 9]) assert.equal(serverKeyCouldAcceptAt(key(T, 0), BigInt(ts)), serverKeyValidAt(key(T, 0), BigInt(ts)));
+  // the skew is the program's constant (IDL)
+  const idl = JSON.parse(readFileSync(new URL("./idl/flacon.json", import.meta.url), "utf8"));
+  const skew = (idl.constants as { name: string; value: string }[]).find((x) => x.name === "MAX_SCAN_TS_SKEW_S");
+  assert.equal(Number(skew?.value), MAX_SCAN_TS_SKEW_S);
 });
 
 test("record_scan_v2 inside a CPI is ignored; only top-level instructions count", async () => {

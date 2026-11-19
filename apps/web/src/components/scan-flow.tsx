@@ -8,14 +8,14 @@ import { Indicator, Role, Tier, NONCE_TTL_S } from "@flaconvault/proof";
 import { combineReadings, type CardReading, type FrameLike, type HeatFieldsConfig } from "@flaconvault/vision";
 import { VisionClient, frameFromSource } from "@/vision/client";
 import { api, parseTagUrl, sha256Hex, signedAttester, signedScanSummary, uploadMediaOnce, verifyBody, type Preview, type Session, type SimTag, type TagParams, type UploadedMedia, type VerifyResult } from "@/lib/verify-api";
-import { adoptDeadline, scanSession, scanUrlFor, secondsLeft, sessionClock, tapHandoff, type SessionClock } from "@/lib/handoff";
+import { adoptDeadline, scanSession, scanUrlFor, secondsLeft, sessionClock, tapHandoff, verifierHasPublicRecord, type SessionClock } from "@/lib/handoff";
 import { buildRecordScanTx, flaconProgram, programId } from "@/lib/flacon";
 import { creatingSignature, sendAsV0 } from "@/lib/send-tx";
 import { AnchorRefused, anchorScan, needsOwnScanConfirmation } from "@/lib/anchor-scan";
-import { ADVANCED_INTRO, ADVANCED_PLACE_NOTE, cameraOn, escrowScanWarning, initialRole, iosSignHint, partnerWalletGate, roleChoices, scanPath, stepAfterVerify, timedStep, uncertifiedScanLink, type ScanStep } from "@/lib/scan-steps";
+import { ADVANCED_INTRO, ADVANCED_PLACE_NOTE, WALLET_PLACE_NOTE, cameraOn, escrowScanWarning, initialRole, iosSignHint, partnerWalletGate, recordStatusAfterPoll, roleChoices, scanPath, stepAfterSessionStart, stepAfterVerify, timedStep, uncertifiedScanLink, type ScanStep } from "@/lib/scan-steps";
 import { ApiError, friendly } from "@/lib/errors";
 import { ADVANCED, NOT_SAVED, ORDER_SCAN_NOTE, PLACE_NOTE, SAVE_BUTTON, SAVING, asRecord, isTerminalRecord, scanRecordPollDelay, startRecordPoll, type PublicRecord } from "@/lib/public-record";
-import { PROGRAM_ID, WALLETCONNECT_PROJECT_ID } from "@/lib/config";
+import { PROGRAM_ID, PUBLIC_VERIFY_URL, WALLETCONNECT_PROJECT_ID } from "@/lib/config";
 import { demoMode } from "@/lib/demo";
 import { effectiveVerdict, gradeLetter, gradeSentence, indicatorText, passportHref, roleLabel, short, txUrl, verdictText } from "@/lib/format";
 import { GradeMark, Lamp, Pill } from "./badges";
@@ -114,11 +114,22 @@ export function ScanFlow() {
   /** certified flow: the partner wallet must be connected before the server signs (lib/scan-steps.ts) */
   const walletGate = partnerWalletGate(tier, role, { connected: wallet.connected && !!wallet.publicKey, ios, injectedWallet, walletConnect: !!WALLETCONNECT_PROJECT_ID });
   /**
-   * The consumer path: no wallet, "Save to the public record" (tier ≤ 2, owner/seller/buyer). The wallet flow stays
-   * under "Advanced"; certified scans and an order's shipping or receipt scan (the order page links with
-   * `flow=wallet`) keep it directly. `walletFlow`: this scan goes (or went) the wallet's way (lib/scan-steps.ts).
+   * Does the verifier have the public record (its /health reports `relay`)? Asked once per page load; null until it
+   * answers, false when it has none or does not answer in time (lib/handoff.ts verifierHasPublicRecord).
    */
-  const { relay, walletFlow } = scanPath({ certified, flow: params.get("flow"), tier, role, step, txSig });
+  const [publicRecord, setPublicRecord] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    verifierHasPublicRecord(PUBLIC_VERIFY_URL).then((yes) => { if (alive) setPublicRecord(yes); });
+    return () => { alive = false; };
+  }, []);
+  /**
+   * The consumer path: no wallet, "Save to the public record" (tier ≤ 2, owner/seller/buyer), only from a verifier
+   * with the public record. The wallet flow stays under "Advanced"; certified scans and an order's shipping or receipt
+   * scan (the order page links with `flow=wallet`) keep it directly, and so does every scan when the verifier has no
+   * public record. `walletFlow`: this scan goes (or went) the wallet's way (lib/scan-steps.ts).
+   */
+  const { relay, walletFlow } = scanPath({ certified, flow: params.get("flow"), tier, role, step, txSig, publicRecord });
   const totalSteps = walletFlow ? 7 : 6;
 
   /**
@@ -135,17 +146,31 @@ export function ScanFlow() {
   }, [scanUrl]);
 
   // ---- 1. session -------------------------------------------------------
+  /**
+   * "Start session", "Restart", "New scan": the scan on screen stays until the new session is there (its step renders
+   * nothing without its data), then the page starts from scratch at the tap step. A session that cannot be started
+   * leaves the session step with its "Start session" button and the error, never a step emptied by the reset.
+   */
   const startSession = useCallback(async () => {
-    setError(null); setTag(null); setPreview(null); setFrames(null); setReading(null); setVerify(null); setTxSig(null);
-    setRecord(null); setRecordGone(null);
-    // a resumed scan (?resume=) may have set tier and role: a new scan starts from the page's own defaults again
-    setTierOverride(null); setRole(defaultRole); setNfcState(""); setDeadSerial("");
-    setResumedScan(false); setOwnScan(false);
+    setError(null);
+    const reset = () => {
+      setTag(null); setPreview(null); setFrames(null); setReading(null); setVerify(null); setTxSig(null);
+      setRecord(null); setRecordGone(null);
+      // a resumed scan (?resume=) may have set tier and role: a new scan starts from the page's own defaults again
+      setTierOverride(null); setRole(defaultRole); setNfcState(""); setDeadSerial("");
+      setResumedScan(false); setOwnScan(false);
+    };
     try {
       const s = await api.session();
+      reset();
       adoptSession(s);
-      setStep("tap");
-    } catch (e) { setError(friendly(e)); }
+      setStep(stepAfterSessionStart(true));
+    } catch (e) {
+      // the old session is given up as well: no countdown or "Session expired" card over the session step
+      reset(); setSession(null); setClock(null);
+      setStep(stepAfterSessionStart(false));
+      setError(friendly(e));
+    }
   }, [defaultRole, adoptSession]);
   useEffect(() => {
     vision.current = new VisionClient();
@@ -387,6 +412,8 @@ export function ScanFlow() {
    */
   const requestSignature = async (anchor: "relay" | "wallet") => {
     if (!tag || !session) return;
+    // the relay button exists only while `relay` holds (a verifier with the public record): never ask without it
+    if (anchor === "relay" && !relay) return;
     // a certified scan is signed for the connected wallet: without the partner wallet it would be refused (not_partner)
     if (anchor === "wallet" && walletGate) { setError(walletGate.text); return; }
     setBusy(anchor === "relay" ? "relay" : "verify"); setError(null);
@@ -422,7 +449,8 @@ export function ScanFlow() {
 
   // ---- record step: the public record (relay) ---------------------------
   // 2 s for 2 minutes, then 10 s up to 10 minutes, until the record is terminal (spec §10.3); a 404
-  // (record_not_found) ends it with its message. Started once per signed scan.
+  // (record_not_found) ends it with its message. Started once per signed scan. Polling that ends without a terminal
+  // record clears the pending line: only its text stays (lib/scan-steps.ts recordStatusAfterPoll).
   useEffect(() => {
     if (step !== "record" || !verify?.eventId || !verify.resumeToken) return;
     const first = asRecord(verify.record);
@@ -433,7 +461,7 @@ export function ScanFlow() {
       delay: scanRecordPollDelay,
       onRecord: setRecord,
       stopOn: (e) => e instanceof ApiError && e.status === 404,
-      onStop: (e) => setRecordGone(friendly(e)),
+      onEnd: (end, e) => { setRecord(null); setRecordGone(recordStatusAfterPoll(end, e)); },
     });
   }, [step, verify]);
 
@@ -672,7 +700,7 @@ export function ScanFlow() {
                 <input value={country} onChange={(e) => setCountry(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 2))} placeholder="DE" className="w-14 rounded-full border border-line bg-surface px-2 py-0.5 text-sm" aria-label="Country (optional)" />
                 <input value={city} onChange={(e) => setCity(e.target.value.slice(0, 80))} placeholder="Place (rough, optional)" className="flex-1 rounded-full border border-line bg-surface px-3 py-0.5 text-sm" aria-label="Place (optional)" />
               </div>
-              <p className="mt-1 text-xs text-muted">{relay ? PLACE_NOTE : "Optional. Country and place are not in the Solana transaction, but they are part of the public scan record and its permanent archive. No GPS."} <Link href="/privacy" className="link">Privacy</Link></p>
+              <p className="mt-1 text-xs text-muted">{relay ? PLACE_NOTE : WALLET_PLACE_NOTE} <Link href="/privacy" className="link">Privacy</Link></p>
             </div>
           </div>
           <div className="mt-6 flex flex-wrap gap-3">
@@ -779,9 +807,9 @@ export function ScanFlow() {
             <div className="mt-6 flex flex-wrap gap-2"><Pill tone={heatTxt.tone}>{heatTxt.label}: {heatTxt.detail}</Pill><Pill tone={humTxt.tone}>{humTxt.label}: {humTxt.detail}</Pill></div>
           )}
           <div className="card mt-6 p-4">
-            {record && <RecordLine record={record} serial={verify.serial} nowS={Date.now() / 1000} />}
+            {record && <RecordLine record={record} serial={verify.serial} />}
             {!record && !recordGone && <p className="text-sm text-muted">{NOT_SAVED}</p>}
-            {recordGone && <p className="mt-1 text-sm text-muted">{recordGone}</p>}
+            {!record && recordGone && <p className="text-sm text-muted">{recordGone}</p>}
           </div>
           <TestPhaseNotice className="mt-4" />
           <div className="mt-8 flex flex-wrap gap-3">

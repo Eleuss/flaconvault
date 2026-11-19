@@ -126,6 +126,14 @@ test("the new verifier codes read clearly", async () => {
   }
 });
 
+test("media_not_uploaded (422 on /api/verify): the photos did not reach this session, so photograph again and retry", async () => {
+  const e = await apiError("/api/verify", res(422, { detail: "media_not_uploaded" }));
+  assert.equal(e.code, "media_not_uploaded");
+  assert.equal(friendly(e), "The card photos did not reach the server with this scan session. Photograph the card again, then try again.");
+  // not the generic 422 texts of /api/verify ("needs a photo", "Restart the scan"): nothing was consumed
+  assert.doesNotMatch(friendly(e), /needs a photo|Restart the scan|rejected the scan data/);
+});
+
 test("403 admin token required (dev reset, reconcile, admin routes) reads as text, other 403s keep their detail", async () => {
   for (const path of ["/api/dev/reset", "/api/reconcile", "/api/admin/purge-seed"]) {
     const e = await apiError(path, new Response(JSON.stringify({ detail: "admin token required" }), { status: 403 }));

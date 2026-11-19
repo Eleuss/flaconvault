@@ -6,14 +6,13 @@ import hashlib
 from solders.pubkey import Pubkey
 
 from fv import proof
-from tests.conftest import ADMIN, PROGRAM_ID, registry_pda, sig
+from tests.conftest import ADMIN, MEDIA, PROGRAM_ID, registry_pda, sig, with_photo
 from tests.test_chain import registry_bytes
 
 SERIAL = "SN-2026-000001"
 PARTNER = "PxPGKQsGTYE2ti3awtEae4Yjk64NF2tcxQN1oDchhyR"          # seeded label "Parfümerie X, Düsseldorf"
 SELLER = "7GhXQ2fV4d1eo9yq1vQdD9Zk9sHkYd8qz2pM4hN6FaK2"
 MALLORY = str(Pubkey.from_bytes(hashlib.sha256(b"mallory").digest()))
-MEDIA = "0x358bd5e49a401b60105ca4fe2f6fd4563c617295f4704debe35da7844cd5b380"
 
 
 def _registry(c, partners):
@@ -29,7 +28,7 @@ def _scan(c, uid, *, status=200, **over):
             "indicators": {"heat": 0, "humidity": 0, "uv": 3}, "heatLevels": [1, 1, 0, 0, 0, 0], "fill": 92, "mediaHash": MEDIA,
             "attester": SELLER, "platform": "SIMULATOR"}
     body.update(over)
-    r = c.post("/api/verify", json=body)
+    r = c.post("/api/verify", json=with_photo(c, body))
     assert r.status_code == status, r.text
     return r.json()
 

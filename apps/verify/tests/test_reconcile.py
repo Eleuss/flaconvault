@@ -7,11 +7,10 @@ from solders.pubkey import Pubkey
 import fv.reconcile as rc
 from fv import proof
 from fv.chain import pda_passport, pda_registry, pda_scan, pda_seal
-from tests.conftest import ADMIN, PROGRAM_ID
+from tests.conftest import ADMIN, MEDIA, PROGRAM_ID, with_photo
 from tests.test_chain import ISSUER, SELLER, passport_bytes, registry_bytes, scan_proof_bytes, seal_bytes
 
 SERIAL = "SN-2026-000001"
-MEDIA = "0x358bd5e49a401b60105ca4fe2f6fd4563c617295f4704debe35da7844cd5b380"
 
 
 def _scan(client, uid, **over):
@@ -21,7 +20,7 @@ def _scan(client, uid, **over):
             "indicators": {"heat": 0, "humidity": 0, "uv": 3}, "heatLevels": [1, 1, 0, 0, 0, 0], "fill": 92, "mediaHash": MEDIA,
             "attester": str(SELLER), "platform": "SIMULATOR"}
     body.update(over)
-    v = client.post("/api/verify", json=body).json()
+    v = client.post("/api/verify", json=with_photo(client, body)).json()
     assert v["verdict"] == "VALID", v
     return v
 

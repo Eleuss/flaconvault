@@ -56,7 +56,7 @@ from solders.pubkey import Pubkey
 from solders.transaction import Transaction
 
 from fv import proof
-from fv.chain import (DecodeError, RpcError, decode_holder_config, decode_holding, decode_passport, decode_seal,
+from fv.chain import (DecodeError, Rpc, RpcError, decode_holder_config, decode_holding, decode_passport, decode_seal,
                       pda_event_authority, pda_holder_config, pda_holding, pda_passport, pda_registry, pda_seal,
                       program_pubkey)
 from fv.config import Settings
@@ -315,16 +315,20 @@ def _relay_detail(row: dict) -> dict:
 
 
 def _finish(conn, row: dict, status: str, reason: str | None, now: int, *, lamports: int | None = None,
-            expect: str = "queued", keep_sig: bool = False) -> bool:
+            expect: str = "queued", keep_sig: bool = False, sig: str | None = None) -> bool:
     """
-    Move a row to a terminal state if it is still in `expect`, and settle its event. False if it moved meanwhile. The
-    attempt's signature is kept only for a transaction that landed (`keep_sig`: it failed on chain).
+    Move a row to a terminal state if it is still in `expect` (and, with `sig`, still on that attempt), and settle its
+    event. False if it moved meanwhile. The attempt's signature is kept only for a transaction that landed (`keep_sig`:
+    it failed on chain).
     """
     sets = "status=?, reason=?, updated_at=?" + (", lamports=?" if lamports is not None else "")
     args: list[Any] = [status, reason, int(now)] + ([int(lamports)] if lamports is not None else [])
     if not keep_sig:
         sets += ", sig=NULL, last_valid_height=NULL"
-    cur = conn.execute(f"UPDATE relay_tx SET {sets} WHERE id=? AND status=?", (*args, row["id"], expect))
+    where, keys = "id=? AND status=?", [row["id"], expect]
+    if sig is not None:
+        where, keys = where + " AND sig=?", keys + [sig]
+    cur = conn.execute(f"UPDATE relay_tx SET {sets} WHERE {where}", (*args, *keys))
     if cur.rowcount != 1:
         return False
     settle_event(conn, get_row(conn, row["id"]), now)
@@ -561,6 +565,19 @@ class FallbackRpc:
         return call
 
 
+def relay_rpc_client(settings: Settings, primary=None) -> FallbackRpc:
+    """
+    The relay's RPC client: `primary` (default: a client of FV_SOLANA_RPC) with FV_SOLANA_RPC_FALLBACK, if set, as its
+    fallback and as the second status source (_status_sources); a FallbackRpc is returned as it is. The relay loop
+    (app.state.relay_rpc) and the reconcile job's relay step both settle rows through it, so a configured fallback is
+    asked before an attempt is given up (§9.5) whichever of them reaches a row first.
+    """
+    if isinstance(primary, FallbackRpc):
+        return primary
+    return FallbackRpc(primary if primary is not None else Rpc(settings.solana_rpc),
+                       Rpc(settings.solana_rpc_fallback) if settings.solana_rpc_fallback else None)
+
+
 # ---------- loop state ----------
 
 @dataclass
@@ -624,8 +641,8 @@ def _paid_fee(rpc, sig: str) -> int | None:
 def _status_sources(rpc) -> tuple[Any, Any | None]:
     """
     (primary, fallback) for status reads. The primary (FV_SOLANA_RPC) is the source with the full transaction history;
-    the fallback may keep none, so its "not found" alone never means "lost". A client that is not a FallbackRpc (the
-    reconcile job's primary RPC, a test fake) is the primary alone.
+    the fallback may keep none, so its "not found" alone never means "lost". A client that is not a FallbackRpc (a test
+    fake) is the primary alone; the relay loop and the reconcile job both pass relay_rpc_client().
     """
     if isinstance(rpc, FallbackRpc):
         return rpc.primary, rpc.fallback
@@ -978,16 +995,23 @@ def process_row(conn, settings: Settings, rpc, state: RelayState | None, row: di
         # goes back to queued (this copy never left the node) and _end looks them up before it is rejected
         settle_later = bool(program) and bool(earlier_attempts(row))
         with transaction(conn):
-            _charge(conn, now, -fee)
+            # only while the row is still `sending` this attempt: the reconcile job (confirm_sending, its own thread) may
+            # have given the attempt up meanwhile — requeued or expired the row and refunded the estimate itself
             if program and not settle_later:
-                _finish(conn, row, "failed", "rejected", int(now), lamports=0, expect="sending")
+                moved = _finish(conn, row, "failed", "rejected", int(now), lamports=0, expect="sending", sig=sig)
             else:
                 # the node answered with an error: this copy never left it, so no earlier attempt is added (a row without
                 # one was not sent: an adoption of its tap may still replace it)
                 delay = 0 if settle_later else RETRY_BACKOFF_S[min(int(row["attempts"] or 0), len(RETRY_BACKOFF_S) - 1)]
-                conn.execute("""UPDATE relay_tx SET status='queued', sig=NULL, last_valid_height=NULL, lamports=0, due_at=?,
-                                updated_at=? WHERE id=? AND status='sending'""", (int(now) + delay, int(now), row["id"]))
+                moved = conn.execute("""UPDATE relay_tx SET status='queued', sig=NULL, last_valid_height=NULL, lamports=0,
+                                        due_at=?, updated_at=? WHERE id=? AND status='sending' AND sig=?""",
+                                     (int(now) + delay, int(now), row["id"], sig)).rowcount == 1
+            if moved:
+                _charge(conn, now, -fee)                # the estimate of a copy that never left the node, refunded once
         log.warning("relay: row %s (%s) not sent: %s", row["id"], row["ref"], program or _code(exc))
+        if not moved:
+            log.info("relay: row %s (%s) was settled meanwhile (its attempt given up elsewhere)", row["id"], row["ref"])
+            return "moved"
         if settle_later:
             fresh = get_row(conn, row["id"])
             if not fresh or fresh["status"] != "queued":

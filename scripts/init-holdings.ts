@@ -3,7 +3,9 @@
  * `init_holding_v1` for every passport the flacon program holds that has no Holding yet, so every existing pass can
  * take `record_scan_v2` scans. The registry authority (ANCHOR_WALLET) signs and pays the rent of each Holding
  * (8 + 221 bytes). Idempotent: passports with a Holding and v2 passports are skipped, so it can be re-run after a
- * failure. Run it after the program upgrade and `init_holder_config` (steps 1 and 2).
+ * failure. Run it after the program upgrade and `init_holder_config` (steps 1 and 2). Passports minted once the
+ * HolderConfig exists get their Holding in the mint transaction (the partner console, scripts/bind-chip.ts,
+ * scripts/seed-passports.ts), so this script is for the passports minted before.
  *
  * Usage: npx tsx scripts/init-holdings.ts [--dry-run]     (ANCHOR_PROVIDER_URL, default devnet; ANCHOR_WALLET)
  *   --dry-run   list what would be initialised, send nothing

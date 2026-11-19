@@ -1,8 +1,12 @@
 //! `init_holding_v1` (docs/public-record.md §7.3): the Holding of a passport minted with v1 `mint_passport`, so it can
-//! take `record_scan_v2` scans. Registry authority signs, a separate payer pays (the owner runs
-//! `scripts/init-holdings.ts` once per devnet passport). A v1 passport points at a Core asset (or, for very old ones, a
-//! placeholder), so its Holding starts in state WALLET: the Core-asset owner rule applies, no commitment. A v2
-//! passport already has its Holding from `mint_passport_v2`, so `init` fails there.
+//! take `record_scan_v2` scans. The registry authority or a registered partner signs (the check `mint_passport` applies
+//! to its issuer), a separate payer pays. Every v1 mint path (the partner console, `scripts/bind-chip.ts`,
+//! `scripts/seed-passports.ts`) sends it in the same transaction right after `mint_passport`, so a passport minted after
+//! the public-record rollout takes relay scans at once; `scripts/init-holdings.ts` covers the passports minted before.
+//! A v1 passport points at a Core asset (or, for very old ones, a placeholder), so its Holding starts in state WALLET:
+//! the Core-asset owner rule applies, no commitment. The content is fixed (nothing the signer chooses), so letting any
+//! current partner create it gives nobody power over a passport. A v2 passport already has its Holding from
+//! `mint_passport_v2`, so `init` fails there.
 
 use anchor_lang::prelude::*;
 
@@ -30,7 +34,7 @@ pub struct InitHoldingV1<'info> {
         bump
     )]
     pub holding: Account<'info, Holding>,
-    /// Must be the registry authority.
+    /// The registry authority or a registered partner (as the issuer of `mint_passport`).
     pub authority: Signer<'info>,
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -39,7 +43,7 @@ pub struct InitHoldingV1<'info> {
 
 pub fn handle_init_holding_v1(ctx: Context<InitHoldingV1>) -> Result<()> {
     require!(
-        ctx.accounts.registry.is_authority(&ctx.accounts.authority.key()),
+        ctx.accounts.registry.is_partner_or_authority(&ctx.accounts.authority.key()),
         FlaconError::Unauthorized
     );
     let passport = ctx.accounts.passport.key();

@@ -83,16 +83,31 @@ export const isTerminalRecord = (r: Pick<PublicRecord, "state">): boolean => r.s
 /** Where "view record" leads: the scan's row in the passport history. */
 export const recordHref = (serial: string, eventId: number) => `/p/${encodeURIComponent(serial)}#e${eventId}`;
 
+/**
+ * When the verifier sends a TAP: tap ts + 185 s (apps/verify fv/relayer.py TAP_DUE_DELAY_S = ADOPT_WINDOW_S + 5), once
+ * no scan session can adopt the tap any more.
+ */
+export const TAP_SEND_DELAY_S = 185;
+
+/**
+ * Whether the /t line of a pending TAP still says "within about 3 minutes": until tap ts + TAP_SEND_DELAY_S on the
+ * server's clock (`tapTs` and `nowS` in unix s). Decided from the tap's own time, never from `dueAt`, which the relayer
+ * also moves for its retry pauses; and one way: `left` (the line has already left it) keeps it off for good.
+ */
+export function tapSendsSoon(r: Pick<PublicRecord, "state" | "purpose"> | null, tapTs: number | null | undefined, nowS: number, left = false): boolean {
+  return !left && !!r && r.state === "pending" && r.purpose === "TAP" && typeof tapTs === "number" && nowS < tapTs + TAP_SEND_DELAY_S;
+}
+
 export type RecordLine =
   | { kind: "pending"; text: string; soon: boolean }
   | { kind: "recorded"; text: string; link: { label: string; href: string } | null }
   | { kind: "over_cap" | "failed"; text: string };
 /**
- * The line under a scan result. A TAP waits for the 180 s in which a scan session may still adopt it, so while its
- * `dueAt` (verifier clock, unix s) lies ahead it says "within about 3 minutes"; then, and for every other purpose,
- * "Saving…". `serial` links "view record" to the history row (no link without serial or event).
+ * The line under a scan result. A pending TAP says "within about 3 minutes" while `soon` (tapSendsSoon: the /t page,
+ * which knows the tap's time); then, and for every other purpose, "Saving…". `serial` links "view record" to the
+ * history row (no link without serial or event).
  */
-export function recordLine(r: PublicRecord, serial: string | null | undefined, nowS: number): RecordLine {
+export function recordLine(r: PublicRecord, serial: string | null | undefined, soon = false): RecordLine {
   switch (r.state) {
     case "recorded":
       return { kind: "recorded", text: SAVED, link: serial && r.eventId != null ? { label: VIEW_RECORD, href: recordHref(serial, r.eventId) } : null };
@@ -101,8 +116,8 @@ export function recordLine(r: PublicRecord, serial: string | null | undefined, n
     case "over_cap": return { kind: "over_cap", text: r.reason === "seal_daily" ? OVER_CAP : NOT_SAVED };
     case "failed": return { kind: "failed", text: NOT_SAVED };
     default: {
-      const soon = r.purpose === "TAP" && typeof r.dueAt === "number" && r.dueAt > nowS;
-      return { kind: "pending", text: soon ? SAVING_TAP_SOON : SAVING, soon };
+      const tapSoon = soon && r.purpose === "TAP";
+      return { kind: "pending", text: tapSoon ? SAVING_TAP_SOON : SAVING, soon: tapSoon };
     }
   }
 }
@@ -115,6 +130,13 @@ export const scanRecordPollDelay = (elapsedMs: number): number | null => (elapse
 /** The /t result: every 5 s, at most 10 minutes. */
 export const tapRecordPollDelay = (elapsedMs: number): number | null => (elapsedMs < 10 * MIN ? 5000 : null);
 
+/**
+ * How polling ended without a terminal record: `gone` — the record is null (none any more, e.g. a TAP replaced when a
+ * wallet scan adopted its tap); `timeout` — the schedule ran out while the record was still pending or unreadable;
+ * `stopped` — an error `stopOn` accepts (e.g. 404).
+ */
+export type PollEnd = "gone" | "timeout" | "stopped";
+
 export interface RecordPoll {
   /** the current record, or null when there is none (stop) */
   load: () => Promise<PublicRecord | null>;
@@ -123,7 +145,11 @@ export interface RecordPoll {
   onRecord: (r: PublicRecord) => void;
   /** an error that ends polling (e.g. 404 record_not_found); any other error is retried on the schedule */
   stopOn?: (e: unknown) => boolean;
-  onStop?: (e: unknown) => void;
+  /**
+   * Polling ended without a terminal record (with `stopOn`'s error for `stopped`). Not called after a terminal record
+   * (onRecord has it) nor after cancel.
+   */
+  onEnd?: (end: PollEnd, error?: unknown) => void;
   now?: () => number;
 }
 /** Polls until the record is terminal, missing, `stopOn` hits or the schedule ends. Returns the cancel function. */
@@ -132,25 +158,75 @@ export function startRecordPoll(o: RecordPoll): () => void {
   const started = now();
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const end = (why: PollEnd, e?: unknown) => { stopped = true; o.onEnd?.(why, e); };
   const schedule = () => {
-    const wait = stopped ? null : o.delay(now() - started);
-    if (wait != null) timer = setTimeout(run, wait);
+    if (stopped) return;
+    const wait = o.delay(now() - started);
+    if (wait == null) end("timeout");
+    else timer = setTimeout(run, wait);
   };
   const run = async () => {
     try {
       const r = await o.load();
       if (stopped) return;
-      if (!r) return;
+      if (!r) { end("gone"); return; }
       o.onRecord(r);
-      if (isTerminalRecord(r)) return;
+      if (isTerminalRecord(r)) { stopped = true; return; }
     } catch (e) {
       if (stopped) return;
-      if (o.stopOn?.(e)) { o.onStop?.(e); return; }
+      if (o.stopOn?.(e)) { end("stopped", e); return; }
     }
     schedule();
   };
   schedule();
   return () => { stopped = true; if (timer) clearTimeout(timer); };
+}
+
+/** The /t record line: its record and whether it is still being asked for (the spinner of a pending line). */
+export interface TapLine { record: PublicRecord; live: boolean }
+/**
+ * The /t record line of a tap whose record is pending (components/tap-record.tsx): asks `load` every 5 s for at most
+ * 10 minutes (spec §10.3). The record gone — `record: null` or `isGone` (the tap's 404) — hides the line
+ * (`show(null)`); a terminal record ends it. When the schedule runs out the line stays without its spinner, and each
+ * time the tab becomes visible again (`onVisible`) it is loaded once more. Returns the cleanup.
+ */
+export function watchTapRecord(o: {
+  initial: PublicRecord;
+  load: () => Promise<PublicRecord | null>;
+  isGone: (e: unknown) => boolean;
+  show: (line: TapLine | null) => void;
+  /** subscribes to "the tab became visible again"; returns the unsubscribe */
+  onVisible: (cb: () => void) => () => void;
+  delay?: (elapsedMs: number) => number | null;
+  now?: () => number;
+}): () => void {
+  if (isTerminalRecord(o.initial)) return () => {};
+  let last = o.initial, closed = false, loading = false;
+  let unsubscribe: (() => void) | null = null;
+  const stopListening = () => { unsubscribe?.(); unsubscribe = null; };
+  const reloadOnce = async () => {
+    if (closed || loading) return;
+    loading = true;
+    try {
+      const r = await o.load();
+      if (closed) return;
+      if (!r) { stopListening(); o.show(null); return; }
+      if (isTerminalRecord(r)) stopListening();
+      o.show({ record: r, live: false });
+    } catch (e) {
+      if (!closed && o.isGone(e)) { stopListening(); o.show(null); }
+    } finally { loading = false; }
+  };
+  const stopPoll = startRecordPoll({
+    load: o.load, delay: o.delay ?? tapRecordPollDelay, now: o.now, stopOn: o.isGone,
+    onRecord: (r) => { last = r; o.show({ record: r, live: !isTerminalRecord(r) }); },
+    onEnd: (end) => {
+      if (end !== "timeout") { o.show(null); return; }
+      o.show({ record: last, live: false });
+      if (!closed) unsubscribe = o.onVisible(() => { void reloadOnce(); });
+    },
+  });
+  return () => { closed = true; stopPoll(); stopListening(); };
 }
 
 // ---- history and notice ----------------------------------------------------------------------------------------

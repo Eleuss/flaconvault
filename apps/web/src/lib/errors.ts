@@ -81,6 +81,8 @@ export const CODES: Record<string, string> = {
   // two causes on the verifier: an open report for this seal or passport (last 24 h), or the per-connection report budget
   report_limited: "A report for this seal is already open (from the last 24 hours), or too many reports came from this connection. Try again later.",
   media_nonce_invalid: "The scan session of these photos has expired or was already used. Restart the scan.",
+  // /api/verify, tier ≥ 2: the photos were not uploaded under this session's nonce; checked before the tap is used
+  media_not_uploaded: "The card photos did not reach the server with this scan session. Photograph the card again, then try again.",
   media_limited: "This connection has uploaded too many photos for now. Try again later.",
   media_busy: "The verification server is receiving too many photos right now. Try again in a few minutes.",
   storage_full: "The verification server cannot store photos right now (its storage is full). Try again later.",

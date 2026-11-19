@@ -28,7 +28,9 @@ Reconcile job (briefing §10). One cycle:
   7. Public record (fv.relayer): queued relay rows past their deadline expire (DB only, also with the relay off or
      without FV_PROGRAM_ID, so no relay scan stays pending for ever; a row with earlier attempts only after their
      getSignatureStatuses look-up, which records it if one landed), and `sending` rows are confirmed (confirm_sending;
-     no RPC call without such rows). Relay scans are never checked against a ScanProof (step 1 skips them).
+     no RPC call without such rows). Both go through the relay's own RPC client (relayer.relay_rpc_client: the
+     primary plus FV_SOLANA_RPC_FALLBACK, if set), so the fallback is asked as the second source before an attempt is
+     given up, exactly as in the relay loop. Relay scans are never checked against a ScanProof (step 1 skips them).
 
 All RPC reads happen before the write transaction (a slow RPC must never hold the SQLite write lock).
 """
@@ -168,18 +170,21 @@ def _confirm_scan(conn, ev: dict, payload: dict, rec: dict, acct: dict, scan_pda
     return mismatch
 
 
-def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None = None) -> dict:
+def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None = None, relay_rpc=None) -> dict:
     """
     One cycle. All RPC reads happen first, outside any write transaction; the DB changes are then applied in one
     BEGIN IMMEDIATE transaction that re-checks each event's status. Arweave archiving runs after the commit.
+    `relay_rpc`: the relay's RPC client for the public-record step (the app passes app.state.relay_rpc, the client the
+    relay loop uses); without it, `rpc` with FV_SOLANA_RPC_FALLBACK (relayer.relay_rpc_client).
     """
     ts = ts if ts is not None else now()
     summary = {"checked": 0, "confirmed": 0, "recovered": 0, "failed": 0, "pending": 0, "mismatched": 0, "ignoredAccounts": 0,
                "refreshed": {"passports": 0, "seals": 0}, "registry": None, "escrow": None, "arweave": None, "media": None,
                "enabled": bool(settings.program_id)}
+    relay_rpc = relay_rpc if relay_rpc is not None else rpc
     if not settings.program_id:
         with db.connect() as conn:
-            summary["relay"] = _relay_step(conn, settings, rpc, ts)
+            summary["relay"] = _relay_step(conn, settings, relay_rpc, ts)
             summary["media"] = _media_retention(conn, settings, ts)
         return summary
     pid = program_pubkey(settings.program_id)
@@ -338,15 +343,17 @@ def reconcile_once(db: Database, settings: Settings, rpc: Rpc, *, ts: int | None
         # ---- 5. media retention (after archiving: a confirmed scan's media is referenced and always kept) ----
         summary["media"] = _media_retention(conn, settings, ts)
         # ---- 6. public record: expired relay rows, sent relay transactions ----
-        summary["relay"] = _relay_step(conn, settings, rpc, ts)
+        summary["relay"] = _relay_step(conn, settings, relay_rpc, ts)
     return summary
 
 
 def _relay_step(conn, settings: Settings, rpc, ts: int) -> dict | None:
-    """relayer.expire_overdue (a row with earlier attempts after their look-up through `rpc`), then (with FV_PROGRAM_ID)
-    relayer.confirm_sending. Never aborts a cycle."""
+    """relayer.expire_overdue (a row with earlier attempts after their look-up), then (with FV_PROGRAM_ID)
+    relayer.confirm_sending, both through the relay's client (relayer.relay_rpc_client(settings, rpc): a FallbackRpc
+    as it is, a plain client with FV_SOLANA_RPC_FALLBACK as its second source). Never aborts a cycle."""
     from fv import relayer
     try:
+        rpc = relayer.relay_rpc_client(settings, rpc)
         out = {"expired": relayer.expire_overdue(conn, ts, rpc)}
         if settings.program_id:
             out["confirm"] = relayer.confirm_sending(conn, settings, rpc, None, ts)

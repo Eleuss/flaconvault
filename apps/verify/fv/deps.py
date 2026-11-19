@@ -30,6 +30,11 @@ def get_rpc(request: Request):
     return request.app.state.rpc
 
 
+def get_relay_rpc(request: Request):
+    """The relay's RPC client (relayer.relay_rpc_client: the primary with FV_SOLANA_RPC_FALLBACK), shared with the loop."""
+    return getattr(request.app.state, "relay_rpc", None)
+
+
 def admin_token_ok(settings: Settings, header_value: str | None) -> bool:
     """Constant-time check of the `x-admin-token` header against FV_ADMIN_TOKEN (False when the env is unset)."""
     if not settings.admin_token or not header_value:

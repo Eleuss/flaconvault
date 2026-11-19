@@ -189,8 +189,9 @@ from P2 on — `fv/tickets.py` rejects every ticket in P1). Checked before any t
 `record_scan_v2` would refuse (e.g. tier 0: a sighting is a TAP, not a CHECK) → 422 `scan_fields_invalid`. `attester`
 is ignored for relay (kept in SQLite only). Then, inside the write transaction (rolled back on error): `"wallet"` for a
 passport held in a FlaconVault account (`passports.asset` = its Holding PDA) → 409 `wallet_anchor_not_allowed`; a tap
-whose public-record TAP is already `sending` or `recorded` → verdict `REPLAY` (the counter is used on chain; nothing
-is consumed).
+whose public-record TAP counts as sent → verdict `REPLAY` (the counter is, or may be, used on chain; nothing is
+consumed, and the TAP row stays as it is). Sent means `sending`, `recorded`, or `queued` again after an attempt that
+was given up (`relay_tx.earlier_sigs` not empty: it may have landed unseen).
 
 `anchor: "relay"` signs an FVSCAN2 (purpose CHECK, actor NONE = a visitor, `cluster_tag` from `FV_CLUSTER`,
 `program_id` from `FV_PROGRAM_ID` or the default flacon id) over the v2 bundle — no note, city, platform or attester
@@ -198,7 +199,8 @@ pubkey; those stay in the SQLite payload only and `GET /api/passport` never show
 `location.city` is null) — stores the SCAN `pending` and queues it for the relayer (due now). A
 CHECK that adopts a `/t` tap (`tapId`) replaces that tap's queued TAP (same counter) when the seal's CHECK cap allows,
 otherwise it is kept off chain (`over_cap`) and the TAP stays queued. `anchor: "wallet"` adopting a tap replaces its
-queued TAP (the wallet's v1 scan uses the counter). A visitor scan never changes the passport grade, void flag or
+queued TAP (the wallet's v1 scan uses the counter). Only a queued TAP that was never sent is replaced: one that counts
+as sent (above) answers `REPLAY` on both paths and stays. A visitor scan never changes the passport grade, void flag or
 header. Every answer adds `anchor`, `purpose` and `actorKind` (null for wallet), `cluster` (`"DEVNET"` …) and `record`
 (null for wallet and for non-VALID answers). For relay, `msgHex` / `serverSig` are the 256-byte FVSCAN2 and its
 signature, `bundle` / `bundleHash` the v2 bundle; `resumeToken` reads `GET /api/verify/<eventId>/record`.
@@ -486,6 +488,11 @@ price at most `FV_RELAY_MAX_PRIORITY_MICROLAMPORTS`. Anything else is refused.
   counter), they are looked up (primary, then fallback); one that landed records the row with its signature (`txSig`),
   nothing is sent again, and its fee is charged once (it was refunded when given up). While that look-up cannot tell,
   the row stays pending and backs off.
+* **Adoption** (`relayer.was_sent`, the one rule): a row counts as sent once a transaction of it went out — `sending`,
+  `recorded`, or `queued` again with earlier attempts. A CHECK or a wallet scan that adopts the tap of such a row gets
+  `REPLAY` (nothing is consumed) and the row is never `replaced` (`replace_tap` refuses it), so a TAP that was given up
+  and requeued is still recorded with the attempt that landed, or sent again. A queued TAP that was never sent (also
+  one that only backed off after RPC trouble, or whose send the node refused) is replaced by the adopter as before.
 * **Balance**: `getBalance(relayer)` at most every 60 s and after each recorded row; below
   `FV_RELAY_LOW_BALANCE_LAMPORTS` a warning (at most hourly) and `relay.ok: false`.
 * **Events**: a recorded TAP gives its `/t` sighting the relay `tx_sig` and the FVSCAN2 detail (`anchor: "relay"`,

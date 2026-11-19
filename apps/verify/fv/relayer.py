@@ -23,6 +23,11 @@ are looked up, and one that landed records the row with its own signature. Shoul
 fails on chain with CounterNotIncreasing: nothing is recorded twice. The ts + 570 s deadline is checked against the
 clock at the moment a row is claimed for sending, not the start of the relay cycle.
 
+Adoption (§9.4): a scan session that adopts a /t tap may take the counter of that tap's TAP row only while the TAP was
+never sent. A row counts as sent once a transaction of it went out: sending, recorded, or queued again with earlier
+attempts (given up, yet it may have landed unseen). was_sent is the one rule for it: the adopter is answered REPLAY and
+the row is never replaced (replace_tap), so it stays the row that records its own transaction.
+
 Caps: a visitor (actor NONE) gets at most VISITOR_TAPS_PER_SEAL_24H recorded TAPs and VISITOR_CHECKS_PER_SEAL_24H
 CHECK per seal per rolling 24 h (owner decision, code constants: D16); a global fee cap per UTC day
 (FV_RELAY_DAILY_LAMPORTS, relay_budget); FV_RELAY_ENABLED is the kill switch (false = rows fail `relay_off`, nothing
@@ -118,6 +123,19 @@ def live_row(conn, seal_uid_hash: str, counter: int) -> dict | None:
     """The live (queued, sending, recorded) row of a (seal, counter), if any."""
     return _row(conn.execute(f"SELECT * FROM relay_tx WHERE kind='scan' AND ref=? AND status IN {_LIVE_SQL}",
                              (scan_ref(seal_uid_hash, counter),)).fetchone())
+
+
+def was_sent(row: dict | None) -> bool:
+    """
+    The one rule for "a transaction of this row went out, so its counter may be used on chain" (§9.4): the row is
+    `sending`, `recorded`, or `queued` again with earlier attempts (earlier_sigs: sent at least once, given up and
+    requeued — such an attempt may have landed unseen, §9.5). An adoption of such a row's tap answers REPLAY, and the row
+    is never replaced (replace_tap). A queued row that was only tried (attempts > 0 after RPC trouble, or a send the node
+    refused: nothing left the node, no earlier_sigs) was not sent. False for no row and for a row that is not live.
+    """
+    if not row:
+        return False
+    return row["status"] in ("sending", "recorded") or (row["status"] == "queued" and bool(earlier_attempts(row)))
 
 
 def row_for_tap(conn, seal_uid_hash: str, counter: int) -> dict | None:
@@ -226,9 +244,20 @@ def queue_scan(conn, settings: Settings, *, event: dict | None, seal: dict, coun
     return row
 
 
-def replace_tap(conn, row: dict, now: int) -> None:
-    """A queued TAP row gives way to the CHECK (or the wallet's v1 scan) that adopted its tap."""
-    conn.execute("UPDATE relay_tx SET status='replaced', updated_at=? WHERE id=? AND status='queued'", (int(now), row["id"]))
+def replace_tap(conn, row: dict, now: int) -> bool:
+    """
+    A queued TAP row that was never sent gives way to the CHECK (or the wallet's v1 scan) that adopted its tap (inside the
+    caller's write transaction). A row that counts as sent (was_sent, read again here: a queued row with earlier attempts
+    too) is never replaced — one of its transactions may be on chain, and the row is what records it (§9.5). False when
+    nothing was written (sent, or moved meanwhile).
+    """
+    fresh = get_row(conn, row["id"])
+    if not fresh or was_sent(fresh):
+        return False
+    # the write holds only for the state just judged: still queued, with the same (empty) earlier_sigs
+    cur = conn.execute("""UPDATE relay_tx SET status='replaced', updated_at=?
+                          WHERE id=? AND status='queued' AND earlier_sigs IS ?""", (int(now), fresh["id"], fresh["earlier_sigs"]))
+    return cur.rowcount == 1
 
 
 # ---------- events (§9.8) ----------
@@ -740,6 +769,8 @@ def confirm_sending(conn, settings: Settings, rpc, state: RelayState | None = No
                 continue                                  # settled meanwhile (the other caller of confirm_sending)
             estimate = int(row["lamports"] or 0)
             if what == "requeue":
+                # queued again, but with this attempt in earlier_sigs: the row keeps counting as sent (was_sent), so an
+                # adoption of its tap still answers REPLAY and never replaces it — the attempt may have landed unseen
                 _charge(conn, now, -estimate)
                 earlier = json.dumps(earlier_attempts(row) + [{"sig": row["sig"], "estimate": estimate}])
                 conn.execute("""UPDATE relay_tx SET status='queued', sig=NULL, last_valid_height=NULL, lamports=0, earlier_sigs=?,
@@ -909,8 +940,9 @@ def process_row(conn, settings: Settings, rpc, state: RelayState | None, row: di
         return _ended(_end(conn, rpc, row, "failed", "rejected", now, state), "rejected")
     sig = str(tx.signatures[0])
     now = clock()                                       # the send time, not the cycle start
-    # claim before sending: from here the row is `sending`, so an adoption of its tap answers REPLAY and nothing re-sends
-    # it until confirm_sending knows its fate. Only while the deadline (ts + 570) has not passed at this moment.
+    # claim before sending: from here the row is `sending`, so an adoption of its tap answers REPLAY (was_sent) and
+    # nothing re-sends it until confirm_sending knows its fate. Only while the deadline (ts + 570) has not passed at this
+    # moment.
     with transaction(conn):
         if spent_today(conn, now) + fee > int(settings.relay_daily_lamports):
             ended = ("over_cap", "budget")
@@ -950,6 +982,8 @@ def process_row(conn, settings: Settings, rpc, state: RelayState | None, row: di
             if program and not settle_later:
                 _finish(conn, row, "failed", "rejected", int(now), lamports=0, expect="sending")
             else:
+                # the node answered with an error: this copy never left it, so no earlier attempt is added (a row without
+                # one was not sent: an adoption of its tap may still replace it)
                 delay = 0 if settle_later else RETRY_BACKOFF_S[min(int(row["attempts"] or 0), len(RETRY_BACKOFF_S) - 1)]
                 conn.execute("""UPDATE relay_tx SET status='queued', sig=NULL, last_valid_height=NULL, lamports=0, due_at=?,
                                 updated_at=? WHERE id=? AND status='sending'""", (int(now) + delay, int(now), row["id"]))

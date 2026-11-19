@@ -258,8 +258,9 @@ def verify(body: VerifyBody, request: Request, conn=Depends(get_conn), settings:
     Public record (docs/public-record.md §9.4, §9.9): `anchor` "wallet" (the default, D1) is the v1 path above, byte for
     byte plus the keys anchor/purpose/actorKind/cluster/record; "relay" signs an FVSCAN2 (visitor CHECK, actor NONE) and
     queues it for the relayer — no wallet, no attester (kept in SQLite only); `resumeToken` then reads
-    GET /api/verify/{eventId}/record. A relay CHECK that adopts a /t tap replaces that tap's queued TAP; a tap whose
-    TAP is already sent or recorded answers REPLAY and nothing is consumed.
+    GET /api/verify/{eventId}/record. A relay CHECK that adopts a /t tap replaces that tap's queued TAP as long as that
+    TAP was never sent; a tap whose TAP counts as sent (relayer.was_sent: sending, recorded, or queued again after an
+    attempt that was given up) answers REPLAY, nothing is consumed and the TAP row stays.
     """
     ts = now()
     pub_hex = proof.public_key(settings.server_seed).hex()
@@ -360,10 +361,12 @@ def verify(body: VerifyBody, request: Request, conn=Depends(get_conn), settings:
             serial = seal["serial"]
             if not relay and held_in_account(conn, settings, serial):
                 raise HTTPException(409, "wallet_anchor_not_allowed")   # v1 record_scan would let any attester grade it (D15)
-            # the public-record row of this counter (a queued TAP of the adopted /t tap): sent or recorded → the counter
-            # is used on chain, the adoption is refused and rolled back
+            # the public-record row of this counter (the TAP of the adopted /t tap). Once it counts as sent — sending,
+            # recorded, or queued again after an attempt that was given up and may have landed (relayer.was_sent, the
+            # one rule) — the counter is, or may be, used on chain: the adoption is refused and rolled back, and the
+            # row stays as it is. Below, tap_row is therefore either None or a queued row that was never sent
             tap_row = relayer.live_row(conn, seal["uid_hash"], chk.counter)
-            if tap_row and tap_row["status"] in ("sending", "recorded"):
+            if relayer.was_sent(tap_row):
                 g, _ = proof.compute_grade(verdict=REPLAY, tamper=tamper, heat=heat, hum=hum, fill=body.fill)
                 raise _Refused({**out, "verdict": REPLAY, "grade": g, "reviewRecommended": False,
                                 "message": tap_message(REPLAY, chk.counter)})

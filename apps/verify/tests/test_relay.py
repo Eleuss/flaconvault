@@ -604,7 +604,8 @@ def test_one_live_row_per_seal_and_counter(relay_client):
         first = _queue(conn, c.settings, seal, 3, Purpose.TAP)
         with pytest.raises(sqlite3.IntegrityError):
             _queue(conn, c.settings, seal, 3, Purpose.CHECK)
-        relayer.replace_tap(conn, first, int(time.time()))           # once replaced, the counter may take a CHECK
+        assert relayer.replace_tap(conn, first, int(time.time()))    # once replaced, the counter may take a CHECK
+        assert not relayer.replace_tap(conn, first, int(time.time()))  # nothing left to replace
         assert _queue(conn, c.settings, seal, 3, Purpose.CHECK)["status"] == "queued"
 
 
@@ -807,19 +808,25 @@ def test_a_send_lost_on_the_primary_is_never_sent_twice_whatever_the_fallback_sa
 
 # ---------- earlier attempts: status sources, counter_used (§9.5) ----------
 
+def _send_once(c, rpc, row: dict, *, landed: bool) -> str:
+    """The queued `row` sent once through `rpc` (a relay cycle at its due_at) whose blockhash has expired since;
+    landed=True: it landed (the seal counter is used), False: it was dropped. → the signature of that attempt."""
+    c.fake.land = False
+    assert REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=row["due_at"])["sent"] == {"sent": 1}
+    if landed:
+        c.fake.settle(c.fake.sent[-1])
+    c.fake.block_height = c.fake.last_valid + 1
+    c.fake.last_valid += 1000
+    return str(c.fake.sent[-1].signatures[0])
+
+
 def _first_attempt(c, rpc, *, landed: bool):
     """A TAP sent once through `rpc` whose blockhash has expired since; landed=True: it landed (the seal counter is used),
     False: it was dropped. → (uid, tapId, row, signature of that attempt)."""
-    c.fake.land = False
     uid = attach(c)
     tap_id, _ = t_tap(c, uid)
     (row,) = rows(c)
-    assert REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=row["due_at"])["sent"] == {"sent": 1}
-    if landed:
-        c.fake.settle(c.fake.sent[0])
-    c.fake.block_height = c.fake.last_valid + 1
-    c.fake.last_valid += 1000
-    return uid, tap_id, row, str(c.fake.sent[0].signatures[0])
+    return uid, tap_id, row, _send_once(c, rpc, row, landed=landed)
 
 
 def _given_up(c, rpc, sig: str, now) -> None:
@@ -1210,6 +1217,149 @@ def test_wallet_adoption_replaces_the_tap(relay_client):
     assert row["status"] == "replaced"
     run(c, row["due_at"])
     assert c.fake.sent == []
+
+
+def _answer(v: dict) -> dict:
+    """A POST /api/verify answer without its clock reading (`ts`)."""
+    return {k: x for k, x in v.items() if k != "ts"}
+
+
+def _counts(c) -> tuple:
+    with c.db.connect() as conn:
+        return tuple(conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("events", "taps", "relay_tx"))
+
+
+def test_was_sent_is_the_one_rule():
+    """sending, recorded, or queued again with an earlier attempt (§9.4); `attempts` alone says nothing."""
+    earlier = json.dumps([{"sig": "5" * 88, "estimate": FEE}])
+    assert [relayer.was_sent(r) for r in (
+        {"status": "queued", "earlier_sigs": earlier, "attempts": 1}, {"status": "sending", "earlier_sigs": None},
+        {"status": "recorded", "earlier_sigs": None}, {"status": "recorded", "earlier_sigs": earlier})] == [True] * 4
+    assert [relayer.was_sent(r) for r in (
+        None, {"status": "queued"}, {"status": "queued", "earlier_sigs": None, "attempts": 4},
+        {"status": "queued", "earlier_sigs": "[]"}, {"status": "queued", "earlier_sigs": "not json"},
+        {"status": "failed", "earlier_sigs": earlier}, {"status": "over_cap", "earlier_sigs": earlier},
+        {"status": "replaced", "earlier_sigs": None})] == [False] * 8
+
+
+@pytest.mark.parametrize("landed", [True, False])
+def test_adopting_a_requeued_tap_answers_like_a_sent_one_and_keeps_the_tap(relay_client, landed):
+    """A TAP that was sent, given up and requeued (earlier_sigs) counts as sent: the attempt may have landed unseen. An
+    adoption used to replace the queued row; a TAP that was on chain then ended `replaced` without its txSig, and the
+    adopter's own row failed counter_used. Now the adopter gets the answer of a sent TAP and the row stays."""
+    c = relay_client
+    rpc = relayer.FallbackRpc(c.fake, NoHistoryFallback(c.fake))
+    uid = attach(c)
+    tap_id, token = t_tap(c, uid)
+    (row,) = rows(c)
+    now = row["due_at"]
+    first = _send_once(c, rpc, row, landed=landed)                     # on the relay's clock: still inside the adopt window
+    # the reference: what an adopter is told while the TAP is `sending` (nothing is consumed, so it can ask again)
+    told = {anchor: c.post("/api/verify", json=body(c, tap_id=tap_id, token=token, anchor=anchor)).json()
+            for anchor in ("relay", "wallet")}
+    assert [v["verdict"] for v in told.values()] == ["REPLAY", "REPLAY"] and rows(c)[0]["status"] == "sending"
+    _given_up(c, rpc, first, now + 2)
+    (tap_row,) = rows(c)
+    assert (tap_row["status"], tap_row["sig"], tap_row["attempts"]) == ("queued", None, 1) and relayer.was_sent(tap_row)
+    assert json.loads(tap_row["earlier_sigs"]) == [{"sig": first, "estimate": FEE}]
+    before = _counts(c)
+    for anchor in ("relay", "wallet"):                                 # a CHECK, and a wallet's v1 scan
+        b = body(c, tap_id=tap_id, token=token, anchor=anchor)
+        v = c.post("/api/verify", json=b).json()
+        assert _answer(v) == _answer(told[anchor])                     # exactly the answer for a sent TAP
+        assert v["verdict"] == "REPLAY" and v["serverSig"] is None and v["eventId"] is None and v["record"] is None
+        with c.db.connect() as conn:                                   # nothing consumed: nonce, adoption
+            assert conn.execute("SELECT used_at FROM nonces WHERE nonce_hex=?", (b["nonce"][2:],)).fetchone()[0] is None
+            assert conn.execute("SELECT adopted_at FROM taps WHERE id=?", (tap_id,)).fetchone()[0] is None
+            assert relayer.replace_tap(conn, tap_row, int(time.time())) is False     # never replaced, whoever asks
+        assert rows(c) == [tap_row] and _counts(c) == before           # the TAP row as it was; no CHECK row, no event
+    assert c.get(f"/api/tap/{tap_id}").json()["record"]["purpose"] == "TAP"
+    out = REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=now + 2)
+    if landed:                                                         # the counter is used on chain: by its own attempt
+        assert out["sent"] == {"recorded": 1} and len(c.fake.sent) == 1
+        final = first
+    else:                                                              # the attempt was lost and the counter is free
+        assert out["sent"] == {"sent": 1} and len(c.fake.sent) == 2    # sent again
+        final = str(c.fake.sent[1].signatures[0])
+        c.fake.settle(c.fake.sent[1])
+        assert REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=now + 4)["confirm"]["recorded"] == 1
+    (r,) = rows(c)
+    assert (r["id"], r["purpose"], r["status"], r["reason"], r["sig"]) == (tap_row["id"], Purpose.TAP, "recorded", None, final)
+    assert r["lamports"] == FEE - 3 and budget(c, now) == FEE - 3 and (final == first) == landed
+    assert event(c, r["event_id"])["tx_sig"] == final
+    rec = c.get(f"/api/tap/{tap_id}").json()["record"]
+    assert (rec["state"], rec["purpose"], rec["txSig"]) == ("recorded", "TAP", final)
+
+
+@pytest.mark.parametrize("path", ["check_cap_full", "void_passport"])
+def test_a_requeued_tap_is_a_replay_on_every_adoption_path(relay_client, path):
+    """The rule comes before everything an adoption does with the row. With the seal's CHECK cap full (the CHECK would be
+    kept off chain and the TAP left queued) and for a passport the verifier knows is void (no CHECK row; the TAP used to
+    be replaced) the adopter of a requeued TAP gets REPLAY too, and the TAP is recorded by its own earlier attempt."""
+    c = relay_client
+    rpc = relayer.FallbackRpc(c.fake, NoHistoryFallback(c.fake))
+    uid = attach(c)
+    if path == "check_cap_full":
+        tap = c.post("/api/dev/tap", json={"uid": uid}).json()
+        check = c.post("/api/verify", json=body(c, tap=tap)).json()    # the seal's one CHECK (counter 1), recorded
+        for dt in (0, 1):
+            REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=check["record"]["dueAt"] + dt)
+        assert [(r["purpose"], r["status"]) for r in rows(c)] == [(Purpose.CHECK, "recorded")]
+    tap_id, token = t_tap(c, uid)
+    tap_row = rows(c)[-1]
+    sig = _send_once(c, rpc, tap_row, landed=True)
+    _given_up(c, rpc, sig, tap_row["due_at"] + 2)
+    if path == "void_passport":
+        with c.db.connect() as conn:
+            conn.execute("UPDATE passports SET void=1, grade=? WHERE serial=?", (Grade.VOID, SERIAL))
+    before = rows(c)
+    assert (before[-1]["purpose"], before[-1]["status"]) == (Purpose.TAP, "queued") and relayer.was_sent(before[-1])
+    v = c.post("/api/verify", json=body(c, tap_id=tap_id, token=token)).json()
+    assert v["verdict"] == "REPLAY" and v["record"] is None and rows(c) == before
+    assert REAL_RELAY_ONCE(c.db, c.settings, rpc, c.state, now=tap_row["due_at"] + 2)["sent"] == {"recorded": 1}
+    r = rows(c)[-1]
+    assert (r["id"], r["status"], r["sig"]) == (tap_row["id"], "recorded", sig) and len(rows(c)) == len(before)
+    assert c.get(f"/api/tap/{tap_id}").json()["record"]["txSig"] == sig
+
+
+@pytest.mark.parametrize("tried", [None, "rpc_error", "refused_by_the_node"])
+def test_a_queued_tap_that_was_never_sent_is_still_replaced_by_an_adopting_check(relay_client, tried):
+    """The other side of the rule: only an attempt that left the node (earlier_sigs) makes a queued TAP count as sent. A
+    TAP that is merely queued (never tried, backing off after RPC trouble, or claimed and then refused by the node) gives
+    way to the CHECK that adopts its tap, exactly as before."""
+    c = relay_client
+    uid = attach(c)
+    tap_id, token = t_tap(c, uid)
+    (row,) = rows(c)
+    if tried == "rpc_error":
+        c.fake.fail["get_latest_blockhash"] = [RpcError("getLatestBlockhash: timed out")]
+    elif tried == "refused_by_the_node":                               # claimed (`sending`), then back to queued
+        c.fake.fail["send_transaction"] = [RpcError("x", error={"code": -32002, "message": "Transaction simulation failed",
+                                                                 "data": {"err": "BlockhashNotFound", "logs": []}})]
+    if tried:
+        assert run(c, row["due_at"])["sent"] == {"retry": 1} and budget(c, row["due_at"]) == 0
+    (tap_row,) = rows(c)
+    assert (tap_row["status"], tap_row["sig"], tap_row["earlier_sigs"]) == ("queued", None, None)
+    assert tap_row["attempts"] == (1 if tried else 0) and not relayer.was_sent(tap_row) and c.fake.sent == []
+    sighting = tap_row["event_id"]
+    assert sighting in [e["id"] for e in c.get(f"/api/passport/{SERIAL}").json()["events"]]
+    v = c.post("/api/verify", json=body(c, tap_id=tap_id, token=token)).json()
+    assert v["verdict"] == "VALID" and v["counter"] == 1 and v["record"]["state"] == "pending"
+    tap_row, check_row = rows(c)
+    assert (tap_row["status"], tap_row["purpose"]) == ("replaced", Purpose.TAP)
+    assert (check_row["status"], check_row["purpose"], check_row["ref"]) == ("queued", Purpose.CHECK, tap_row["ref"])
+    assert check_row["due_at"] == check_row["created_at"] and check_row["event_id"] == v["eventId"]
+    assert c.get(f"/api/tap/{tap_id}").json()["record"]["purpose"] == "CHECK"
+    run(c, check_row["due_at"])
+    run(c, check_row["due_at"] + 1)
+    tap_row, check_row = rows(c)
+    assert (tap_row["status"], check_row["status"]) == ("replaced", "recorded")
+    (tx,) = c.fake.sent                                                # the CHECK; the TAP itself never went out
+    assert proof.parse_ed25519_ix_data(bytes(tx.message.instructions[2].data))["msg"].hex() == check_row["msg_hex"]
+    ev = event(c, v["eventId"])
+    assert ev["status"] == "confirmed" and ev["tx_sig"] == check_row["sig"] == str(tx.signatures[0])
+    ids = [e["id"] for e in c.get(f"/api/passport/{SERIAL}").json()["events"]]
+    assert sighting not in ids and v["eventId"] in ids                 # one tap, one entry: the CHECK
 
 
 # ---------- API contract ----------

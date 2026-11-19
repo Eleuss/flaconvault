@@ -758,17 +758,27 @@ passport the verifier knows is void, a dead seal or an unregistered tag.
 transaction.
 
 `POST /api/verify` with `anchor: "relay"` (actor NONE, purpose CHECK in P1):
-- adopting a `/t` tap (`tapId`): look up the live row of `(seal, counter)`.
-  - `queued` TAP and the CHECK cap allows: TAP row → `replaced`; insert the CHECK row `queued`, `due_at = now`; wake
-    the loop.
-  - `queued` TAP and the CHECK cap is full: insert the CHECK row `over_cap` (`seal_daily`); the TAP row stays queued.
-  - `sending` or `recorded`: refuse the adoption with verdict `REPLAY` (the counter is already used on chain); the
-    transaction rolls back, nothing is consumed.
+- adopting a `/t` tap (`tapId`): look up the live row of `(seal, counter)`. That row **counts as sent** once a
+  transaction of it went out: it is `sending`, `recorded`, or `queued` again with earlier attempts (`earlier_sigs` not
+  empty: sent at least once, given up and requeued, §9.5; that attempt may have landed unseen). A `queued` row that was
+  only tried (`attempts > 0` after RPC trouble, or a send the node refused with an error: nothing left the node, no
+  `earlier_sigs`) was never sent. One rule (`relayer.was_sent`) decides the answer and the replacement alike. It is
+  applied before the CHECK cap is looked at, and also for a passport the verifier knows is void (no CHECK row).
+  - counts as sent: refuse the adoption with verdict `REPLAY` (the counter is, or may be, used on chain); the
+    transaction rolls back, nothing is consumed, and the row stays as it is. It is never `replaced`: §9.5 records it
+    with the attempt that landed, or sends it again.
+  - `queued` TAP that was never sent and the CHECK cap allows: TAP row → `replaced`; insert the CHECK row `queued`,
+    `due_at = now`; wake the loop.
+  - `queued` TAP that was never sent and the CHECK cap is full: insert the CHECK row `over_cap` (`seal_daily`); the
+    TAP row stays queued.
 - a tap read by the scan page itself (no `tapId`): no TAP row exists for its counter; queue the CHECK row
   (`due_at = now`).
 
-`POST /api/verify` with `anchor: "wallet"` adopting a tap: a `queued` TAP row → `replaced` (the wallet's v1 scan will
-use the counter); `sending`/`recorded` → `REPLAY`.
+`POST /api/verify` with `anchor: "wallet"` adopting a tap: a `queued` TAP row that was never sent → `replaced` (the
+wallet's v1 scan will use the counter); a row that counts as sent (the same rule) → `REPLAY`, and it stays.
+
+`replace_tap` is the only writer of `replaced`. It applies the same rule to the row as it is at that moment and writes
+nothing for a row that counts as sent.
 
 ### 9.5 Sending and confirming (relay loop)
 
@@ -830,6 +840,10 @@ on the primary, then on the fallback for what the primary does not know):
 - not known yet (the primary did not answer and the fallback does not know them all, or one is only `processed`) →
   the row stays `queued` (`pending`) and is tried again after the backoff. `expire_overdue` without an RPC (DB only)
   leaves such a row to the relay loop or the reconcile job, which look it up once its `due_at` has come.
+
+For the same reason a row with earlier attempts is never `replaced`: it counts as sent (§9.4), so a CHECK or a wallet
+scan that adopts its tap is answered `REPLAY`, and the row stays to be recorded with the attempt that landed or to be
+sent again.
 
 Budget: an attempt's estimate is charged at the claim and refunded when the attempt is given up; an earlier attempt
 found landed (with or without an error) is charged its `meta.fee` (else its estimate) once, when the row settles. So

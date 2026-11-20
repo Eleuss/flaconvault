@@ -36,7 +36,7 @@ Read these before setting any variable.
 | `FV_KEY_MODE` | `sdmbackend` | never `factory` in production |
 | `FV_SDM_DERIVE` | `legacy` | NFC Developer App / sdm-backend key derivation (`standard` = `libsdm/derive.py`) |
 | `FV_MASTER_KEY` | **secret**, 16 bytes hex | the SDM master key the stickers were programmed with; never all zeros, never a key used for local development |
-| `FV_SERVER_ED25519_SEED` | **secret**, 32 bytes hex | production-only seed, e.g. `python3 -c "import secrets; print(secrets.token_hex(32))"`; `GET /health` shows its public key |
+| `FV_SERVER_ED25519_SEED` | **secret**, 32 bytes hex | production-only seed, e.g. `python3 -c "import secrets; print(secrets.token_hex(32))"`; `GET /health` shows its public key. To replace it and `FV_ADMIN_TOKEN` without losing a scan (after a leak, for example): `zsh scripts/p1-rollout.sh rotate-keys` ([`devnet.md`](devnet.md#upgrading-devnet), step 2) |
 | `FV_SERVER_KEY_ID` | the key id registered for that public key | must match the on-chain registry entry |
 | `FV_ADMIN_TOKEN` | **secret**, e.g. `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` | `x-admin-token` for `POST /api/reconcile`, `GET /api/admin/status`, `POST /api/admin/purge-seed` and `POST /api/dev/reset` (simulator only: it wipes and reseeds the database). While it is empty all of them answer 403, the reset included; the background reconcile loop runs anyway |
 | `FV_BUILD_SHA` | `git rev-parse HEAD` of the deployed commit, set before every deploy | shown as `build` by `GET /health`. A `railway up` upload carries no commit, so set it right before each `railway up` (see Deploying). `RAILWAY_GIT_COMMIT_SHA` (set only by Railway's GitHub deploys, which this project does not use) counts only while `FV_BUILD_SHA` is unset |
@@ -68,7 +68,7 @@ Read these before setting any variable.
 | `FV_ARWEAVE_TIMEOUT_S` | `60` (default) | Irys sidecar timeout per upload |
 | `FV_CLUSTER` | `devnet` | `devnet`, `mainnet` or `localnet`: the cluster tag of every public-record scan (FVSCAN2) the verifier signs. It must equal the on-chain `HolderConfig.cluster_tag`; otherwise the relay sends nothing (`cluster_mismatch`) |
 | `FV_RELAY_ENABLED` | `false` until the devnet rollout below, then `true` | kill switch of the public-record relay (unset or empty = `false`: nothing is sent, relay scans stay off chain). `true` needs `FV_RELAYER_KEY` and `FV_PROGRAM_ID` |
-| `FV_RELAYER_KEY` | **secret**, a Solana keypair JSON (64 numbers) used for nothing else | fee payer of relay transactions only, no program authority; fund it with at most 0.5 SOL on devnet. Generate one with `solana-keygen new --no-bip39-passphrase -o <file>` outside the repo, paste the file's content into the variable, then delete the file. `GET /api/admin/status` shows its public key |
+| `FV_RELAYER_KEY` | **secret**, a Solana keypair JSON (64 numbers) used for nothing else | fee payer of relay transactions only, no program authority; fund it with at most 0.5 SOL on devnet. `zsh scripts/p1-rollout.sh relay` generates one in a private temp dir, stores the file's content with `railway variable set FV_RELAYER_KEY --stdin` (never shown, never on a command line) and keeps an existing one. By hand: `solana-keygen new --no-bip39-passphrase -o <file>` outside the repo, paste the file's content into the variable, then delete the file. `GET /api/admin/status` shows its public key |
 | `FV_HOLDER_KEY` | **secret**, unset in P1 | holder-move key for P2; only parsed and validated now (its public key appears in `GET /api/admin/status`) |
 | `FV_ISSUER_KEY` | **secret**, unset in P1 | registry partner key for sealing at the counter (P2); only parsed and validated now |
 | `FV_SOLANA_RPC_FALLBACK` | a second RPC endpoint (optional) | relay sends and status reads switch to it after a failure of `FV_SOLANA_RPC`, and before an attempt is given up it is asked as a second source, by the relay loop and the reconcile job alike; it needs no transaction history (a signature it does not find never counts as lost) |
@@ -110,7 +110,7 @@ Read these before setting any variable.
 
 ## Public record relay (devnet rollout)
 
-The public record (`docs/public-record.md`) lets every genuine tap land on chain without a wallet: the verifier signs the scan (FVSCAN2) and its relayer key pays the fee of `record_scan_v2`. The owner rolls it out; nothing here runs from CI or a builder. Order:
+The public record (`docs/public-record.md`) lets every genuine tap land on chain without a wallet: the verifier signs the scan (FVSCAN2) and its relayer key pays the fee of `record_scan_v2`. The owner rolls it out; nothing here runs from CI or a builder. Owner path: `zsh scripts/p1-rollout.sh deploy`, then `chain` (steps 1 to 3 below), then `relay` (steps 4 and 5), each first with `--dry-run` if wanted; `zsh scripts/p1-rollout.sh status` shows where things stand ([`devnet.md`](devnet.md#public-record-p1-rollout) describes every check). Order:
 
 1. Upgrade `flacon` and `escrow` on devnet, escrow first (the escrow refuses passes held in an account, and that guard must be live before flacon can run `mint_passport_v2`; `docs/devnet.md`).
 2. `init_holder_config` with cluster tag DEVNET (2), signed by the registry authority (`docs/devnet.md`).
@@ -207,31 +207,38 @@ Run it again (dry run first) after deploying a build whose purge changed, and ch
 
 ## Deploying
 
-Vercel and Railway are **not** connected to GitHub: a push to `main` runs CI and deploys nothing, and nothing else deploys automatically. Both services are deployed by hand, from a commit that passed CI (`.github/workflows/ci.yml`), so the running code equals a commit on GitHub. Both CLIs upload files from disk, uncommitted changes included, so deploy from a clean tree of that commit, from the repo root:
+Vercel and Railway are **not** connected to GitHub: a push to `main` runs CI and deploys nothing, and nothing else deploys automatically. Both services are deployed by hand, from a commit that passed CI (`.github/workflows/ci.yml`), so the running code equals a commit on GitHub. Both CLIs upload files from disk, uncommitted changes included, so deploy from a clean tree of that commit, from the repo root.
+
+**Owner path (P1 rollout):** `zsh scripts/p1-rollout.sh deploy`, or with `--dry-run` for the checks and the plan alone. It refuses unless the checkout is `main`, clean and equal to `origin/main`, `ci.yml` has a successful run for the commit (`gh run list --commit`) and `FV_RELAY_ENABLED` is off on Railway (it reads the variable list only through a helper that prints facts such as on/off, never a value). Then it runs the commands below in this order and checks that the web app answers 200; a re-run skips the verifier upload while `/health` already reports the commit. It stops while the relay is on: it is the first step of the rollout, and later deploys use the commands below.
+
+The commands it runs, the reference:
 
 ```bash
 git status --short                              # must print nothing: the upload is the working tree
 SHA=$(git rev-parse HEAD)                       # a commit that passed CI
+
+# verifier (Railway) first: record the commit for /health, then upload the tree (builds Dockerfile.verify, railway.json)
+railway variable set FV_BUILD_SHA="$SHA" --service verify --skip-deploys
+railway up --service verify --detach --ci       # --detach returns after the upload; it does not wait for the build
+railway logs --service verify --build           # build output; without --build: the runtime logs (startup refusals)
+# waits until /health reports $SHA (the old deployment answers until then), then checks ok, key and simulator off
+python3 .github/scripts/check-health.py https://verify.flaconvault.com --build "$SHA" --simulator false --wait-for-build --timeout 900
 
 # web (Vercel): deploy a git archive export of the commit
 D=$(mktemp -d)/flaconvault && mkdir -p "$D"
 git archive "$SHA" | tar -x -C "$D"
 cp -R .vercel "$D/"                             # the project link is not in git; without it `--yes` links by folder name
 vercel --cwd "$D" --prod --yes
-
-# verifier (Railway): record the commit for /health, then upload the tree (builds Dockerfile.verify, railway.json)
-railway variable set FV_BUILD_SHA="$SHA" --service verify --skip-deploys
-railway up --service verify --detach --ci       # --detach returns after the upload; it does not wait for the build
-railway logs --service verify --build           # build output; without --build: the runtime logs (startup refusals)
-# waits until /health reports $SHA (the old deployment answers until then), then checks ok, key and simulator off
-python3 .github/scripts/check-health.py https://verify.flaconvault.com --build "$SHA" --simulator false --wait-for-build --timeout 900
 ```
+
+The verifier goes first, so the new web app goes live in front of the verifier of the same commit (against an older one, whose `/health` has no `relay`, it shows the wallet flow).
 
 Changing variables:
 
 ```bash
 vercel env add NAME production                  # web (value from stdin), then deploy again as above
 railway variable set K=V --service verify       # verifier: triggers a redeploy of the current deployment
+railway variable set K --stdin --service verify # a secret: the value comes from stdin, never from the command line
 ```
 
 When the programs change too, deploy web and verifier first and upgrade the programs right after: see [`devnet.md`](devnet.md#upgrading-devnet), step 0.

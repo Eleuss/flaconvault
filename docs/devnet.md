@@ -19,13 +19,13 @@ The program ids are fixed in `Anchor.toml` (`[programs.localnet]`, `[programs.de
 
 ## Registry on devnet
 
-Read on 2026-10-16 from the registry account (`solana account 4JPPCBA7DpbmfDsq1oHDuiJD1zL8VhfuJSoWQyYZXZWt --url devnet`, or `GET https://verify.flaconvault.com/api/registry`):
+Read on 2026-11-19 from the registry account (`solana account 4JPPCBA7DpbmfDsq1oHDuiJD1zL8VhfuJSoWQyYZXZWt --url devnet`, or `GET https://verify.flaconvault.com/api/registry`):
 
 | Item | Value |
 |---|---|
 | authority | the deploy wallet `Bsy5DFxt…` |
-| server key | key id `1`, public key `0f5b0efa6284cee08eb3ca19493be2391e86e902bce6d94fb8e47f157d068690`, `valid_from 0`, `valid_to 0` (open-ended); the production verifier's `GET /health` reports the same key |
-| partners | `Bsy5DFxtugs5PGqjF8ADrPYm7kt89dFpwEe9hTZokpFy` (deploy wallet) · `AciBj4mKqxhPDF7KRYqvpGt8EZm75b582dumVmTv2LJ1` (**Dev wallet A, a demo keypair held in browser `localStorage`**: treat it as public) · `JSMC3U7YqEwfvJMzsKEm17Uk1jspegk1L6KsE1nKiob` · `3HTM8mzTWe7aPcQY2Jf1QB38anr4G19v8eWjY7rU5RNC` · `5AhqcuywyxWNVhv8DPSHKdefKhYrFAdM9Q9ziZexpRvV` (test partner wallets added with `scripts/add-partner.ts`) |
+| server keys | key id `1`, public key `0f5b0efa6284cee08eb3ca19493be2391e86e902bce6d94fb8e47f157d068690`, revoked on 2026-10-16 (`valid_to 1792176384`); key id `2`, public key `9b624959863b2adb657ca82927fd11b7fc46b3399a9bb43064397ec3b5d5f0ff`, `valid_from 0`, `valid_to 0` (open-ended). The production verifier's `GET /health` must report the valid key (`keyId`, `pubkeyHex`) |
+| partners | `Bsy5DFxtugs5PGqjF8ADrPYm7kt89dFpwEe9hTZokpFy` (deploy wallet) · `JSMC3U7YqEwfvJMzsKEm17Uk1jspegk1L6KsE1nKiob` (a test partner wallet added with `scripts/add-partner.ts`). No longer partners: `AciBj4mKqxhPDF7KRYqvpGt8EZm75b582dumVmTv2LJ1` (**Dev wallet A, a demo keypair held in browser `localStorage`**: treat it as public) and the test wallets `3HTM8mzTWe7aPcQY2Jf1QB38anr4G19v8eWjY7rU5RNC`, `5AhqcuywyxWNVhv8DPSHKdefKhYrFAdM9Q9ziZexpRvV` |
 | site 1 | `Parfümerie X, Düsseldorf` |
 | site 2 | `FlaconVault Vault, Wickede` |
 
@@ -158,7 +158,8 @@ accounts). Operator steps, from the upgrade/registry authority wallet:
    programs are larger than the deployed ones: `solana program deploy` extends the ProgramData account by itself; if
    `anchor upgrade` refuses for lack of space, run `solana program extend <program id> <additional bytes>` first.
 1. `anchor build --verifiable`, then `anchor upgrade target/verifiable/flacon.so --program-id 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL --provider.cluster devnet` and `anchor upgrade target/verifiable/escrow.so --program-id 9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL --provider.cluster devnet`. The verifiable build writes to `target/verifiable/`; `target/deploy/` holds whatever plain `anchor build` ran last, which `anchor verify` would not reproduce. Check both programs with `anchor verify` against the pushed commit ([`programs/README.md`](../programs/README.md#verifiable-builds)), copy the IDLs (see Commands) and record the commit next to the upgrade signatures here.
-2. Register a production-only server key under a new key id (`scripts/server-key.ts add <pubkeyHex> <keyId>`), switch the verifier to it (`FV_SERVER_ED25519_SEED`, `FV_SERVER_KEY_ID`), then revoke key id 1 (`scripts/server-key.ts revoke 1`): its seed is also in local development environments, and demo scans signed with it were published.
+2. Register a production-only server key under a new key id (`scripts/server-key.ts add <pubkeyHex> <keyId>`), switch the verifier to it (`FV_SERVER_ED25519_SEED`, `FV_SERVER_KEY_ID`), then revoke key id 1 (`scripts/server-key.ts revoke 1`): its seed is also in local development environments, and demo scans signed with it were published. (Done on devnet: key id 1 was revoked on 2026-10-16, key id 2 is valid.)
+   Rotating again, for example after a leak of the verifier's variables (Railway recommended rotating them after its October 2026 incident): `zsh scripts/p1-rollout.sh rotate-keys` (one question, `--dry-run` for the plan). It sets a new random `FV_ADMIN_TOKEN` and a new seed through `railway variable set NAME --stdin`, registers the new public key under the next free key id before the verifier uses it, switches `FV_SERVER_KEY_ID`, waits until `/health` reports the new key, and revokes the old key id only 11 minutes later: a scan the old key signed that is not on chain yet still lands in that window (a wallet scan while its signed `ts` is within 600 s of the cluster clock, a relay row until `ts + 570`, sent with the key id that signed it), and after it could not land anyway. A run that stopped half way resumes when started again (`~/flaconvault-rollout/rotate-keys.state` records its progress); once a rotation has finished, the next run starts a new one, and its plan says so before the question. Every rotation takes one of the registry's 8 key ids for good (revoked ids stay taken). It never touches `FV_MASTER_KEY`: every programmed tag derives its keys from it, so a new master key would make every existing tag fail.
 3. Remove the browser-held demo partner Dev wallet A (`scripts/partner.ts remove AciBj4mKqxhPDF7KRYqvpGt8EZm75b582dumVmTv2LJ1`) and review the other test partners.
    Removing the partner does not take away what Dev wallet A *owns*: it owns the Core asset `FEM7HG84tRevMsUWcazdYJJhDCu2tWDLYpDdFeyKm4xG` of SN-2026-000005 (minted from `/certify`), and the escrow lets the asset's owner list and sell the bottle. Move the asset to the deploy wallet with Dev wallet A's key: in the browser that holds it, copy the value of `localStorage["fv.devwallet.a"]` (the 64-byte secret key as a JSON array) into a temporary file, run `ANCHOR_WALLET=<that file> npx tsx scripts/core-transfer.ts FEM7HG84tRevMsUWcazdYJJhDCu2tWDLYpDdFeyKm4xG <deploy wallet>`, then delete the file. Check that no open order of Dev wallet A exists for SN-2026-000005 (`getProgramAccounts(escrow)` with the seller filter at offset 40); `reserve` now refuses such an order once the asset has moved, and the seller can cancel it.
 4. Retire the seed-only seals whose published demo signatures could be replayed: `mark_seal_dead` (issuer or authority wallet) for the seals of SN-2026-000002 and SN-2026-000003 (`scripts/seed-passports.ts` does it for the seals the seed marks dead, i.e. SN-2026-000003). After step 2 those old signatures cannot be anchored anyway (key revoked, older than 10 minutes). Then run the verifier's `POST /api/admin/purge-seed` (see [`deploy.md`](deploy.md)).
@@ -172,6 +173,50 @@ accounts). Operator steps, from the upgrade/registry authority wallet:
 The owner's steps for [`public-record.md`](public-record.md) §11, from the upgrade/registry authority wallet. Builders
 and CI never run them.
 
+**Owner path: `scripts/p1-rollout.sh`**, one command per step, each also with `--dry-run` (checks and plan, no change):
+
+| Step | Command | What it does |
+|---|---|---|
+| 0 | `zsh scripts/p1-rollout.sh deploy` | verifier, then web app of the commit online with the relay off ([`deploy.md`](deploy.md#deploying)) |
+| 1 to 3 | `zsh scripts/p1-rollout.sh chain` | backups, both upgrades (escrow first), HolderConfig, Holdings |
+| 4 and 5 | `zsh scripts/p1-rollout.sh relay` | relayer key and funding, `FV_RELAY_ENABLED=true`, waits for `relay.ok` |
+| afterwards | `zsh scripts/p1-rollout.sh rotate-keys` | new `FV_ADMIN_TOKEN` and server key ([Upgrading devnet](#upgrading-devnet), step 2); run it again after any later leak |
+| any time | `zsh scripts/p1-rollout.sh status` | read-only overview: health, programs, HolderConfig, Holdings, balances |
+
+`chain` refuses unless the CLI wallet (`ANCHOR_WALLET`, default `~/.config/solana/id.json`) is the upgrade authority of
+both programs and the registry authority, `GET /health` reports the checked-out commit (and `deploy` published its web
+app), the manual CI run with "anchor" ticked passed for that commit (step 0 below; the script starts it when it is
+missing), and the wallet holds enough devnet SOL: the extend rent, the HolderConfig and Holding rent and the fees, plus
+whichever is larger of 0.6 SOL kept for step 4 and the biggest upload buffer (an upgrade first writes the program into a
+buffer account and gets its rent back afterwards: about 2.4 SOL for flacon). It then runs a plain `anchor build` (the
+owner's Mac has no Docker, which `anchor build --verifiable` needs) and records each file's sha256, saves both deployed
+programs with `solana program dump` into `~/flaconvault-rollout/<UTC date>-<short commit>/` next to the build log and a
+log of every signature, shows the plan and its cost and asks once (j/n). Then it extends (only when the new file is
+larger, by `NEW - OLD + 4096` bytes but at least 10,240) and upgrades escrow and flacon as in step 1, compares the
+deployed bytes with the build after each upgrade, and runs steps 2 and 3. A re-run skips what is done (a program equal
+to the build, an existing HolderConfig, existing Holdings) and first closes an upload buffer an interrupted upgrade left
+behind. With a plain build, `anchor verify` cannot reproduce the deployed binaries; the recorded sha256 and the
+comparison after each upgrade stand in for it until the verifiable build can run on a machine with Docker. `relay`
+creates the relayer key only when the verifier has none (it never replaces one), stores it before it funds it with 0.5
+SOL, sets `FV_CLUSTER=devnet` and `FV_PROGRAM_ID` when they are missing and `FV_RELAY_ENABLED=true` last, and waits for
+`relay.ok`. On screen the script speaks German; the tools' own output (Anchor, the Solana CLI, the scripts) goes to the
+log in the backup folder, and only a failing tool's last lines are shown.
+
+Rehearsal (for Claude, not the owner): `FV_ROLLOUT_LOCAL=1` runs the steps against a local validator, verifier and web
+app (`http://127.0.0.1:8899`, `:8787`, `:3000`, or `FV_ROLLOUT_RPC`, `FV_ROLLOUT_VERIFY_URL`, `FV_ROLLOUT_WEB_URL`; any
+address other than 127.0.0.1, localhost or [::1] is refused) with cluster localnet, no Vercel and no gh: `deploy` only
+checks that the local verifier reports the commit and the web app answers, the other steps work as on devnet. It keeps
+its deploy markers, backups and logs in `~/flaconvault-rollout-local`: a state folder belongs to the cluster that first
+wrote to it, so devnet's `chain` never takes a rehearsal's deploy marker or backup for its own. It never calls Railway;
+with `FV_ROLLOUT_RAILWAY=<absolute path of a stand-in>` (a program that answers `whoami` with `fv-rollout stand-in`,
+keeps the local verifier's variables for `variable list --json` and `variable set`, and restarts the verifier on a set
+without `--skip-deploys`), `relay`, `rotate-keys` and `status` use their Railway path against it, with the real
+`solana-keygen`, `solana transfer` and `scripts/server-key.ts`. A plain `solana-test-validator` charges 6,960 lamports
+of rent per byte, devnet 5,080 (`solana rent 1 --url devnet` on 2026-11-20: 655,320 lamports for 1 + 128 bytes), so a
+rehearsal's balance check asks for more SOL than devnet's.
+
+The manual commands below are the reference the script follows.
+
 0. Before: the manual CI run passes (it includes `scripts/test-flacon-litesvm.sh` and the escrow LiteSVM tests). The
    verifier and the web app of the same commit can be deployed first: with `FV_RELAY_ENABLED` unset nothing is sent,
    and the new web app keeps working against the old programs (the relay records stay "failed"; `/certify` adds
@@ -181,7 +226,8 @@ and CI never run them.
    `NEW=$(wc -c < target/verifiable/escrow.so)`, `OLD=` the `Data Length` printed by
    `solana program show 9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL --url devnet`; only when `NEW` is larger, run
    `solana program extend 9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL $((NEW - OLD + 4096)) --url devnet`
-   (`solana rent $((NEW - OLD + 4096)) --url devnet` shows the rent it costs), then
+   (`solana rent $((NEW - OLD + 4096)) --url devnet` shows the rent it costs; the Solana CLI 4.1 refuses an extension
+   below 10,240 bytes, so use 10240 when the sum is smaller), then
    `anchor upgrade target/verifiable/escrow.so --program-id 9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL --provider.cluster devnet`.
    Then flacon, which no longer fits its devnet ProgramData: `NEW=$(wc -c < target/verifiable/flacon.so)`, `OLD=` the
    `Data Length` printed by `solana program show 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL --url devnet`; when

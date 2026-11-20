@@ -5,7 +5,10 @@ Seal frames uploaded to POST /api/media, kept only when a signed scan uses them.
             upload lands here, under the session nonce it was sent with.
   promoted  <media_dir>/<sha256>.bin (+ <sha256>.preview.<ext>, the first frame, when there are several) and a media
             row — only when a VALID /api/verify consumes that nonce with mediaHash = sha256 (promote()). Nothing else
-            ever leaves staging.
+            ever leaves staging. A scan commits only to photos its own session uploaded: /api/verify signs a tier ≥ 2
+            scan only when its mediaHash is staged under its nonce (is_staged(); else 422 media_not_uploaded). A hash
+            is public (bundles, FVSCAN2), so a scan that merely named one could otherwise get another scan's kept
+            photos — a wallet-free scan's among them (D14) — archived as its own.
   purge     a staging directory whose nonce is expired, consumed or unknown is deleted, opportunistically from
             POST /api/session and POST /api/media (at most every PURGE_EVERY_S per media directory) and on every
             reconcile cycle (retention()). Junk uploads therefore live no longer than a session nonce (FV_NONCE_TTL_S)
@@ -64,6 +67,10 @@ _last_purge: dict[str, float] = {}
 
 class FileTooLarge(Exception):
     pass
+
+
+class NotStaged(Exception):
+    """promote(): this session uploaded nothing with that hash (nothing is staged with it under the nonce)."""
 
 
 # ---------- paths ----------
@@ -192,13 +199,27 @@ def discard(settings: Settings, nonce_hex: str) -> None:
     shutil.rmtree(d, ignore_errors=True)
 
 
+def is_staged(settings: Settings, nonce_hex: str, sha_hex: str) -> bool:
+    """An upload with this sha256 is staged under this session nonce (POST /api/media with that nonce, complete)."""
+    try:
+        d = _nonce_dir(settings, nonce_hex)
+    except ValueError:
+        return False
+    sha = sha_hex.lower()
+    return _HEX64.match(sha) is not None and (d / f"{sha}.bin").is_file() and (d / f"{sha}.json").is_file()
+
+
 def promote(conn, settings: Settings, nonce_hex: str, sha_hex: str, ts: int) -> dict | None:
     """
     A VALID /api/verify consumed `nonce_hex` with mediaHash `sha_hex`: that upload moves out of staging (blob, first
-    frame as preview, media row); everything else staged under the nonce is deleted. Returns the media row (None when
-    nothing with that hash was uploaded under this nonce and no earlier scan kept it).
+    frame as preview, media row); everything else staged under the nonce is deleted. Raises NotStaged (nothing touched)
+    when nothing with that hash is staged under this nonce: a scan never takes over bytes an earlier scan kept by naming
+    their hash (the caller refuses it). Returns the media row (None only when keeping the upload failed on disk and no
+    earlier scan kept the same bytes).
     """
     sha = sha_hex.lower()
+    if not is_staged(settings, nonce_hex, sha):
+        raise NotStaged(sha)
     d = _nonce_dir(settings, nonce_hex)
     blob, meta_path = d / f"{sha}.bin", d / f"{sha}.json"
     row = get_media(conn, sha)

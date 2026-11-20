@@ -33,38 +33,56 @@ pub struct AttachSeal<'info> {
 }
 
 pub fn handle_attach_seal(ctx: Context<AttachSeal>, uid_hash: [u8; 32], kind: u8) -> Result<()> {
-    let signer = ctx.accounts.signer.key();
+    let bump = ctx.bumps.seal;
+    apply_attach_seal(
+        &ctx.accounts.registry,
+        &mut ctx.accounts.passport,
+        &mut ctx.accounts.seal,
+        &ctx.accounts.signer.key(),
+        uid_hash,
+        kind,
+        bump,
+    )
+}
+
+/// Checks and writes of `attach_seal`, shared with `attach_seal_v2` (which only adds a separate payer):
+/// `NotIssuerOrAuthority`, `InvalidSealKind`, `PassportVoid`, `TooManySeals`, in this order.
+pub fn apply_attach_seal<'info>(
+    registry: &Account<'info, Registry>,
+    passport: &mut Account<'info, Passport>,
+    seal: &mut Account<'info, Seal>,
+    signer: &Pubkey,
+    uid_hash: [u8; 32],
+    kind: u8,
+    bump: u8,
+) -> Result<()> {
     require!(
-        ctx.accounts
-            .registry
-            .may_manage_passport(&signer, &ctx.accounts.passport),
+        registry.may_manage_passport(signer, passport),
         FlaconError::NotIssuerOrAuthority
     );
     require!(
         kind == SEAL_KIND_BOX || kind == SEAL_KIND_NECK,
         FlaconError::InvalidSealKind
     );
-    require!(!ctx.accounts.passport.is_voided(), FlaconError::PassportVoid);
+    require!(!passport.is_voided(), FlaconError::PassportVoid);
     require!(
-        ctx.accounts.passport.seal_count < MAX_SEALS_PER_PASSPORT,
+        passport.seal_count < MAX_SEALS_PER_PASSPORT,
         FlaconError::TooManySeals
     );
     let now = Clock::get()?.unix_timestamp;
 
-    let passport = &mut ctx.accounts.passport;
     passport.seal_count = passport
         .seal_count
         .checked_add(1)
         .ok_or(FlaconError::SealCountOverflow)?;
 
-    let seal = &mut ctx.accounts.seal;
     seal.passport = passport.key();
     seal.kind = kind;
     seal.uid_hash = uid_hash;
     seal.last_counter = 0;
     seal.dead = false;
     seal.attached_at = now;
-    seal.bump = ctx.bumps.seal;
+    seal.bump = bump;
 
     emit!(SealAttached {
         passport: passport.key(),

@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   ENUMS, Verdict, Grade, MSG_PREFIX, MSG_LEN, BUNDLE_SCHEMA, NONCE_TTL_S, PDA_SEEDS, HEAT_FIELDS_C, HEAT_DECISIVE_INDEX,
-  KEY_DIV_APP_ID_HEX, KEY_DIV_SYS_ID, buildScanMessage, parseScanMessage, serialHash, uidHash, bindingHash, computeGrade,
+  KEY_DIV_APP_ID_HEX, KEY_DIV_SYS_ID, MSG2_PREFIX, MSG2_LEN, SCAN_HEAD_PREFIX, COMMITMENT_PREFIX, FILL_NONE, BUNDLE2_SCHEMA,
+  buildScanMessage, parseScanMessage, serialHash, uidHash, bindingHash, computeGrade,
   heatLevelsToMask, canonicalBundle, bundleHash, ScanProofBundleSchema, ed25519PublicKey, ed25519Sign, ed25519Verify,
   bytesToHex, hexToBytes, sha256Hex, utf8,
 } from "./index.ts";
@@ -50,6 +51,7 @@ test("docs/vectors.json constants match enums.ts", () => {
   assert.deepEqual(vectors.constants, {
     MSG_PREFIX, MSG_LEN, BUNDLE_SCHEMA, NONCE_TTL_S, PDA_SEEDS: { ...PDA_SEEDS }, HEAT_FIELDS_C: [...HEAT_FIELDS_C],
     HEAT_DECISIVE_INDEX, KEY_DIV_APP_ID_HEX, KEY_DIV_SYS_ID,
+    MSG2_PREFIX, MSG2_LEN, SCAN_HEAD_PREFIX, COMMITMENT_PREFIX, FILL_NONE, BUNDLE2_SCHEMA,
   });
 });
 

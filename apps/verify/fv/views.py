@@ -5,9 +5,9 @@ import json
 import re
 from urllib.parse import quote
 
-from fv.db import (events_for, get_passport, has_event_type, latest_scan_with_indicators, passport_stats_confirmed,
+from fv.db import (events_for, get_passport, has_event_type, latest_scan_with_indicators, partner_pubkeys, passport_stats_confirmed,
                    recent_confirmed_serials_for, seals_for)
-from fv.enums import UNREGISTERED, EventType, Grade, Tamper
+from fv.enums import UNREGISTERED, EventType, Grade, Tamper, Tier
 from fv.proof import serial_hash, uid_hash
 
 _UID_RE = re.compile(r"^[0-9A-Fa-f]{14}$")
@@ -36,14 +36,15 @@ def clean_text(v, max_len: int) -> str | None:
     return v[:max_len] if v and v.isprintable() else None
 
 
-def _location(r: dict) -> dict:
+def _location(r: dict, *, relay: bool = False) -> dict:
     """Only a SCAN carries a location (the scanner's own, from /api/verify). Other events never show one: older rows
-    stored whatever the first poster of a public transaction sent."""
+    stored whatever the first poster of a public transaction sent. A public-record (relay) scan shows only its country:
+    the place stays in SQLite (§9.8, D14), as the consumer page tells the visitor."""
     if r.get("type") != EventType.SCAN:
         return {"country": None, "city": None}
     country = r.get("country")
     return {"country": country.upper() if isinstance(country, str) and re.fullmatch(r"[A-Za-z]{2}", country) else None,
-            "city": clean_text(r.get("city"), 80)}
+            "city": None if relay else clean_text(r.get("city"), 80)}
 
 
 def uid_tail(uid_hex: str) -> str:
@@ -74,34 +75,89 @@ def public_payload(r: dict) -> dict:
       * events that are not confirmed lose the signed scan message, the server signature and the session nonce — with
         those, anyone could anchor (front-run) the scan with their own wallet; the scanner gets them from its own
         /api/verify response or the resume link (GET /api/verify/{eventId}?token=);
+      * the same for a public-record (relay) scan that is not recorded: its FVSCAN2 would let anyone send it first
+        (record_scan_v2 accepts any fee payer) and take the counter a queued TAP of the same tap still needs;
+      * a public-record (relay) scan never shows the v1-style detail kept in SQLite only (§9.8, D14): the free-text note,
+        the place (only the country stays), the device platform and the claimed attester pubkey — pending or recorded;
       * raw chip UIDs never leave the server (older SEAL_ATTACH and report rows stored them): only uidTail.
     """
     payload = json.loads(r.get("payload_json") or "{}")
     if not isinstance(payload, dict):
         return {}
-    if r.get("status") != "confirmed":
+    if r.get("status") != "confirmed" or (payload.get("anchor") == "relay" and not r.get("tx_sig")):
         payload.pop("msgHex", None)
         if isinstance(payload.get("server"), dict):
             payload["server"] = {**payload["server"], "sig": None}
         if isinstance(payload.get("session"), dict):
             payload["session"] = {**payload["session"], "nonce": None}
+        v2 = payload.get("bundleV2")
+        if isinstance(v2, dict) and isinstance(v2.get("session"), dict):
+            payload["bundleV2"] = {**v2, "session": {**v2["session"], "nonce": None}}
+    if payload.get("anchor") == "relay":
+        if isinstance(payload.get("visual"), dict):
+            payload["visual"] = {k: v for k, v in payload["visual"].items() if k != "note"}
+        if isinstance(payload.get("location"), dict):
+            payload["location"] = {"country": payload["location"].get("country")}
+        payload.pop("device", None)
+        if isinstance(payload.get("attester"), dict):
+            payload["attester"] = {k: v for k, v in payload["attester"].items() if k != "pubkey"}
     uid = payload.pop("uid", None)
     if isinstance(uid, str) and _UID_RE.match(uid):
         payload.setdefault("uidTail", uid_tail(uid))
     return payload
 
 
-def event_view(r: dict) -> dict:
-    return {
+SCAN_BY_ACTOR = {"NONE": "VISITOR", "HOLDER": "HOLDER", "WALLET": "HOLDER", "PARTNER": "PARTNER", "RECIPIENT": "RECIPIENT"}
+
+
+def _int(v) -> int | None:
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def scan_by(r: dict, payload: dict, partners: set[str] | None) -> str:
+    """
+    Who made a SCAN, for the history label (§9.9): a public-record scan by its actor kind (NONE → VISITOR, HOLDER and
+    WALLET → HOLDER, PARTNER, RECIPIENT); a Tier-0 sighting → VISITOR; a v1 scan → PARTNER when its verified attester
+    is a registry partner (`partners`) or its verified tier is ≥ CERTIFIED, else VISITOR.
+    """
+    kind = payload.get("actorKind")
+    if isinstance(kind, str) and kind in SCAN_BY_ACTOR:
+        return SCAN_BY_ACTOR[kind]
+    if "indicators" not in payload:
+        return "VISITOR"
+    actor = r.get("actor_pubkey")
+    claimed = payload.get("attester") if isinstance(payload.get("attester"), dict) else {}
+    tier = _int((payload.get("chain") or {}).get("tier") if isinstance(payload.get("chain"), dict) else None)
+    if tier is None:
+        tier = _int(payload.get("tier"))
+    if tier is None and actor and actor == claimed.get("pubkey"):
+        tier = _int(claimed.get("tier"))
+    if (tier or 0) >= Tier.CERTIFIED or (actor and partners and actor in partners):
+        return "PARTNER"
+    return "VISITOR"
+
+
+def event_view(r: dict, partners: set[str] | None = None) -> dict:
+    """An event as the API shows it. SCAN events add `scanBy` (scan_by; `partners` = the registry partner pubkeys) and
+    `purpose` (the FVSCAN2 purpose name, null for v1 scans)."""
+    payload = public_payload(r)
+    out = {
         "id": r["id"], "type": r["type"], "ts": r["ts"],
         "actor": r["actor_pubkey"], "actorLabel": r["actor_label"],
         "txSig": r["tx_sig"], "status": r["status"],
         "sealUidHash": h0x(r["seal_uid_hash"]),
-        "payload": public_payload(r),
+        "payload": payload,
         "arBundle": r["ar_bundle"], "arMedia": r["ar_media"],
         "gradeAfter": r["grade_after"],
-        "location": _location(r),
+        "location": _location(r, relay=payload.get("anchor") == "relay"),
     }
+    if r.get("type") == EventType.SCAN:
+        out["scanBy"] = scan_by(r, payload, partners)
+        out["purpose"] = payload.get("purpose") if payload.get("anchor") == "relay" else None
+    return out
 
 
 def seal_view(s: dict) -> dict:
@@ -115,6 +171,7 @@ def passport_view(conn, serial: str) -> dict | None:
         return None
     seals = seals_for(conn, serial)
     events = events_for(conn, serial)
+    partners = set(partner_pubkeys(conn))       # attesters.is_partner, synced from the on-chain registry by reconcile
     stats = passport_stats_confirmed(conn, serial)
     latest_row = latest_scan_with_indicators(conn, serial)
     latest = None
@@ -144,7 +201,7 @@ def passport_view(conn, serial: str) -> dict | None:
         "sealStatus": seal_status,
         "stats": {**stats, "counter": counter},
         "latest": latest,
-        "events": [event_view(e) for e in events],
+        "events": [event_view(e, partners) for e in events],
     }
 
 

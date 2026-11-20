@@ -1,9 +1,10 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Loader2 } from "lucide-react";
+import { ArrowRight, Loader2, RefreshCw } from "lucide-react";
 import { PUBLIC_VERIFY_URL } from "@/lib/config";
-import { scanSession, tapGateAction, tapHandoff } from "@/lib/handoff";
+import { scanSession, tapGateAction, tapHandoff, verifierReady } from "@/lib/handoff";
+import { TAP_GATE_NOT_USED, TAP_GATE_UNAVAILABLE, TRY_AGAIN } from "@/lib/public-record";
 import type { TagParams } from "@/lib/verify-api";
 
 /**
@@ -12,13 +13,26 @@ import type { TagParams } from "@/lib/verify-api";
  * Handed over: if this tab is the scan tab (iPhone Safari loads the sticker link into it), go back to the scan page
  * with its tier/role/site. If the scan runs in another tab (Android opens a new tab), stay here and ask the user to
  * return there — a second /scan on the same session would only fail with "session expired".
+ *
+ * To the verifier: only after its /health answered `ok` within 2 s (lib/handoff.ts verifierReady). Otherwise the page
+ * says the check is unavailable instead of showing the host's error page; the tap has not reached the verifier, so
+ * "Try again" reloads this very URL and checks the same tap. The hand-over needs no health check.
  */
 export function TapGate({ params }: { params: TagParams }) {
   const [handed, setHanded] = useState<null | { back: string | null }>(null);
+  const [down, setDown] = useState(false);
   useEffect(() => {
+    let alive = true;
     const s = scanSession.active();
     const action = tapGateAction(params, s, s ? scanSession.ownedHere(s) : false, PUBLIC_VERIFY_URL);
-    if (action.kind === "verify") { window.location.replace(action.url); return; }
+    if (action.kind === "verify") {
+      verifierReady(PUBLIC_VERIFY_URL).then((ok) => {
+        if (!alive) return;
+        if (ok) window.location.replace(action.url);
+        else setDown(true);
+      });
+      return () => { alive = false; };
+    }
     tapHandoff.set(params);
     const { back } = action;
     setHanded({ back });
@@ -26,6 +40,16 @@ export function TapGate({ params }: { params: TagParams }) {
     const id = setTimeout(() => window.location.replace(back), 1500);
     return () => clearTimeout(id);
   }, [params]);
+  if (down) {
+    return (
+      <div className="page-in container-page flex min-h-[70vh] flex-col justify-center py-16" role="alert">
+        <p className="eyebrow">Seal check</p>
+        <h1 className="mt-3 max-w-lg font-serif text-3xl leading-tight sm:text-4xl">{TAP_GATE_UNAVAILABLE}</h1>
+        <p className="mt-3 max-w-md text-muted">{TAP_GATE_NOT_USED}</p>
+        <button onClick={() => window.location.reload()} className="btn mt-6 self-start"><RefreshCw className="h-4 w-4" aria-hidden /> {TRY_AGAIN}</button>
+      </div>
+    );
+  }
   if (handed) {
     return (
       <div className="page-in container-page flex min-h-[70vh] flex-col justify-center py-16">

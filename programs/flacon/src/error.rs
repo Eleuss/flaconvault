@@ -43,7 +43,7 @@ pub enum FlaconError {
     InvalidInstructionsSysvar,
     #[msg("The instruction before record_scan must be an Ed25519Program instruction")]
     MissingEd25519Instruction,
-    #[msg("Ed25519 instruction data is malformed (expects exactly one signature over a 152-byte message)")]
+    #[msg("Ed25519 instruction data is malformed (expects exactly one signature over a 152-byte FVSCAN1 or, for record_scan_v2, a 256-byte FVSCAN2 message)")]
     MalformedEd25519Instruction,
     #[msg("No server key with this key_id in the registry")]
     UnknownServerKey,
@@ -101,4 +101,38 @@ pub enum FlaconError {
     InvalidAsset,
     #[msg("The Core asset must be owned by the issuer when the passport is minted")]
     AssetNotOwnedByIssuer,
+
+    // ---- v2 public record (docs/public-record.md §7.8; appended, keep the codes above stable) ----
+    #[msg("cluster_tag must be 1 (MAINNET), 2 (DEVNET) or 3 (LOCALNET)")]
+    InvalidClusterTag,
+    #[msg("Delay must be within MIN_HOLD_DELAY_S..=MAX_HOLD_DELAY_S")]
+    InvalidDelay,
+    #[msg("Commitment must not be all zeros")]
+    InvalidCommitment,
+    #[msg("record_scan_v2 must be a top-level instruction")]
+    CpiNotAllowed,
+    #[msg("Signed message is not an FVSCAN2 message")]
+    InvalidMessagePrefix,
+    #[msg("FVSCAN2 message is bound to another program id")]
+    WrongProgramId,
+    #[msg("FVSCAN2 message is bound to another cluster")]
+    WrongCluster,
+    #[msg("purpose must be 0..=6")]
+    InvalidPurpose,
+    #[msg("actor_kind must be 0..=4")]
+    InvalidActorKind,
+    #[msg("A sighting (tier 0) has fill FILL_NONE, uv/hum/heat MISSING, heat_levels 0 and no media; FILL_NONE only with tier 0")]
+    InvalidSighting,
+    #[msg("purpose is not allowed for this actor kind or tier")]
+    PurposeNotAllowed,
+    #[msg("actor does not match its kind (zero for NONE, Holding.commitment for HOLDER, the signer for WALLET/PARTNER)")]
+    ActorMismatch,
+    #[msg("WALLET and PARTNER scans need the actor as signer")]
+    MissingActorSigner,
+    #[msg("The WALLET actor does not own the passport's Core asset")]
+    NotAssetOwner,
+    #[msg("HOLDER and RECIPIENT scans need a pass held in an account (Passport.asset == Holding)")]
+    HoldingNotInAccount,
+    #[msg("Holding head_count overflow")]
+    HeadCountOverflow,
 }

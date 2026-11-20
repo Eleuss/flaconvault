@@ -11,7 +11,9 @@
       "passport": "passport",
       "seal": "seal",
       "scan": "scan",
-      "origin": "origin"
+      "origin": "origin",
+      "holder_config": "holder_config",
+      "holding": "holding"
     },
     "HEAT_FIELDS_C": [
       29,
@@ -23,7 +25,13 @@
     ],
     "HEAT_DECISIVE_INDEX": 4,
     "KEY_DIV_APP_ID_HEX": "D2760000850101",
-    "KEY_DIV_SYS_ID": "FlaconVault"
+    "KEY_DIV_SYS_ID": "FlaconVault",
+    "MSG2_PREFIX": "FVSCAN2",
+    "MSG2_LEN": 256,
+    "SCAN_HEAD_PREFIX": "FVHEAD1",
+    "COMMITMENT_PREFIX": "FVHOLD1",
+    "FILL_NONE": 255,
+    "BUNDLE2_SCHEMA": "flaconvault.scanbundle.v2"
   },
   "serverTestKey": {
     "keyId": 1,
@@ -448,5 +456,521 @@
       }
     ]
   },
-  "urlExample": "https://<verifier-host>/t?uid=04A1B2C3D4E5F6&ctr=00000E&cmac=6F3A0B1C2D3E4F50"
+  "urlExample": "https://<verifier-host>/t?uid=04A1B2C3D4E5F6&ctr=00000E&cmac=6F3A0B1C2D3E4F50",
+  "v2": {
+    "note": "FVSCAN2 golden vectors (docs/public-record.md §5). Signatures use serverTestKey (TEST only).",
+    "programId": "7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL",
+    "programIdHex": "626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29",
+    "cluster": "DEVNET",
+    "clusterTag": 2,
+    "pdas": {
+      "registry": "4JPPCBA7DpbmfDsq1oHDuiJD1zL8VhfuJSoWQyYZXZWt",
+      "passport": "5ewvSxUE88xsHkJvdx385KbjcJDs5FrArSptgnSnTwAT",
+      "seal": "Hnhdd1ppPTq1Ek22VhSErfz8urfLu9w43ANovzytCxCY",
+      "holderConfig": "D8ABpujMCjKUXuP8J2jsaiUb6JFEjSp21DZUJkrWn4cb",
+      "holding": "CXiCKHkkFjgRVW1oEA6Aq5AZ9RzkRKfhFYVLZzRLGSi7",
+      "eventAuthority": "GKu94ojJCpbjg8EYt1wEXnuUJskCWna1CeLvuNUiFGXN"
+    },
+    "discriminators": {
+      "global:record_scan_v2": "047bf48d93f81ff1",
+      "global:init_holder_config": "d0bac1da36e4ea2b",
+      "global:set_holder_config": "8d2acb3f37c81ab1",
+      "global:init_holding_v1": "cd98809bc067bb03",
+      "global:mint_passport_v2": "c628647296de125a",
+      "global:attach_seal_v2": "3faca25aa6fd31e4",
+      "account:HolderConfig": "79692a385ecd9930",
+      "account:Holding": "176040faebbf0090",
+      "event:ScanRecordedV2": "279d104913163f04"
+    },
+    "actors": {
+      "partner": {
+        "seedLabel": "flaconvault:test-partner:1",
+        "pubkey": "4n843nZud5opLJAs4kDuqsopm9RJ2dAuZHXB4TivEufJ",
+        "pubkeyHex": "38222be9a0fe113befacf3ab437767e32536e91f07cc1f6e41ad27abe878eaf5"
+      },
+      "wallet": {
+        "seedLabel": "flaconvault:test-wallet:1",
+        "pubkey": "C3L53rcnZDAiWRBMnDPwsqMTDEEgM9XGovU6EftDZbpC",
+        "pubkeyHex": "a40947b5ac225b9c704beb957d13eaaeb43dfa3d2ae37d6599277b2f05c30719"
+      }
+    },
+    "commitments": [
+      {
+        "passport": "5ewvSxUE88xsHkJvdx385KbjcJDs5FrArSptgnSnTwAT",
+        "passportHex": "4527566c42a505d1b5fab981cff855a485020dc5abe34b365ace5fd57c225ffc",
+        "epoch": 0,
+        "secretLabel": "flaconvault:test-holder-secret:0",
+        "secretHex": "9a529ee0b6ce1682b208fcb6554f1176705b04fb991134fbfe336c075bd7ce3f",
+        "commitmentHex": "24088cd63896f3d8f4e55b031307f84429c5e16a039d5f6fa1e4a0e983649fe5"
+      },
+      {
+        "passport": "5ewvSxUE88xsHkJvdx385KbjcJDs5FrArSptgnSnTwAT",
+        "passportHex": "4527566c42a505d1b5fab981cff855a485020dc5abe34b365ace5fd57c225ffc",
+        "epoch": 1,
+        "secretLabel": "flaconvault:test-holder-secret:1",
+        "secretHex": "c9e454328721153f817ad8cf80785be77a5e9cb24106a94eff386062e2105ace",
+        "commitmentHex": "09b1c3a5ff50a1f70512c08f7159f65c510e4af74f4fa56b4959a9b0925411fd"
+      }
+    ],
+    "scans": [
+      {
+        "name": "birth-partner-tier4",
+        "input": {
+          "serial": "SN-2026-000001",
+          "uidHex": "04A1B2C3D4E5F6",
+          "sealKind": 1,
+          "counter": 1,
+          "tier": 4,
+          "role": 4,
+          "tamper": 3,
+          "uv": 3,
+          "hum": 0,
+          "heat": 0,
+          "heatLevels": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fill": 100,
+          "siteId": 1,
+          "purpose": 6,
+          "actorKind": 3,
+          "actorHex": "38222be9a0fe113befacf3ab437767e32536e91f07cc1f6e41ad27abe878eaf5",
+          "mediaHashHex": "e33d70ceeddc02e132375ef031dbf9f65d5554a582fe3a3e83fb63214ec6ac0e",
+          "nonceHex": "14e882bb433c3ce8de3dcd4c3cd300f4e1d75025b18d1624b1e21ca702e1e61c",
+          "ts": 1790000100,
+          "issuedAt": 1790000100,
+          "country": "DE"
+        },
+        "heatMask": 0,
+        "bundleCanonical": "{\"actor\":{\"id\":\"0x38222be9a0fe113befacf3ab437767e32536e91f07cc1f6e41ad27abe878eaf5\",\"kind\":\"PARTNER\"},\"attester\":{\"role\":4,\"siteId\":1,\"tier\":4},\"cluster\":\"DEVNET\",\"counter\":1,\"fill\":100,\"heatLevels\":[0,0,0,0,0,0],\"indicators\":{\"heat\":0,\"humidity\":0,\"uv\":3},\"location\":{\"country\":\"DE\"},\"media\":[{\"sha256\":\"0xe33d70ceeddc02e132375ef031dbf9f65d5554a582fe3a3e83fb63214ec6ac0e\",\"type\":\"SEAL_FRAMES\"}],\"programId\":\"7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL\",\"purpose\":\"BIRTH\",\"schema\":\"flaconvault.scanbundle.v2\",\"seal\":{\"kind\":\"NECK\",\"uidHash\":\"0x8150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f442\"},\"serial\":\"SN-2026-000001\",\"serialHash\":\"0x4c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb583\",\"server\":{\"keyId\":1,\"ts\":1790000100,\"verdict\":\"VALID\"},\"session\":{\"issuedAt\":1790000100,\"nonce\":\"0x14e882bb433c3ce8de3dcd4c3cd300f4e1d75025b18d1624b1e21ca702e1e61c\"},\"tamper\":3,\"visual\":{\"loopIntact\":null}}",
+        "bundleHashHex": "dfacd030581fa971d54a5fd2cf9ffe463bbd77c5a39c832fe8d403781a771cbf",
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f4420100000004040303000000640100060338222be9a0fe113befacf3ab437767e32536e91f07cc1f6e41ad27abe878eaf5e33d70ceeddc02e132375ef031dbf9f65d5554a582fe3a3e83fb63214ec6ac0edfacd030581fa971d54a5fd2cf9ffe463bbd77c5a39c832fe8d403781a771cbf14e882bb433c3ce8de3dcd4c3cd300f4e1d75025b18d1624b1e21ca702e1e61ce43bb16a00000000",
+        "msgSha256Hex": "d1d5cabfaa2495705fa2cfd6dbd467639830ce5004998feeb845e9857a1cafa0",
+        "sigHex": "33105d095a57d75a610f4c2e3df24f1c978441dec72c4e14c51d802b5e66fffbd953a875d3101a3fc973e070a297dbbbdf0651bb6789ec65ffcaeac13c057f07",
+        "ed25519IxHex": "01003000ffff1000ffff70000001ffff8ddafff75fe35b174d24fca867f796bc253e32363a456f3486214f01c457ee0133105d095a57d75a610f4c2e3df24f1c978441dec72c4e14c51d802b5e66fffbd953a875d3101a3fc973e070a297dbbbdf0651bb6789ec65ffcaeac13c057f0746565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f4420100000004040303000000640100060338222be9a0fe113befacf3ab437767e32536e91f07cc1f6e41ad27abe878eaf5e33d70ceeddc02e132375ef031dbf9f65d5554a582fe3a3e83fb63214ec6ac0edfacd030581fa971d54a5fd2cf9ffe463bbd77c5a39c832fe8d403781a771cbf14e882bb433c3ce8de3dcd4c3cd300f4e1d75025b18d1624b1e21ca702e1e61ce43bb16a00000000",
+        "affectsGrade": true,
+        "gradeAfter": 0,
+        "voidAfter": false,
+        "headAfterHex": "7d3c88a08935f19eb946f4f0efaa9c45da862bd5c052bb2fea3dcb74aeabbab7"
+      },
+      {
+        "name": "tap-visitor-sighting",
+        "input": {
+          "serial": "SN-2026-000001",
+          "uidHex": "04A1B2C3D4E5F6",
+          "sealKind": 1,
+          "counter": 2,
+          "tier": 0,
+          "role": 0,
+          "tamper": 3,
+          "uv": 3,
+          "hum": 3,
+          "heat": 3,
+          "heatLevels": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fill": 255,
+          "siteId": 0,
+          "purpose": 0,
+          "actorKind": 0,
+          "actorHex": "0000000000000000000000000000000000000000000000000000000000000000",
+          "mediaHashHex": "0000000000000000000000000000000000000000000000000000000000000000",
+          "nonceHex": "7901d90ad597c5f8487066b825a50787de157139840a90588212209db0c9b5a9",
+          "ts": 1790000200,
+          "issuedAt": 1790000200,
+          "country": null
+        },
+        "heatMask": 0,
+        "bundleCanonical": "{\"actor\":{\"id\":null,\"kind\":\"NONE\"},\"attester\":{\"role\":0,\"siteId\":0,\"tier\":0},\"cluster\":\"DEVNET\",\"counter\":2,\"fill\":null,\"heatLevels\":[0,0,0,0,0,0],\"indicators\":{\"heat\":3,\"humidity\":3,\"uv\":3},\"location\":{\"country\":null},\"media\":[],\"programId\":\"7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL\",\"purpose\":\"TAP\",\"schema\":\"flaconvault.scanbundle.v2\",\"seal\":{\"kind\":\"NECK\",\"uidHash\":\"0x8150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f442\"},\"serial\":\"SN-2026-000001\",\"serialHash\":\"0x4c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb583\",\"server\":{\"keyId\":1,\"ts\":1790000200,\"verdict\":\"VALID\"},\"session\":{\"issuedAt\":1790000200,\"nonce\":\"0x7901d90ad597c5f8487066b825a50787de157139840a90588212209db0c9b5a9\"},\"tamper\":3,\"visual\":{\"loopIntact\":null}}",
+        "bundleHashHex": "f71dc464e4cdfbf05594b2180103407d32180a5b14c122b58b36ed153d8892c5",
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f4420200000000000303030300ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f71dc464e4cdfbf05594b2180103407d32180a5b14c122b58b36ed153d8892c57901d90ad597c5f8487066b825a50787de157139840a90588212209db0c9b5a9483cb16a00000000",
+        "msgSha256Hex": "57bfd9ce941c81cc5366e6edf0d16527881074db75319eb5c72c47b1adef4bf4",
+        "sigHex": "9cf4283eb2cf31048abbfd736186a3de9427f46aae760c9a8acc233225430b8d6d7822b905b2dce5d13c921770ae8ed63f2df2788ee2d4658e7c6e2d3d6e6c0f",
+        "ed25519IxHex": "01003000ffff1000ffff70000001ffff8ddafff75fe35b174d24fca867f796bc253e32363a456f3486214f01c457ee019cf4283eb2cf31048abbfd736186a3de9427f46aae760c9a8acc233225430b8d6d7822b905b2dce5d13c921770ae8ed63f2df2788ee2d4658e7c6e2d3d6e6c0f46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f4420200000000000303030300ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f71dc464e4cdfbf05594b2180103407d32180a5b14c122b58b36ed153d8892c57901d90ad597c5f8487066b825a50787de157139840a90588212209db0c9b5a9483cb16a00000000",
+        "affectsGrade": false,
+        "gradeAfter": 0,
+        "voidAfter": false,
+        "headAfterHex": "6fcae69855734dc31f0eeef62edbe448fe3a0e2091b9c2208d55e6e5332565e7"
+      },
+      {
+        "name": "check-visitor-tier2",
+        "input": {
+          "serial": "SN-2026-000001",
+          "uidHex": "04A1B2C3D4E5F6",
+          "sealKind": 1,
+          "counter": 3,
+          "tier": 2,
+          "role": 0,
+          "tamper": 3,
+          "uv": 3,
+          "hum": 0,
+          "heat": 0,
+          "heatLevels": [
+            1,
+            1,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fill": 92,
+          "siteId": 0,
+          "purpose": 1,
+          "actorKind": 0,
+          "actorHex": "0000000000000000000000000000000000000000000000000000000000000000",
+          "mediaHashHex": "4ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba",
+          "nonceHex": "f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6",
+          "ts": 1790000300,
+          "issuedAt": 1790000288,
+          "country": "DE"
+        },
+        "heatMask": 3,
+        "bundleCanonical": "{\"actor\":{\"id\":null,\"kind\":\"NONE\"},\"attester\":{\"role\":0,\"siteId\":0,\"tier\":2},\"cluster\":\"DEVNET\",\"counter\":3,\"fill\":92,\"heatLevels\":[1,1,0,0,0,0],\"indicators\":{\"heat\":0,\"humidity\":0,\"uv\":3},\"location\":{\"country\":\"DE\"},\"media\":[{\"sha256\":\"0x4ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba\",\"type\":\"SEAL_FRAMES\"}],\"programId\":\"7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL\",\"purpose\":\"CHECK\",\"schema\":\"flaconvault.scanbundle.v2\",\"seal\":{\"kind\":\"NECK\",\"uidHash\":\"0x8150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f442\"},\"serial\":\"SN-2026-000001\",\"serialHash\":\"0x4c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb583\",\"server\":{\"keyId\":1,\"ts\":1790000300,\"verdict\":\"VALID\"},\"session\":{\"issuedAt\":1790000288,\"nonce\":\"0xf8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6\"},\"tamper\":3,\"visual\":{\"loopIntact\":null}}",
+        "bundleHashHex": "07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2",
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000020003030000035c0000010000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "msgSha256Hex": "360a6922b5b9dc34e59414752136d3819d6aaa73d14a48f8c905798354365f5b",
+        "sigHex": "4a208fb6faf2161811098c44e6307d12b51e7bc00d88b91f549e027806ae9c2a9396fbc959a5448f88117c2c0bdd5e23179ae8a1375e108e1f6ae3c226f9ef00",
+        "ed25519IxHex": "01003000ffff1000ffff70000001ffff8ddafff75fe35b174d24fca867f796bc253e32363a456f3486214f01c457ee014a208fb6faf2161811098c44e6307d12b51e7bc00d88b91f549e027806ae9c2a9396fbc959a5448f88117c2c0bdd5e23179ae8a1375e108e1f6ae3c226f9ef0046565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000020003030000035c0000010000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "affectsGrade": false,
+        "gradeAfter": 0,
+        "voidAfter": false,
+        "headAfterHex": "0a6648c29faf84c03839f72cf8d475b61df31bc461eff08e0268b4cfcec7e9b5"
+      },
+      {
+        "name": "check-holder-tier1",
+        "input": {
+          "serial": "SN-2026-000001",
+          "uidHex": "04A1B2C3D4E5F6",
+          "sealKind": 1,
+          "counter": 4,
+          "tier": 1,
+          "role": 0,
+          "tamper": 3,
+          "uv": 3,
+          "hum": 0,
+          "heat": 0,
+          "heatLevels": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fill": 75,
+          "siteId": 0,
+          "purpose": 1,
+          "actorKind": 1,
+          "actorHex": "24088cd63896f3d8f4e55b031307f84429c5e16a039d5f6fa1e4a0e983649fe5",
+          "mediaHashHex": "0000000000000000000000000000000000000000000000000000000000000000",
+          "nonceHex": "626f457c70b1278d64c6cced056ec6fdbadd32e4cd8a5d3c35f87fe1cf73a7dd",
+          "ts": 1790000400,
+          "issuedAt": 1790000380,
+          "country": null
+        },
+        "heatMask": 0,
+        "bundleCanonical": "{\"actor\":{\"id\":\"0x24088cd63896f3d8f4e55b031307f84429c5e16a039d5f6fa1e4a0e983649fe5\",\"kind\":\"HOLDER\"},\"attester\":{\"role\":0,\"siteId\":0,\"tier\":1},\"cluster\":\"DEVNET\",\"counter\":4,\"fill\":75,\"heatLevels\":[0,0,0,0,0,0],\"indicators\":{\"heat\":0,\"humidity\":0,\"uv\":3},\"location\":{\"country\":null},\"media\":[],\"programId\":\"7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL\",\"purpose\":\"CHECK\",\"schema\":\"flaconvault.scanbundle.v2\",\"seal\":{\"kind\":\"NECK\",\"uidHash\":\"0x8150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f442\"},\"serial\":\"SN-2026-000001\",\"serialHash\":\"0x4c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb583\",\"server\":{\"keyId\":1,\"ts\":1790000400,\"verdict\":\"VALID\"},\"session\":{\"issuedAt\":1790000380,\"nonce\":\"0x626f457c70b1278d64c6cced056ec6fdbadd32e4cd8a5d3c35f87fe1cf73a7dd\"},\"tamper\":3,\"visual\":{\"loopIntact\":null}}",
+        "bundleHashHex": "f61c6ff3e818a06fddaf19387a791ccf9f0314bdff36516ba2500cce6c175181",
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44204000000010003030000004b0000010124088cd63896f3d8f4e55b031307f84429c5e16a039d5f6fa1e4a0e983649fe50000000000000000000000000000000000000000000000000000000000000000f61c6ff3e818a06fddaf19387a791ccf9f0314bdff36516ba2500cce6c175181626f457c70b1278d64c6cced056ec6fdbadd32e4cd8a5d3c35f87fe1cf73a7dd103db16a00000000",
+        "msgSha256Hex": "b70bfcdb48409f695e10155693027e31832779886ccebfb482bb44f770dff828",
+        "sigHex": "dbf639b8e0d8b627b7a6ab0f9795a87310175a39fbe6927d92fdf02be16407f866c664d24f76f39fd6daf210fab4c5fd0bbf3de88fb47578ddfcfbd406294001",
+        "ed25519IxHex": "01003000ffff1000ffff70000001ffff8ddafff75fe35b174d24fca867f796bc253e32363a456f3486214f01c457ee01dbf639b8e0d8b627b7a6ab0f9795a87310175a39fbe6927d92fdf02be16407f866c664d24f76f39fd6daf210fab4c5fd0bbf3de88fb47578ddfcfbd40629400146565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44204000000010003030000004b0000010124088cd63896f3d8f4e55b031307f84429c5e16a039d5f6fa1e4a0e983649fe50000000000000000000000000000000000000000000000000000000000000000f61c6ff3e818a06fddaf19387a791ccf9f0314bdff36516ba2500cce6c175181626f457c70b1278d64c6cced056ec6fdbadd32e4cd8a5d3c35f87fe1cf73a7dd103db16a00000000",
+        "affectsGrade": true,
+        "gradeAfter": 1,
+        "voidAfter": false,
+        "headAfterHex": "7d9e035ca860de4f7bc0b8256956a9430876a13d9cc0e00a12e9bd9f0a91bee6"
+      },
+      {
+        "name": "receipt-recipient-tier1",
+        "input": {
+          "serial": "SN-2026-000001",
+          "uidHex": "04A1B2C3D4E5F6",
+          "sealKind": 1,
+          "counter": 5,
+          "tier": 1,
+          "role": 2,
+          "tamper": 3,
+          "uv": 3,
+          "hum": 0,
+          "heat": 0,
+          "heatLevels": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "fill": 75,
+          "siteId": 0,
+          "purpose": 4,
+          "actorKind": 4,
+          "actorHex": "09b1c3a5ff50a1f70512c08f7159f65c510e4af74f4fa56b4959a9b0925411fd",
+          "mediaHashHex": "0000000000000000000000000000000000000000000000000000000000000000",
+          "nonceHex": "ef3339e06936dd7b0044f68be7145f024321fe27be802198d360f11138e8b107",
+          "ts": 1790000500,
+          "issuedAt": 1790000485,
+          "country": "AT"
+        },
+        "heatMask": 0,
+        "bundleCanonical": "{\"actor\":{\"id\":\"0x09b1c3a5ff50a1f70512c08f7159f65c510e4af74f4fa56b4959a9b0925411fd\",\"kind\":\"RECIPIENT\"},\"attester\":{\"role\":2,\"siteId\":0,\"tier\":1},\"cluster\":\"DEVNET\",\"counter\":5,\"fill\":75,\"heatLevels\":[0,0,0,0,0,0],\"indicators\":{\"heat\":0,\"humidity\":0,\"uv\":3},\"location\":{\"country\":\"AT\"},\"media\":[],\"programId\":\"7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL\",\"purpose\":\"RECEIPT\",\"schema\":\"flaconvault.scanbundle.v2\",\"seal\":{\"kind\":\"NECK\",\"uidHash\":\"0x8150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f442\"},\"serial\":\"SN-2026-000001\",\"serialHash\":\"0x4c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb583\",\"server\":{\"keyId\":1,\"ts\":1790000500,\"verdict\":\"VALID\"},\"session\":{\"issuedAt\":1790000485,\"nonce\":\"0xef3339e06936dd7b0044f68be7145f024321fe27be802198d360f11138e8b107\"},\"tamper\":3,\"visual\":{\"loopIntact\":null}}",
+        "bundleHashHex": "8e761d8fd8c177335d3f744bd1d0e116e9df78a85bae63be5b44c100f68ea81c",
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44205000000010203030000004b0000040409b1c3a5ff50a1f70512c08f7159f65c510e4af74f4fa56b4959a9b0925411fd00000000000000000000000000000000000000000000000000000000000000008e761d8fd8c177335d3f744bd1d0e116e9df78a85bae63be5b44c100f68ea81cef3339e06936dd7b0044f68be7145f024321fe27be802198d360f11138e8b107743db16a00000000",
+        "msgSha256Hex": "56bb827077c6e59ee9bf292eb2d9de8b0129543a14d0349e545844923f39632e",
+        "sigHex": "22112c101fabe4deb4a8e81ba3eb7a5848ca6dfbec9e5da4325f33f332146d9d5a05052fb4f2a8de6010ba768655387921691fa898881879a5ebdac8833f3104",
+        "ed25519IxHex": "01003000ffff1000ffff70000001ffff8ddafff75fe35b174d24fca867f796bc253e32363a456f3486214f01c457ee0122112c101fabe4deb4a8e81ba3eb7a5848ca6dfbec9e5da4325f33f332146d9d5a05052fb4f2a8de6010ba768655387921691fa898881879a5ebdac8833f310446565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44205000000010203030000004b0000040409b1c3a5ff50a1f70512c08f7159f65c510e4af74f4fa56b4959a9b0925411fd00000000000000000000000000000000000000000000000000000000000000008e761d8fd8c177335d3f744bd1d0e116e9df78a85bae63be5b44c100f68ea81cef3339e06936dd7b0044f68be7145f024321fe27be802198d360f11138e8b107743db16a00000000",
+        "affectsGrade": false,
+        "gradeAfter": 1,
+        "voidAfter": false,
+        "headAfterHex": "efd5e926bb323e84b30628312f1549978f9a820b94ed3be9f0c0268b8337dd3c"
+      },
+      {
+        "name": "check-wallet-heat-triggered",
+        "input": {
+          "serial": "SN-2026-000001",
+          "uidHex": "04A1B2C3D4E5F6",
+          "sealKind": 1,
+          "counter": 6,
+          "tier": 2,
+          "role": 0,
+          "tamper": 3,
+          "uv": 3,
+          "hum": 0,
+          "heat": 1,
+          "heatLevels": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            0
+          ],
+          "fill": 92,
+          "siteId": 0,
+          "purpose": 1,
+          "actorKind": 2,
+          "actorHex": "a40947b5ac225b9c704beb957d13eaaeb43dfa3d2ae37d6599277b2f05c30719",
+          "mediaHashHex": "8766e9bcfe36838b68ba2a94645623cdd68f6995ede1aa1aa6c9d5e8d1734bc8",
+          "nonceHex": "3849369a9bab9c5f940cd16875dc1ad0b595bdf5b9e2340ad9f94c4ace41964b",
+          "ts": 1790000600,
+          "issuedAt": 1790000590,
+          "country": "DE"
+        },
+        "heatMask": 31,
+        "bundleCanonical": "{\"actor\":{\"id\":\"0xa40947b5ac225b9c704beb957d13eaaeb43dfa3d2ae37d6599277b2f05c30719\",\"kind\":\"WALLET\"},\"attester\":{\"role\":0,\"siteId\":0,\"tier\":2},\"cluster\":\"DEVNET\",\"counter\":6,\"fill\":92,\"heatLevels\":[1,1,1,1,1,0],\"indicators\":{\"heat\":1,\"humidity\":0,\"uv\":3},\"location\":{\"country\":\"DE\"},\"media\":[{\"sha256\":\"0x8766e9bcfe36838b68ba2a94645623cdd68f6995ede1aa1aa6c9d5e8d1734bc8\",\"type\":\"SEAL_FRAMES\"}],\"programId\":\"7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL\",\"purpose\":\"CHECK\",\"schema\":\"flaconvault.scanbundle.v2\",\"seal\":{\"kind\":\"NECK\",\"uidHash\":\"0x8150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f442\"},\"serial\":\"SN-2026-000001\",\"serialHash\":\"0x4c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb583\",\"server\":{\"keyId\":1,\"ts\":1790000600,\"verdict\":\"VALID\"},\"session\":{\"issuedAt\":1790000590,\"nonce\":\"0x3849369a9bab9c5f940cd16875dc1ad0b595bdf5b9e2340ad9f94c4ace41964b\"},\"tamper\":3,\"visual\":{\"loopIntact\":null}}",
+        "bundleHashHex": "a1bbb6520588213933878a489527420f36bcfcbbd6fad117ef0462cb8182029e",
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f442060000000200030300011f5c00000102a40947b5ac225b9c704beb957d13eaaeb43dfa3d2ae37d6599277b2f05c307198766e9bcfe36838b68ba2a94645623cdd68f6995ede1aa1aa6c9d5e8d1734bc8a1bbb6520588213933878a489527420f36bcfcbbd6fad117ef0462cb8182029e3849369a9bab9c5f940cd16875dc1ad0b595bdf5b9e2340ad9f94c4ace41964bd83db16a00000000",
+        "msgSha256Hex": "246713c8808b7c07817c25005018531d7b81f5725fc5d3d6b727953e35728aef",
+        "sigHex": "8f1c74325e24f5fc693102de0f02ceded323b4d5ce5e14a928b07a6938785c1bc5277ea31c92750e4718b196ab2235ec6bf56c5d25a5c4409d6325785015bf0a",
+        "ed25519IxHex": "01003000ffff1000ffff70000001ffff8ddafff75fe35b174d24fca867f796bc253e32363a456f3486214f01c457ee018f1c74325e24f5fc693102de0f02ceded323b4d5ce5e14a928b07a6938785c1bc5277ea31c92750e4718b196ab2235ec6bf56c5d25a5c4409d6325785015bf0a46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f442060000000200030300011f5c00000102a40947b5ac225b9c704beb957d13eaaeb43dfa3d2ae37d6599277b2f05c307198766e9bcfe36838b68ba2a94645623cdd68f6995ede1aa1aa6c9d5e8d1734bc8a1bbb6520588213933878a489527420f36bcfcbbd6fad117ef0462cb8182029e3849369a9bab9c5f940cd16875dc1ad0b595bdf5b9e2340ad9f94c4ace41964bd83db16a00000000",
+        "affectsGrade": true,
+        "gradeAfter": 2,
+        "voidAfter": false,
+        "headAfterHex": "1c074c9e97d083bf8daaf4137f61b4d642ef200a46d955a74e760e797cdac843"
+      }
+    ],
+    "scanHead": {
+      "initialHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "count": 6,
+      "finalHex": "1c074c9e97d083bf8daaf4137f61b4d642ef200a46d955a74e760e797cdac843"
+    },
+    "rejects": [
+      {
+        "name": "role-out-of-range",
+        "base": "check-visitor-tier2",
+        "set": {
+          "role": 5
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000020503030000035c0000010000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "InvalidRole"
+      },
+      {
+        "name": "tier-out-of-range",
+        "base": "check-visitor-tier2",
+        "set": {
+          "tier": 5
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000050003030000035c0000010000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "InvalidTier"
+      },
+      {
+        "name": "purpose-out-of-range",
+        "base": "check-visitor-tier2",
+        "set": {
+          "purpose": 7
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000020003030000035c0000070000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "InvalidPurpose"
+      },
+      {
+        "name": "actor-kind-out-of-range",
+        "base": "check-visitor-tier2",
+        "set": {
+          "actorKind": 5
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000020003030000035c0000010500000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "InvalidActorKind"
+      },
+      {
+        "name": "tamper-out-of-range",
+        "base": "check-visitor-tier2",
+        "set": {
+          "tamper": 4
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000020004030000035c0000010000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "InvalidIndicator"
+      },
+      {
+        "name": "uv-out-of-range",
+        "base": "check-visitor-tier2",
+        "set": {
+          "uv": 4
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000020003040000035c0000010000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "InvalidIndicator"
+      },
+      {
+        "name": "fill-101",
+        "base": "check-visitor-tier2",
+        "set": {
+          "fill": 101
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f4420300000002000303000003650000010000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "InvalidFill"
+      },
+      {
+        "name": "heat-levels-64",
+        "base": "check-visitor-tier2",
+        "set": {
+          "heatLevels": 64
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000020003030000405c0000010000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "InvalidHeatLevels"
+      },
+      {
+        "name": "heat-intact-bit4-set",
+        "base": "check-visitor-tier2",
+        "set": {
+          "heatLevels": 19
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000020003030000135c0000010000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "HeatInconsistent"
+      },
+      {
+        "name": "fill-none-at-tier2",
+        "base": "check-visitor-tier2",
+        "set": {
+          "fill": 255
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f4420300000002000303000003ff0000010000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "InvalidSighting"
+      },
+      {
+        "name": "sighting-with-fill",
+        "base": "check-visitor-tier2",
+        "set": {
+          "tier": 0,
+          "purpose": 0,
+          "hum": 3,
+          "heat": 3,
+          "heatLevels": 0,
+          "mediaHashHex": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000000003030303005c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "InvalidSighting"
+      },
+      {
+        "name": "sighting-with-media",
+        "base": "check-visitor-tier2",
+        "set": {
+          "tier": 0,
+          "purpose": 0,
+          "fill": 255,
+          "hum": 3,
+          "heat": 3,
+          "heatLevels": 0
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f4420300000000000303030300ff0000000000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "InvalidSighting"
+      },
+      {
+        "name": "owner-tier3",
+        "base": "check-visitor-tier2",
+        "set": {
+          "tier": 3,
+          "actorKind": 3,
+          "actorHex": "38222be9a0fe113befacf3ab437767e32536e91f07cc1f6e41ad27abe878eaf5"
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000030003030000035c0000010338222be9a0fe113befacf3ab437767e32536e91f07cc1f6e41ad27abe878eaf54ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "TierNotAllowedForRole"
+      },
+      {
+        "name": "visitor-tier3-vault",
+        "base": "check-visitor-tier2",
+        "set": {
+          "tier": 3,
+          "role": 3
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000030303030000035c0000010000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "NotPartner"
+      },
+      {
+        "name": "site-for-owner",
+        "base": "check-visitor-tier2",
+        "set": {
+          "siteId": 1
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000020003030000035c0100010000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "SiteIdNotAllowed"
+      },
+      {
+        "name": "visitor-receipt",
+        "base": "check-visitor-tier2",
+        "set": {
+          "purpose": 4
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000020003030000035c0000040000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "PurposeNotAllowed"
+      },
+      {
+        "name": "tap-at-tier2",
+        "base": "check-visitor-tier2",
+        "set": {
+          "purpose": 0
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000020003030000035c0000000000000000000000000000000000000000000000000000000000000000000000004ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "PurposeNotAllowed"
+      },
+      {
+        "name": "birth-by-holder",
+        "base": "check-visitor-tier2",
+        "set": {
+          "purpose": 6,
+          "actorKind": 1,
+          "actorHex": "24088cd63896f3d8f4e55b031307f84429c5e16a039d5f6fa1e4a0e983649fe5"
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000020003030000035c0000060124088cd63896f3d8f4e55b031307f84429c5e16a039d5f6fa1e4a0e983649fe54ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "PurposeNotAllowed"
+      },
+      {
+        "name": "recipient-check",
+        "base": "check-visitor-tier2",
+        "set": {
+          "actorKind": 4,
+          "actorHex": "09b1c3a5ff50a1f70512c08f7159f65c510e4af74f4fa56b4959a9b0925411fd"
+        },
+        "msgHex": "46565343414e32626c6d108266127300de7b13f3dbb9551b761a97a587429b497e2d909a461b29024c998d75c9a8c68768696a2e66ffc2f5a9ffca930654a86195d9ac73656bb5838150ba8e6d5dec4909903ddb831e4d8a7542928539b6d007da5e01ed9643f44203000000020003030000035c0000010409b1c3a5ff50a1f70512c08f7159f65c510e4af74f4fa56b4959a9b0925411fd4ec166eed53ac6bf5ca01680429d97ba9f765eca74e2f8a22ece8f7e3b1dccba07c250ede049c2147e34a6ae88cf346f33998b8da88122748e8190f99eed3fc2f8b7ff13877436148e44ba0dbdb8b9eab90fddbbec6d796a099da424a08879b6ac3cb16a00000000",
+        "error": "PurposeNotAllowed"
+      }
+    ]
+  }
 }

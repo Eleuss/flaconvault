@@ -305,7 +305,7 @@ export function OrderDetail({ orderPda }: { orderPda: string }) {
                   <div className="space-y-2">
                     <p className="text-muted">Do the shipping scan (tier 2, with photo), then record it here. The scan must come from this wallet, be anchored on chain and be made after the reservation{olderHidden > 0 ? ` (${olderHidden} older scan${olderHidden === 1 ? " is" : "s are"} not offered)` : ""}.</p>
                     <div className="flex flex-wrap items-center gap-2">
-                      <Link href="/scan?role=1" className="btn-outline btn-sm">Do shipping scan <ArrowRight className="h-3.5 w-3.5" aria-hidden /></Link>
+                      <Link href="/scan?role=1&flow=wallet" className="btn-outline btn-sm">Do shipping scan <ArrowRight className="h-3.5 w-3.5" aria-hidden /></Link>
                       <select value={chosen?.key ?? ""} onChange={(e) => setScanChoice(e.target.value)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
                         {!chosen && <option value="">{noScanLabel}</option>}
                         {stepScans.map((s) => <option key={s.key} value={s.key} disabled={s.unusable !== null}>{s.label}</option>)}
@@ -320,7 +320,7 @@ export function OrderDetail({ orderPda }: { orderPda: string }) {
                   <div className="space-y-2">
                     <p className="text-muted">After receipt: do a scan (tier 2, with photo) and record it before {fmtDate(receiptDeadline(order))}. Only scans made after shipping count{olderHidden > 0 ? ` (${olderHidden} older scan${olderHidden === 1 ? " is" : "s are"} not offered)` : ""}. Release happens when heat and humidity match and the fill level differs by at most {FILL_TOLERANCE} %. Without a receipt scan by the deadline the USDC goes to the seller.</p>
                     <div className="flex flex-wrap items-center gap-2">
-                      <Link href="/scan?role=2" className="btn-outline btn-sm">Do receipt scan <ArrowRight className="h-3.5 w-3.5" aria-hidden /></Link>
+                      <Link href="/scan?role=2&flow=wallet" className="btn-outline btn-sm">Do receipt scan <ArrowRight className="h-3.5 w-3.5" aria-hidden /></Link>
                       <select value={chosen?.key ?? ""} onChange={(e) => setScanChoice(e.target.value)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
                         {!chosen && <option value="">{noScanLabel}</option>}
                         {stepScans.map((s) => <option key={s.key} value={s.key} disabled={s.unusable !== null}>{s.label}</option>)}

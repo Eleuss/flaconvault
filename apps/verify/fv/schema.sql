@@ -141,3 +141,38 @@ CREATE TABLE IF NOT EXISTS chain_state (
   value_json    TEXT NOT NULL,
   updated_at    INTEGER NOT NULL
 );
+
+-- Public-record relay (docs/public-record.md §9.3): one row per FVSCAN2 the relayer may send. The message is built and
+-- signed once, when the row is created (D13). The partial unique index is the idempotency guarantee: at most one live
+-- row per (seal, counter). `lamports`: while `sending` the fee estimate charged to relay_budget, once terminal the fee
+-- actually paid (meta.fee). Added by CREATE TABLE IF NOT EXISTS, so an older database gains the tables on start.
+CREATE TABLE IF NOT EXISTS relay_tx (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind          TEXT NOT NULL DEFAULT 'scan',     -- 'scan' (P1); later 'holding', 'claim'
+  ref           TEXT NOT NULL,                    -- idempotency key; kind 'scan': '<seal uid_hash hex>:<counter>'
+  event_id      INTEGER REFERENCES events(id) ON DELETE SET NULL,   -- the SCAN event this row records
+  seal_uid_hash TEXT NOT NULL,
+  counter       INTEGER NOT NULL,
+  purpose       INTEGER NOT NULL,                 -- purpose enum
+  actor_kind    INTEGER NOT NULL,                 -- actor_kind enum
+  msg_hex       TEXT,                             -- FVSCAN2 (256 bytes)
+  server_sig    TEXT,                             -- hex, Ed25519 over msg
+  key_id        INTEGER,
+  server_pubkey TEXT,                             -- hex, the scan key that signed msg (sent in the Ed25519 instruction)
+  bundle_json   TEXT,                             -- canonical v2 bundle
+  due_at        INTEGER NOT NULL,
+  deadline_at   INTEGER NOT NULL,                 -- msg ts + 570
+  status        TEXT NOT NULL CHECK (status IN ('queued','sending','recorded','over_cap','failed','replaced')),
+  reason        TEXT,                             -- §9.6
+  sig           TEXT,                             -- tx signature of the current attempt; the landed one once recorded
+  last_valid_height INTEGER,                      -- lastValidBlockHeight of the current attempt
+  earlier_sigs  TEXT,                             -- JSON [{sig, estimate}]: attempts sent and given up on (§9.5)
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  lamports      INTEGER NOT NULL DEFAULT 0,       -- fee actually paid (meta.fee); the charged estimate while sending
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS relay_tx_live_ref ON relay_tx(kind, ref) WHERE status IN ('queued','sending','recorded');
+CREATE INDEX IF NOT EXISTS relay_tx_seal ON relay_tx(seal_uid_hash, created_at);
+CREATE INDEX IF NOT EXISTS relay_tx_due ON relay_tx(status, due_at);
+CREATE TABLE IF NOT EXISTS relay_budget (day TEXT PRIMARY KEY, lamports INTEGER NOT NULL DEFAULT 0);  -- 'YYYY-MM-DD' UTC

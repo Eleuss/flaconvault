@@ -40,6 +40,11 @@ Role = _Enum(_RAW["role"])
 Grade = _Enum(_RAW["grade"])
 SealKind = _Enum(_RAW["seal_kind"])
 EventType = _Enum(_RAW["event"])
+# public record (FVSCAN2, docs/public-record.md §2.1)
+Purpose = _Enum(_RAW["purpose"])
+ActorKind = _Enum(_RAW["actor_kind"])
+Cluster = _Enum(_RAW["cluster"])
+HoldingState = _Enum(_RAW["holding_state"])
 
 # Server verdicts (strings). Only VALID is ever signed.
 VERDICTS: tuple[str, ...] = tuple(_RAW["verdict"])

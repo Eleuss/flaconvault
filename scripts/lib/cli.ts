@@ -7,7 +7,7 @@
  */
 import * as anchor from "@anchor-lang/core";
 import { Program } from "@anchor-lang/core";
-import { Connection, Keypair, PublicKey, type VersionedTransactionResponse } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, SystemProgram, type VersionedTransactionResponse } from "@solana/web3.js";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -323,4 +323,95 @@ export function parsePartnerArgs(argv: string[]): PartnerCmd {
   if (argv[0] === "list") return { cmd: "list" };
   if (argv[0] !== "add" && argv[0] !== "remove") throw new Error(usage);
   try { return { cmd: argv[0], partner: new PublicKey(argv[1] ?? "") }; } catch { throw new Error(`invalid pubkey "${argv[1] ?? ""}"\n${usage}`); }
+}
+
+/** `["holding", passport]` of the flacon program (docs/public-record.md §6.2). */
+export const holdingPdaOf = (programId: PublicKey, passport: PublicKey) =>
+  PublicKey.findProgramAddressSync([Buffer.from("holding"), passport.toBuffer()], programId)[0];
+
+export interface HoldingRow { passport: PublicKey; asset: PublicKey; holding: PublicKey; holdingExists: boolean }
+export type HoldingStep = { op: "init"; passport: PublicKey; holding: PublicKey } | { op: "skip"; passport: PublicKey; reason: string };
+
+/**
+ * init-holdings: which passports get `init_holding_v1`. A v1 passport without a Holding does; one that has its
+ * Holding already is skipped (the script can be re-run), and so is a v2 passport (`asset` = its Holding PDA, minted by
+ * mint_passport_v2 together with its Holding).
+ */
+export function planHoldings(rows: HoldingRow[]): HoldingStep[] {
+  return rows.map((r) => {
+    if (r.asset.equals(r.holding)) return { op: "skip", passport: r.passport, reason: "v2 passport (held in an account)" };
+    if (r.holdingExists) return { op: "skip", passport: r.passport, reason: "holding exists" };
+    return { op: "init", passport: r.passport, holding: r.holding };
+  });
+}
+
+/** `["holder_config"]` of the flacon program (docs/public-record.md §6.1). */
+export const holderConfigPdaOf = (programId: PublicKey) =>
+  PublicKey.findProgramAddressSync([Buffer.from("holder_config")], programId)[0];
+
+/** An account the program owns. A PDA address that someone merely funded with SOL belongs to the system program. */
+export const ownedBy = (info: { owner: PublicKey; data: Uint8Array } | null, programId: PublicKey) =>
+  !!info && info.owner.equals(programId) && info.data.length > 0;
+
+export type MintHolding = "with_mint" | "alone" | "none";
+/**
+ * The Holding of a v1 mint (docs/public-record.md §7.3) in scripts/bind-chip.ts and scripts/seed-passports.ts; the
+ * partner console (apps/web/src/components/certify-console.tsx) decides the same way. A new passport gets
+ * `init_holding_v1` in the mint transaction, right after `mint_passport` (`with_mint`), so it takes relay scans at
+ * once. An existing one (the recovery path) gets it alone when its Holding is missing (`alone`), and nothing when the
+ * Holding exists or it is a v2 passport (`none`). Only on a cluster that has the public record (its HolderConfig exists:
+ * rollout step 2, never closed): a program from before the rollout does not know `init_holding_v1` and would fail the
+ * whole mint, and scripts/init-holdings.ts covers the passports minted before.
+ */
+export function mintHoldingPlan(o: { publicRecord: boolean; passport: PublicKey; existing: { asset: PublicKey } | null; holding: PublicKey; holdingExists: boolean }): MintHolding {
+  if (!o.publicRecord) return "none";
+  if (!o.existing) return "with_mint";
+  const [step] = planHoldings([{ passport: o.passport, asset: o.existing.asset, holding: o.holding, holdingExists: o.holdingExists }]);
+  return step.op === "init" ? "alone" : "none";
+}
+
+/** What mintHoldingPlan reads from the chain: the passport's Holding PDA, whether it exists, and whether the cluster has the public record. */
+export async function holdingState(connection: Connection, programId: PublicKey, passport: PublicKey): Promise<{ holding: PublicKey; holdingExists: boolean; publicRecord: boolean }> {
+  const holding = holdingPdaOf(programId, passport);
+  const [h, cfg] = await connection.getMultipleAccountsInfo([holding, holderConfigPdaOf(programId)], "confirmed");
+  return { holding, holdingExists: ownedBy(h, programId), publicRecord: ownedBy(cfg, programId) };
+}
+
+/** `init_holding_v1` of `passport` (an Anchor method builder): `wallet`, the registry authority or a partner, signs and pays. */
+export function initHoldingV1(program: Program<any>, o: { registry: PublicKey; passport: PublicKey; wallet: PublicKey }) {
+  return program.methods.initHoldingV1().accountsStrict({
+    registry: o.registry, passport: o.passport, holding: holdingPdaOf(program.programId, o.passport), authority: o.wallet, payer: o.wallet,
+    systemProgram: SystemProgram.programId,
+  });
+}
+
+/**
+ * v1 `mint_passport` of `asset` by `wallet` (issuer and payer) as the scripts send it: with `init_holding_v1` for the new
+ * passport right after it, in the same transaction, when `withHolding` (mintHoldingPlan says `with_mint`).
+ */
+export async function mintPassportV1(program: Program<any>, o: {
+  registry: PublicKey; passport: PublicKey; serialHash: Uint8Array; bindingHash: Uint8Array; asset: PublicKey; wallet: PublicKey; withHolding: boolean;
+}) {
+  const mint = program.methods
+    .mintPassport(Array.from(o.serialHash), Array.from(o.bindingHash), o.asset)
+    .accountsStrict({ registry: o.registry, passport: o.passport, issuer: o.wallet, systemProgram: SystemProgram.programId, coreAsset: o.asset });
+  return o.withHolding ? mint.postInstructions([await initHoldingV1(program, o).instruction()]) : mint;
+}
+
+/** cluster enum of docs/enums.json (`FV_CLUSTER` names are lowercase). */
+export const CLUSTER_TAGS = { mainnet: 1, devnet: 2, localnet: 3 } as const;
+export type HolderConfigCmd = { cmd: "init"; cluster: keyof typeof CLUSTER_TAGS; tag: number } | { cmd: "show" };
+
+/** holder-config init <devnet|mainnet|localnet> | show. The tag is immutable once set, so the cluster must match the RPC. */
+export function parseHolderConfigArgs(argv: string[], url: string): HolderConfigCmd {
+  const usage = "usage: holder-config init <devnet|mainnet|localnet> | show";
+  if (argv[0] === "show" && argv.length === 1) return { cmd: "show" };
+  if (argv[0] !== "init" || argv.length !== 2) throw new Error(usage);
+  const cluster = argv[1] as keyof typeof CLUSTER_TAGS;
+  if (!(cluster in CLUSTER_TAGS)) throw new Error(`unknown cluster "${argv[1]}"\n${usage}`);
+  const local = isLocalUrl(url);
+  if ((cluster === "localnet") !== local) throw new Error(`cluster ${cluster} does not match the RPC ${local ? "(a local validator)" : "(not a local validator)"}`);
+  if (cluster === "mainnet" && /devnet|testnet/.test(url)) throw new Error("cluster mainnet does not match a devnet/testnet RPC");
+  if (cluster === "devnet" && !/devnet/.test(url)) throw new Error("cluster devnet needs a devnet RPC (ANCHOR_PROVIDER_URL)");
+  return { cmd: "init", cluster, tag: CLUSTER_TAGS[cluster] };
 }

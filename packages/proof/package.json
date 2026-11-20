@@ -19,7 +19,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node --test src/*.test.ts",
-    "vectors": "node scripts/gen-vectors.ts"
+    "vectors": "node scripts/gen-vectors.ts",
+    "verify-pass": "node scripts/verify-pass.ts"
   },
   "engines": {
     "node": ">=22.18"

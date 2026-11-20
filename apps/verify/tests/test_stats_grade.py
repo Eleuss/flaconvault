@@ -3,12 +3,11 @@ the full rule is in test_grade_mirror.py)."""
 import json
 
 from fv.db import passport_stats, set_passport_grade
-from tests.conftest import ADMIN, passport_pda, sig
+from tests.conftest import ADMIN, MEDIA, passport_pda, sig, with_photo
 from tests.test_chain import passport_bytes
 
 SERIAL = "SN-2026-000001"
 OWNER = "5VgGgiSB6Gq5ubpbVHMv2dKaKdoEq1wieuX4okHwtUeU"
-MEDIA = "0x358bd5e49a401b60105ca4fe2f6fd4563c617295f4704debe35da7844cd5b380"
 
 
 def _verify(c, uid, **over):
@@ -18,7 +17,7 @@ def _verify(c, uid, **over):
             "indicators": {"heat": 0, "humidity": 0, "uv": 3}, "heatLevels": [0, 0, 0, 0, 0, 0], "fill": 95,
             "attester": OWNER, "platform": "SIMULATOR"}
     body.update(over)
-    v = c.post("/api/verify", json=body).json()
+    v = c.post("/api/verify", json=with_photo(c, body)).json()
     assert v["verdict"] == "VALID", v
     return v
 

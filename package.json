@@ -13,6 +13,7 @@
     "proof:test": "npm run test -w @flaconvault/proof",
     "vectors": "npm run vectors -w @flaconvault/proof",
     "vectors:check": "npm run vectors && git diff --exit-code -- docs/vectors.json docs/enums.json",
+    "verify-pass": "npm run verify-pass -w @flaconvault/proof --",
     "vision:build": "npm run build -w @flaconvault/vision",
     "build:packages": "npm run proof:build && npm run vision:build",
     "prepare": "npm run build:packages",
@@ -23,7 +24,7 @@
     "web:lint": "npm run lint -w @flaconvault/web",
     "web:test": "npm run test -w @flaconvault/web",
     "web:typecheck": "tsc --noEmit -p apps/web/tsconfig.json",
-    "mocha:unit": "NODE_OPTIONS=--no-experimental-strip-types ts-mocha -p ./tsconfig.json -t 100000 tests/scripts-cli.ts tests/web-escrow-rules.ts tests/docs-runbooks.ts"
+    "mocha:unit": "NODE_OPTIONS=--no-experimental-strip-types ts-mocha -p ./tsconfig.json -t 100000 tests/scripts-cli.ts tests/web-escrow-rules.ts tests/docs-runbooks.ts tests/p1-rollout.ts"
   },
   "engines": {
     "node": ">=22.18"

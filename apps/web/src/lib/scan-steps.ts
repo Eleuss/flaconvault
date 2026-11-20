@@ -1,16 +1,18 @@
 /** The steps of the scan page (components/scan-flow.tsx) and the rules that depend only on the step, tier and role. */
 import { Role, Tier } from "@flaconvault/proof";
-import { ApiError } from "./errors";
+import { ApiError, friendly } from "./errors";
 import { scanUsableForOrder } from "./escrow-rules";
 import { short } from "./format";
+import { RECORD_ERRORS, type PollEnd } from "./public-record";
 
-export type ScanStep = "session" | "tap" | "preview" | "camera" | "read" | "verify" | "tx" | "done" | "dead";
+/** "record": the verifier signed a relay scan and saves it to the public record (no wallet; spec §10.3). */
+export type ScanStep = "session" | "tap" | "preview" | "camera" | "read" | "verify" | "tx" | "record" | "done" | "dead";
 
 /**
- * The 90 s session window covers tap → photo → server signature. Once the server has signed ("tx"), the signed scan
- * stays anchorable: the countdown stops and expiry no longer hides or blocks the anchor step.
+ * The 90 s session window covers tap → photo → server signature. Once the server has signed ("tx", "record"), the
+ * signed scan stays anchorable: the countdown stops and expiry no longer hides or blocks the anchor or record step.
  */
-export const timedStep = (step: ScanStep): boolean => step !== "tx" && step !== "done" && step !== "dead";
+export const timedStep = (step: ScanStep): boolean => step !== "tx" && step !== "record" && step !== "done" && step !== "dead";
 
 /** The camera runs only while the camera step is shown and the session has not expired (S17). */
 export const cameraOn = (step: ScanStep, expired: boolean): boolean => step === "camera" && !expired;
@@ -35,6 +37,84 @@ export const roleChoices = (certified: boolean): number[] =>
 export function initialRole(qRole: number, certified: boolean): number {
   return Number.isInteger(qRole) && roleChoices(certified).includes(qRole) ? qRole : certified ? Role.PARTNER : Role.OWNER;
 }
+
+// ---- the public record (relay) and the wallet flow under "Advanced" ---------------------------------------------
+
+/**
+ * "Save to the public record" (the verifier signs, FlaconVault's relayer sends; no wallet) is offered for tier ≤ 2
+ * with the owner, seller or buyer role. Certified scans and the vault/partner roles keep the partner's wallet flow
+ * (the verifier answers 422 relay_not_for_certified otherwise).
+ */
+export const relayAvailable = (tier: number, role: number): boolean => !needsPartnerWallet(tier, role);
+
+/** The `flow` query value of the order page's shipping and receipt links (`/scan?role=1&flow=wallet`). */
+export const ORDER_SCAN_FLOW = "wallet";
+
+export interface ScanPath {
+  /** an escrow order's shipping or receipt scan: the order needs a v1 scan signed by the order party (no relay) */
+  orderScan: boolean;
+  /** "Save to the public record" is the main button (with its place note) */
+  relay: boolean;
+  /** this scan goes (or went) the wallet's way: wallet button at the session step, 7 steps */
+  walletFlow: boolean;
+}
+/**
+ * Which way a scan goes (spec §10.3). Certified scans, and an order's shipping or receipt scan opened from the order
+ * page (`flow=wallet` with the seller or buyer role), take the wallet flow directly: a relay scan has no ScanProof and
+ * no actor, so the order could not use it. Otherwise tier ≤ 2 with owner, seller or buyer saves to the public record,
+ * with the wallet flow under "Advanced".
+ *
+ * `publicRecord`: the verifier's /health reports the public record (lib/handoff.ts verifierHasPublicRecord), asked
+ * once per page load; null while that answer is outstanding. "Save to the public record" and its place note need a
+ * yes: an older verifier ignores `anchor: "relay"` and signs a v1 scan whose place and device type are public. With a
+ * no the whole page is the wallet flow, as before the public record; while the answer is outstanding the page keeps
+ * the consumer layout but offers no relay button.
+ */
+export function scanPath(o: { certified: boolean; flow: string | null; tier: number; role: number; step: ScanStep; txSig: string | null; publicRecord: boolean | null }): ScanPath {
+  const orderScan = o.flow === ORDER_SCAN_FLOW && (o.role === Role.SELLER || o.role === Role.BUYER);
+  return {
+    orderScan,
+    relay: o.publicRecord === true && !o.certified && !orderScan && relayAvailable(o.tier, o.role),
+    walletFlow: o.publicRecord === false || o.certified || orderScan || o.step === "tx" || (o.step === "done" && !!o.txSig),
+  };
+}
+
+/**
+ * The step after "Start session", "Restart" or "New scan": the tap step with the new session, else the session step,
+ * which always shows its "Start session" button (the steps after it need the scan data the restart clears).
+ */
+export const stepAfterSessionStart = (started: boolean): ScanStep => (started ? "tap" : "session");
+
+/**
+ * The record step once polling ended without a terminal record (lib/public-record.ts startRecordPoll): the pending
+ * line goes, and this text stays — null for "Not saved to the public record this time." (the record is gone), the
+ * error's own text when the status endpoint refused (404 record_not_found), and "not available" when the schedule ran
+ * out while the status was still unknown.
+ */
+export function recordStatusAfterPoll(end: PollEnd, e?: unknown): string | null {
+  if (end === "gone") return null;
+  if (end === "stopped") return friendly(e);
+  return RECORD_ERRORS.record_not_found;
+}
+
+/**
+ * The step after the verifier answered "Save to the public record" (`requested` "relay") or "Get signature"
+ * ("wallet"). A VALID relay answer always goes to the record step, also with `record` null (nothing was queued, e.g. a
+ * void passport: the scan is kept off chain); its message is an FVSCAN2, which the wallet's tx step cannot send. Only a
+ * verifier without the public record (no `anchor` in its answer) signed a v1 scan for a relay request: that one goes to
+ * the tx step, so it is not lost.
+ */
+export function stepAfterVerify(requested: "relay" | "wallet", v: { verdict: string; anchor?: string | null }): "verify" | "record" | "tx" {
+  if (v.verdict !== "VALID") return "verify";
+  return requested === "relay" && v.anchor === "relay" ? "record" : "tx";
+}
+
+/** First line inside the scan page's "Advanced" disclosure, which holds today's wallet flow. */
+export const ADVANCED_INTRO = "For partners and your own wallet: sign and pay for this scan yourself.";
+/** Inside Advanced: what the v1 scan record publishes (the relay path keeps the place out of it). */
+export const ADVANCED_PLACE_NOTE = "Signed with your own wallet, country and place are not in the Solana transaction, but they are part of the public scan record and its permanent archive.";
+/** The place field of the wallet flow (certified and order scans, and every scan when the verifier has no public record). */
+export const WALLET_PLACE_NOTE = "Optional. Country and place are not in the Solana transaction, but they are part of the public scan record and its permanent archive. No GPS.";
 
 /** The scan page without certification (owner, seller or buyer; tier ≤ 2). */
 export const UNCERTIFIED_SCAN_HREF = "/scan";

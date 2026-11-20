@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Request
 from fv.chain import DecodeError, RpcError, decode_registry, pda_registry
 from fv.config import Settings
 from fv.db import get_chain_state, now as wall_now, partner_pubkeys
-from fv.deps import get_conn, get_db, get_rpc, get_settings, require_admin
+from fv.deps import get_conn, get_db, get_relay_rpc, get_rpc, get_settings, require_admin
 from fv.ratelimit import rate_limit
 from fv.reconcile import reconcile_once
 
@@ -159,5 +159,6 @@ def sites(request: Request, conn=Depends(get_conn), settings: Settings = Depends
 
 
 @router.post("/api/reconcile", dependencies=[Depends(rate_limit), Depends(require_admin)])
-def reconcile(db=Depends(get_db), settings: Settings = Depends(get_settings), rpc=Depends(get_rpc)):
-    return reconcile_once(db, settings, rpc)
+def reconcile(db=Depends(get_db), settings: Settings = Depends(get_settings), rpc=Depends(get_rpc),
+              relay_rpc=Depends(get_relay_rpc)):
+    return reconcile_once(db, settings, rpc, relay_rpc=relay_rpc)   # relay rows: the relay loop's client (+ fallback)

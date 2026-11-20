@@ -1,6 +1,8 @@
 /**
  * Bind a real chip to a new passport from the CLI partner wallet (no phone needed):
- * mint_passport + attach_seal on chain, then MINT/SEAL_ATTACH events on the verifier.
+ * mint_passport + attach_seal on chain, then MINT/SEAL_ATTACH events on the verifier. On a cluster with the public
+ * record (its HolderConfig exists), init_holding_v1 goes in the mint transaction right after mint_passport, so the
+ * bottle's taps can be saved to the public record at once (scripts/lib/cli.ts mintHoldingPlan).
  *
  * Usage: npx tsx scripts/bind-chip.ts <serial> <uid14hex> "<brand>" "<name>" "<batch>" <coreAssetPubkey|new> [kind=1] [verifyUrl]
  *   coreAsset  an existing Metaplex Core asset owned by this wallet and not bound to another passport (mint_passport only
@@ -11,12 +13,16 @@
  * Every argument is checked before anything is sent. Re-running is safe: when the passport or seal already exists on
  * chain, the script looks up the transaction that created it (a mint_passport / attach_seal instruction on that account,
  * signed by this wallet) and posts the event again (the verifier treats a repeated MINT / SEAL_ATTACH for the same
- * transaction as a no-op), so a failed post can always be recovered.
+ * transaction as a no-op), so a failed post can always be recovered. An existing passport without its Holding gets
+ * init_holding_v1 alone (nothing when the Holding exists).
  */
 import { Keypair, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
 import { createHash } from "crypto";
 import { createCoreAssetIx, fetchCoreAsset } from "./lib/core";
-import { creatingSignature, existingAssetProblem, expectationFromIdl, loadIdl, loadWallet, parseBindChipArgs, passportsUsingAsset, postEvent, programFor, providerFor } from "./lib/cli";
+import {
+  creatingSignature, existingAssetProblem, expectationFromIdl, holdingState, initHoldingV1, loadIdl, loadWallet, mintHoldingPlan, mintPassportV1,
+  parseBindChipArgs, passportsUsingAsset, postEvent, programFor, providerFor,
+} from "./lib/cli";
 import { coreAssetUri } from "../apps/web/src/lib/escrow-rules";
 
 const sha = (b: Buffer) => createHash("sha256").update(b).digest();
@@ -42,6 +48,9 @@ async function main() {
   if (!isPartner) throw new Error(`wallet ${wallet.toBase58()} is not a registry partner`);
 
   const existingPassport: any = await acct.passport.fetchNullable(passport);
+  const holding = await holdingState(connection, pid, passport);
+  const holdingPlan = mintHoldingPlan({ ...holding, passport, existing: existingPassport });
+  if (!holding.publicRecord) console.log("no holder_config on this cluster: no init_holding_v1 (scripts/init-holdings.ts creates the Holding after the public-record rollout)");
   let mintSig: string;
   let asset: PublicKey;
   if (!existingPassport) {
@@ -57,14 +66,13 @@ async function main() {
       const problem = existingAssetProblem({ asset, core, wallet, usedBy: core ? await passportsUsingAsset(connection, pid, idl, asset) : [] });
       if (problem) throw new Error(problem);
     }
-    mintSig = await program.methods
-      .mintPassport(Array.from(serialHash), Array.from(bindingHash), asset)
-      .accountsStrict({ registry, passport, issuer: wallet, systemProgram: SystemProgram.programId, coreAsset: asset })
-      .rpc();
-    console.log(`mint_passport ${a.serial} ${mintSig}`);
+    const withHolding = holdingPlan === "with_mint";
+    mintSig = await (await mintPassportV1(program, { registry, passport, serialHash, bindingHash, asset, wallet, withHolding })).rpc();
+    console.log(`mint_passport${withHolding ? " + init_holding_v1" : ""} ${a.serial} ${mintSig}`);
   } else {
     if (!existingPassport.issuer.equals(wallet)) throw new Error(`passport ${a.serial} exists and was issued by ${existingPassport.issuer.toBase58()}`);
     asset = existingPassport.asset;
+    if (holdingPlan === "alone") console.log(`init_holding_v1 ${a.serial} (its Holding was missing) ${await initHoldingV1(program, { registry, passport, wallet }).rpc()}`);
     const found = await creatingSignature(connection, passport, expectationFromIdl(idl, pid, "mint_passport", "passport", wallet));
     if (!found) throw new Error(`passport ${a.serial} exists, but no mint_passport transaction for it signed by this wallet was found; cannot post MINT`);
     mintSig = found;

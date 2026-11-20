@@ -13,8 +13,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from fv import arweave, media_store, proof, txverify
-from fv.chain import RpcError, pda_passport, pda_scan, pda_seal
+from fv import arweave, media_store, proof, relayer, tickets, txverify
+from fv.chain import RpcError, pda_holding, pda_passport, pda_scan, pda_seal
 from fv.config import Settings
 from fv.db import (ORDER_DISPUTE, ORDER_RELEASED, consume_nonce, event_actors, find_event, get_attester, get_event, get_media,
                    get_nonce, get_passport, get_seal_by_hash, get_seal_by_uid, insert_event, insert_nonce, insert_tap_random_id,
@@ -22,11 +22,12 @@ from fv.db import (ORDER_DISPUTE, ORDER_RELEASED, consume_nonce, event_actors, f
                    reserve_nonce_media, seals_for, set_event_resume_hash, update_event_payload, upsert_attester,
                    upsert_passport, upsert_seal, void_passport, transaction)
 from fv.deps import get_conn, get_rpc, get_settings
-from fv.enums import (EventType, Grade, Indicator, NONCE_INVALID, NO_RESPONSE, Role, SEAL_KIND_NAMES, SealKind, Tamper, Tier,
-                      VALID)
+from fv.enums import (ActorKind, EventType, Grade, Indicator, NONCE_INVALID, NO_RESPONSE, Purpose, REPLAY, Role, SEAL_KIND_NAMES,
+                      SealKind, Tamper, Tier, VALID)
 from fv.ratelimit import client_key, rate_limit, report_allowed
 from fv.routes_chain import is_registry_partner, registry_partners
-from fv.service import (adopt_tap, apply_confirmed_scan, authenticate_tap, check_tap, new_resume_token, token_matches)
+from fv.service import (adopt_tap, apply_confirmed_scan, apply_relayed_scan, authenticate_tap, check_tap, new_resume_token,
+                        token_matches)
 from fv.strings import tap_message
 from fv.views import attester_view, clean_text, event_view, passport_list_view, passport_metadata, passport_view, uid_tail
 
@@ -107,6 +108,10 @@ class VerifyBody(BaseModel):
     tapId: int | None = Field(default=None, ge=1, le=MAX_ID)   # adopt a tap already consumed by /t (≤ 3 min, once) …
     tapToken: str | None = Field(default=None, max_length=64)  # … with the one-time token from the /t redirect (`k`)
     note: str = Field(default="", max_length=280)
+    # public record (docs/public-record.md §9.9)
+    anchor: Literal["relay", "wallet"] = "wallet"              # "wallet" (default): v1 record_scan by a wallet (D1)
+    purpose: str | None = Field(default=None, max_length=32)   # relay only; CHECK without a ticket (422 purpose_invalid)
+    ticket: str | None = Field(default=None, max_length=tickets.MAX_TICKET_LEN)   # site attester ticket (P2; P1: 403)
 
     @field_validator("ctr")
     @classmethod
@@ -139,10 +144,13 @@ class EventBody(BaseModel):
 # ---------- health / session ----------
 
 @router.get("/health")
-def health(settings: Settings = Depends(get_settings)):
+def health(request: Request, conn=Depends(get_conn), settings: Settings = Depends(get_settings)):
+    """Liveness and status flags (no balances, no keys). Answers while the relay is off: the web's TapGate needs it."""
     return {"ok": True, "keyId": settings.server_key_id, "pubkeyHex": proof.public_key(settings.server_seed).hex(),
             "simulator": settings.dev_simulator, "programId": settings.program_id or None,
-            "build": getattr(settings, "build_sha", "") or None, "arweave": arweave.health(settings)}
+            "build": getattr(settings, "build_sha", "") or None, "arweave": arweave.health(settings),
+            "cluster": settings.cluster,
+            "relay": relayer.relay_health(conn, settings, getattr(request.app.state, "relay", None))}
 
 
 @router.post("/api/session", dependencies=[Depends(rate_limit)])
@@ -180,11 +188,12 @@ def preview(body: PreviewBody, conn=Depends(get_conn), settings: Settings = Depe
 
 
 def _signed_response(conn, settings: Settings, ev: dict) -> dict:
-    """The VALID /api/verify response, rebuilt from the pending SCAN event (also served by the resume link)."""
+    """The VALID /api/verify answer, rebuilt from the pending SCAN event (also served by the resume link)."""
     p = json.loads(ev["payload_json"] or "{}")
     seal = get_seal_by_hash(conn, ev["seal_uid_hash"]) if ev["seal_uid_hash"] else None
     server = p.get("server") or {}
     counter = p.get("counter")
+    relay = p.get("anchor") == "relay"
     return {
         "verdict": VALID, "counter": counter, "uid": seal["uid_hex"] if seal else None,
         "serial": ev["serial"], "serialHash": p.get("serialHash"), "uidHash": p.get("uidHash"),
@@ -193,14 +202,43 @@ def _signed_response(conn, settings: Settings, ev: dict) -> dict:
         "message": tap_message(VALID, counter),
         "heatMask": proof.heat_levels_to_mask(p["heatLevels"]), "serverSig": server.get("sig"),
         "serverPubkey": proof.public_key(settings.server_seed).hex(), "keyId": server.get("keyId"), "ts": server.get("ts"),
-        "msgHex": p.get("msgHex"), "bundle": proof.bundle_from_payload(p), "bundleHash": p.get("bundleHash"),
-        "eventId": ev["id"],
+        "msgHex": p.get("msgHex"), "bundle": p.get("bundleV2") if relay else proof.bundle_from_payload(p),
+        "bundleHash": p.get("bundleHash"), "eventId": ev["id"],
+        # public record (§9.9): the wallet path carries the keys with null values
+        "anchor": "relay" if relay else "wallet", "purpose": p.get("purpose") if relay else None,
+        "actorKind": p.get("actorKind") if relay else None, "cluster": relayer.cluster_name(settings),
+        "record": relayer.record_view(relayer.row_for_event(conn, ev["id"]), settings) if relay else None,
     }
 
 
 def _needs_partner(tier: int, role: int) -> bool:
     """Mirrors record_scan: tier ≥ CERTIFIED or a VAULT/PARTNER role needs a registry partner as attester."""
     return tier >= Tier.CERTIFIED or role in (Role.VAULT, Role.PARTNER)
+
+
+def _is_relay(ev: dict | None) -> bool:
+    """A public-record scan (POST /api/verify with anchor "relay"): FVSCAN2, sent by the relayer, no resume link."""
+    return bool(ev) and json.loads(ev.get("payload_json") or "{}").get("anchor") == "relay"
+
+
+def held_in_account(conn, settings: Settings, serial: str) -> bool:
+    """Passport.asset == its Holding PDA: the pass is held in a FlaconVault account (the Core-asset rule does not apply)."""
+    p = get_passport(conn, serial)
+    if not p or not p.get("asset"):
+        return False
+    passport = pda_passport(settings.v2_program_id, proof.serial_hash(serial))
+    return p["asset"] == str(pda_holding(settings.v2_program_id, passport))
+
+
+class _Refused(Exception):
+    """Leaves the write transaction with a rollback (nothing consumed) and answers `response`."""
+
+    def __init__(self, response: dict):
+        super().__init__("refused")
+        self.response = response
+
+
+RELAY_PURPOSES = ("CHECK", "LIST", "SHIP", "RECEIPT", "CLAIM", "BIRTH")
 
 
 @router.post("/api/verify", dependencies=[Depends(rate_limit)])
@@ -216,13 +254,38 @@ def verify(body: VerifyBody, request: Request, conn=Depends(get_conn), settings:
         marks it failed); a scan without a claimed attester is confirmed by whichever wallet anchors the signature;
       * VALID answers carry `resumeToken` (GET /api/verify/{eventId}?token=… while pending); a dead seal answers
         NO_RESPONSE without a signature;
+      * a tier ≥ 2 scan (either anchor) is signed only for photos its own session uploaded: its mediaHash must be
+        staged under `nonce` (POST /api/media with that nonce), else 422 media_not_uploaded and nothing is consumed — a
+        hash is public, and naming one would otherwise let a scan get another scan's photos archived with it (D14);
       * the media upload staged under `nonce` with this mediaHash is kept, everything else staged under it is deleted.
+    Public record (docs/public-record.md §9.4, §9.9): `anchor` "wallet" (the default, D1) is the v1 path above, byte for
+    byte plus the keys anchor/purpose/actorKind/cluster/record; "relay" signs an FVSCAN2 (visitor CHECK, actor NONE) and
+    queues it for the relayer — no wallet, no attester (kept in SQLite only); `resumeToken` then reads
+    GET /api/verify/{eventId}/record. A relay CHECK that adopts a /t tap replaces that tap's queued TAP as long as that
+    TAP was never sent; a tap whose TAP counts as sent (relayer.was_sent: sending, recorded, or queued again after an
+    attempt that was given up) answers REPLAY, nothing is consumed and the TAP row stays.
     """
     ts = now()
     pub_hex = proof.public_key(settings.server_seed).hex()
     heat_mask = proof.heat_levels_to_mask(body.heatLevels)
+    relay = body.anchor == "relay"
+    # public-record checks, before anything is consumed (§9.9, in this order)
+    purpose = body.purpose if body.purpose is not None else "CHECK"
+    if purpose not in RELAY_PURPOSES or (not relay and purpose != "CHECK"):
+        raise HTTPException(422, "purpose_invalid")
+    claims = None
+    if body.ticket is not None:
+        claims = tickets.verify_ticket(settings, body.ticket)
+        if claims is None:
+            raise HTTPException(403, "ticket_invalid")             # P1: no ticket is valid (the site side is P2)
+    if relay and claims is None and purpose != "CHECK":
+        raise HTTPException(403, "ticket_required")
+    if relay and _needs_partner(body.tier, body.role):
+        raise HTTPException(422, "relay_not_for_certified")       # certified scans are signed by the partner's wallet
     base = {"heatMask": heat_mask, "serverSig": None, "serverPubkey": pub_hex, "keyId": settings.server_key_id,
-            "ts": ts, "msgHex": None, "bundle": None, "bundleHash": None, "eventId": None, "reviewRecommended": False}
+            "ts": ts, "msgHex": None, "bundle": None, "bundleHash": None, "eventId": None, "reviewRecommended": False,
+            "anchor": body.anchor, "purpose": purpose if relay else None, "actorKind": "NONE" if relay else None,
+            "cluster": relayer.cluster_name(settings), "record": None}
     if body.attester and not txverify.is_pubkey(body.attester):
         raise HTTPException(422, "attester must be a base58 pubkey")
     if body.serial is not None and not valid_serial(body.serial):
@@ -247,6 +310,19 @@ def verify(body: VerifyBody, request: Request, conn=Depends(get_conn), settings:
             raise HTTPException(422, str(exc)) from exc
     else:
         media_hash = proof.ZERO32
+    v2_fields = {"tier": body.tier, "role": body.role, "site_id": 0, "tamper": tamper, "heat": heat, "hum": hum, "uv": uv,
+                 "heat_levels": heat_mask, "fill": body.fill, "media_hash_b": media_hash}
+    if relay:
+        # what record_scan_v2 accepts (§3.4) — e.g. a tier-0 sighting cannot be a CHECK — refused before the tap is used
+        try:
+            proof.check_fields_v2({"program_id": proof.ZERO32, "cluster_tag": settings.cluster_tag, "serial_hash": proof.ZERO32,
+                                   "uid_hash": proof.ZERO32, "counter": 0, "tier": body.tier, "role": body.role,
+                                   "tamper": tamper, "uv": uv, "hum": hum, "heat": heat, "heat_levels": heat_mask,
+                                   "fill": body.fill, "site_id": 0, "purpose": Purpose.CHECK, "actor_kind": ActorKind.NONE,
+                                   "actor": proof.ZERO32, "media_hash": media_hash, "bundle_hash": proof.ZERO32,
+                                   "nonce": proof.ZERO32})
+        except proof.ScanFieldError as exc:
+            raise HTTPException(422, "scan_fields_invalid") from exc
     try:
         nonce_b = proof.parse_hex(body.nonce, 32, "nonce")
     except ValueError:
@@ -255,66 +331,127 @@ def verify(body: VerifyBody, request: Request, conn=Depends(get_conn), settings:
     auth = None if body.tapId is not None else authenticate_tap(settings, body.uid, body.ctr, body.cmac,
                                                                 picc_data=body.piccData, enc=body.enc)
 
-    with transaction(conn):
-        # 1. nonce
-        n = get_nonce(conn, nonce_b.hex()) if nonce_b else None
-        if not n or n["used_at"] is not None or n["expires_at"] < ts:
-            g, _ = proof.compute_grade(verdict=NONCE_INVALID, tamper=tamper, heat=heat, hum=hum, fill=body.fill)
-            return {**base, "verdict": NONCE_INVALID, "counter": None, "serial": None, "serialHash": None, "uidHash": None,
-                    "sealKind": None, "sealDead": None, "grade": g, "message": tap_message(NONCE_INVALID)}
-        # 2.–5. key, CMAC, counter (advances), seal — or adopt the tap /t already verified and consumed
-        if body.tapId is not None:
-            chk = adopt_tap(conn, body.tapId, body.tapToken, ts)
-        else:
-            chk = check_tap(conn, settings, body.uid, body.ctr, body.cmac, consume=True, auth=auth)
-        verdict = chk.verdict
-        if verdict == VALID and chk.seal_dead:
-            verdict = NO_RESPONSE
-        if verdict == VALID and body.serial and body.serial != chk.serial:
-            raise HTTPException(409, f"serial mismatch: tag belongs to {chk.serial}")
-        message = tap_message(verdict, chk.counter)
-        if chk.uid_hex:
-            insert_tap_random_id(conn, ts=ts, source="verify", uid_hex=chk.uid_hex, ctr=chk.counter, cmac=chk.cmac_hex,
-                                 verdict=verdict, serial=chk.serial, message=message)
-        grade, review = proof.compute_grade(verdict=verdict, tamper=tamper, heat=heat, hum=hum, fill=body.fill,
-                                            seal_dead=chk.seal_dead)
-        out = {**base, **_tap_fields(chk), "verdict": verdict, "grade": grade, "reviewRecommended": review, "message": message}
-        if verdict != VALID:
-            return out
+    wake = False
+    try:
+        with transaction(conn):
+            # 1. nonce
+            n = get_nonce(conn, nonce_b.hex()) if nonce_b else None
+            if not n or n["used_at"] is not None or n["expires_at"] < ts:
+                g, _ = proof.compute_grade(verdict=NONCE_INVALID, tamper=tamper, heat=heat, hum=hum, fill=body.fill)
+                return {**base, "verdict": NONCE_INVALID, "counter": None, "serial": None, "serialHash": None, "uidHash": None,
+                        "sealKind": None, "sealDead": None, "grade": g, "message": tap_message(NONCE_INVALID)}
+            # 1b. the photos of a tier ≥ 2 scan: an upload of this session (staged under this nonce), never a hash it only
+            #     names (bundles and FVSCAN2 show them) — before the tap is used, so nothing is consumed
+            if body.tier >= 2 and not media_store.is_staged(settings, nonce_b.hex(), media_hash.hex()):
+                raise HTTPException(422, "media_not_uploaded")
+            # 2.–5. key, CMAC, counter (advances), seal — or adopt the tap /t already verified and consumed
+            if body.tapId is not None:
+                chk = adopt_tap(conn, body.tapId, body.tapToken, ts)
+            else:
+                chk = check_tap(conn, settings, body.uid, body.ctr, body.cmac, consume=True, auth=auth)
+            verdict = chk.verdict
+            if verdict == VALID and chk.seal_dead:
+                verdict = NO_RESPONSE
+            if verdict == VALID and body.serial and body.serial != chk.serial:
+                raise HTTPException(409, f"serial mismatch: tag belongs to {chk.serial}")
+            message = tap_message(verdict, chk.counter)
+            if chk.uid_hex:
+                insert_tap_random_id(conn, ts=ts, source="verify", uid_hex=chk.uid_hex, ctr=chk.counter, cmac=chk.cmac_hex,
+                                     verdict=verdict, serial=chk.serial, message=message)
+            grade, review = proof.compute_grade(verdict=verdict, tamper=tamper, heat=heat, hum=hum, fill=body.fill,
+                                                seal_dead=chk.seal_dead)
+            out = {**base, **_tap_fields(chk), "verdict": verdict, "grade": grade, "reviewRecommended": review, "message": message}
+            if verdict != VALID:
+                return out
 
-        # 6. message, signature, nonce consumed, SCAN(pending) event
-        seal = chk.seal
-        serial = seal["serial"]
-        sh, uh = proof.serial_hash(serial), bytes.fromhex(chk.uid_hash_hex)
-        msg = proof.build_message(serial_hash=sh, uid_hash=uh, counter=chk.counter, tamper=tamper, uv=uv, hum=hum,
-                                  heat=heat, fill=body.fill, media_hash=media_hash, nonce=nonce_b, ts=ts)
-        sig = proof.sign(settings.server_seed, msg)
-        loc = body.location or Location()
-        media_row = get_media(conn, media_hash.hex()) if body.tier >= 2 else None
-        bundle = proof.build_bundle(
-            serial=serial, serial_hash_b=sh, uid_hash_b=uh, counter=chk.counter, seal_kind=seal["kind"], tamper=tamper,
-            heat=heat, hum=hum, uv=uv, heat_levels=body.heatLevels, fill=body.fill, country=loc.country, city=loc.city,
-            media_hash_b=media_hash if body.tier >= 2 else None, media_ar=(media_row["ar"] if media_row else None),
-            nonce_b=nonce_b, issued_at=n["issued_at"],
-            platform=body.platform, role=body.role, tier=body.tier, attester=body.attester, key_id=settings.server_key_id,
-            verdict=VALID, server_ts=ts, sig_b=sig, bundle_ts=ts, note=body.note)
-        b_hash = proof.bundle_hash(proof.canonical_json(bundle))
-        consume_nonce(conn, nonce_b.hex(), ts)
-        # the upload this scan commits to leaves staging; anything else staged under the nonce is deleted
-        if body.tier >= 2:
-            media_store.promote(conn, settings, nonce_b.hex(), media_hash.hex(), ts)
-        else:
-            media_store.discard(settings, nonce_b.hex())
-        payload = {**bundle, "grade": grade, "reviewRecommended": review, "msgHex": msg.hex(), "bundleHash": proof.hex0x(b_hash)}
-        # SCAN(pending): the claimed attester lives only in the signed bundle — actor and label stay empty, and passport
-        # grade, stats and attester rows change only once the scan is confirmed on chain (POST /api/events with the
-        # record_scan tx, or the reconcile job) — see service.apply_confirmed_scan.
-        ev = insert_event(conn, serial=serial, type=EventType.SCAN, ts=ts, actor_pubkey=None, actor_label=None,
-                          tx_sig=None, status="pending", seal_uid_hash=seal["uid_hash"], payload=payload, grade_after=grade,
-                          country=loc.country, city=loc.city)
-        token, token_hash = new_resume_token()
-        set_event_resume_hash(conn, ev["id"], token_hash)
-        return {**out, **_signed_response(conn, settings, ev), "resumeToken": token}
+            seal = chk.seal
+            serial = seal["serial"]
+            if not relay and held_in_account(conn, settings, serial):
+                raise HTTPException(409, "wallet_anchor_not_allowed")   # v1 record_scan would let any attester grade it (D15)
+            # the public-record row of this counter (the TAP of the adopted /t tap). Once it counts as sent — sending,
+            # recorded, or queued again after an attempt that was given up and may have landed (relayer.was_sent, the
+            # one rule) — the counter is, or may be, used on chain: the adoption is refused and rolled back, and the
+            # row stays as it is. Below, tap_row is therefore either None or a queued row that was never sent
+            tap_row = relayer.live_row(conn, seal["uid_hash"], chk.counter)
+            if relayer.was_sent(tap_row):
+                g, _ = proof.compute_grade(verdict=REPLAY, tamper=tamper, heat=heat, hum=hum, fill=body.fill)
+                raise _Refused({**out, "verdict": REPLAY, "grade": g, "reviewRecommended": False,
+                                "message": tap_message(REPLAY, chk.counter)})
+
+            # 6. message, signature, nonce consumed, SCAN(pending) event
+            sh, uh = proof.serial_hash(serial), bytes.fromhex(chk.uid_hash_hex)
+            loc = body.location or Location()
+            if relay:
+                signed = relayer.sign_scan(settings, seal=seal, counter=chk.counter, purpose=Purpose.CHECK,
+                                           actor_kind=ActorKind.NONE, ts=ts,
+                                           fields={**v2_fields, "country": loc.country, "nonce_b": nonce_b,
+                                                   "issued_at": n["issued_at"]})
+                msg, sig = signed.msg, signed.sig
+            else:
+                msg = proof.build_message(serial_hash=sh, uid_hash=uh, counter=chk.counter, tamper=tamper, uv=uv, hum=hum,
+                                          heat=heat, fill=body.fill, media_hash=media_hash, nonce=nonce_b, ts=ts)
+                sig = proof.sign(settings.server_seed, msg)
+            media_row = get_media(conn, media_hash.hex()) if body.tier >= 2 else None
+            # the v1-style detail (city, note, platform, claimed attester) — for a relay scan it stays in SQLite only:
+            # the signed public bundle is the v2 one, which carries none of them
+            bundle = proof.build_bundle(
+                serial=serial, serial_hash_b=sh, uid_hash_b=uh, counter=chk.counter, seal_kind=seal["kind"], tamper=tamper,
+                heat=heat, hum=hum, uv=uv, heat_levels=body.heatLevels, fill=body.fill, country=loc.country, city=loc.city,
+                media_hash_b=media_hash if body.tier >= 2 else None, media_ar=(media_row["ar"] if media_row else None),
+                nonce_b=nonce_b, issued_at=n["issued_at"],
+                platform=body.platform, role=body.role, tier=body.tier, attester=body.attester, key_id=settings.server_key_id,
+                verdict=VALID, server_ts=ts, sig_b=sig, bundle_ts=ts, note=body.note)
+            b_hash = proof.bundle_hash(proof.canonical_json(bundle))
+            consume_nonce(conn, nonce_b.hex(), ts)
+            # the upload this scan commits to leaves staging; anything else staged under the nonce is deleted
+            if body.tier >= 2:
+                try:
+                    media_store.promote(conn, settings, nonce_b.hex(), media_hash.hex(), ts)
+                except media_store.NotStaged as exc:     # purged since step 1b (its nonce expired meanwhile): rolled back
+                    raise HTTPException(422, "media_not_uploaded") from exc
+            else:
+                media_store.discard(settings, nonce_b.hex())
+            if relay:
+                payload = {**bundle, "grade": grade, "reviewRecommended": review, "anchor": "relay", "purpose": purpose,
+                           "actorKind": "NONE", "msgHex": msg.hex(), "bundleHash": proof.hex0x(signed.bundle_hash),
+                           "bundleV2": signed.bundle}
+                p = get_passport(conn, serial)
+                # a visitor scan never changes the passport (D14): its grade_after is the passport's grade
+                # events.city stays empty: the place is only in payload_json (SQLite only, never public: views.py)
+                ev = insert_event(conn, serial=serial, type=EventType.SCAN, ts=ts, actor_pubkey=None, actor_label=None,
+                                  tx_sig=None, status="pending", seal_uid_hash=seal["uid_hash"], payload=payload,
+                                  grade_after=Grade.VOID if p["void"] else p["grade"], country=loc.country, city=None)
+                if (tap_row and int(tap_row["purpose"]) == Purpose.TAP
+                        and not relayer.visitor_cap_full(conn, seal["uid_hash"], Purpose.CHECK, ts)):
+                    relayer.replace_tap(conn, tap_row, ts)              # the CHECK takes the counter of the adopted tap
+                row = relayer.queue_scan(conn, settings, event=ev, seal=seal, counter=chk.counter, purpose=Purpose.CHECK,
+                                         actor_kind=ActorKind.NONE, ts=ts, due_at=ts, signed=signed, now=ts)
+                if row is None:                                         # nothing to send (void passport): off-chain only
+                    conn.execute("UPDATE events SET status='confirmed' WHERE id=? AND status='pending'", (ev["id"],))
+                    apply_relayed_scan(conn, get_event(conn, ev["id"]), ts,
+                                       drop_sighting=not relayer.tap_live(conn, relayer.scan_ref(seal["uid_hash"], chk.counter)))
+                wake = bool(row and row["status"] == "queued")
+            else:
+                if tap_row and tap_row["status"] == "queued":
+                    relayer.replace_tap(conn, tap_row, ts)              # the wallet's v1 scan uses the counter
+                payload = {**bundle, "grade": grade, "reviewRecommended": review, "msgHex": msg.hex(),
+                           "bundleHash": proof.hex0x(b_hash)}
+                # SCAN(pending): the claimed attester lives only in the signed bundle — actor and label stay empty, and
+                # passport grade, stats and attester rows change only once the scan is confirmed on chain (POST
+                # /api/events with the record_scan tx, or the reconcile job) — see service.apply_confirmed_scan.
+                ev = insert_event(conn, serial=serial, type=EventType.SCAN, ts=ts, actor_pubkey=None, actor_label=None,
+                                  tx_sig=None, status="pending", seal_uid_hash=seal["uid_hash"], payload=payload,
+                                  grade_after=grade, country=loc.country, city=loc.city)
+            token, token_hash = new_resume_token()
+            set_event_resume_hash(conn, ev["id"], token_hash)
+            result = {**out, **_signed_response(conn, settings, get_event(conn, ev["id"])), "resumeToken": token}
+    except _Refused as refused:
+        return refused.response
+    if wake:
+        relay_state = getattr(request.app.state, "relay", None)
+        if relay_state is not None:
+            relay_state.wake()
+    return result
 
 
 @router.get("/api/verify/{event_id}", dependencies=[Depends(rate_limit)])
@@ -322,13 +459,28 @@ def resume_verify(event_id: int = Path(ge=1, le=MAX_ID), token: str | None = Que
                   conn=Depends(get_conn), settings: Settings = Depends(get_settings)):
     """
     The signed scan again (same JSON as the VALID /api/verify answer) for the holder of its one-time resume token —
-    e.g. inside a wallet app's browser on iPhone — while the scan is still pending. Anything else is 404.
+    e.g. inside a wallet app's browser on iPhone — while the scan is still pending. Anything else is 404, a public-record
+    (relay) scan too: nobody anchors it with a wallet (its token reads /api/verify/{eventId}/record).
     """
     ev = get_event(conn, event_id)
     ok = token_matches(token, (ev or {}).get("resume_hash"))   # always compared (constant time), even for unknown ids
-    if not ev or not ok or ev["status"] != "pending" or int(ev["type"]) != EventType.SCAN:
+    if not ev or not ok or ev["status"] != "pending" or int(ev["type"]) != EventType.SCAN or _is_relay(ev):
         raise HTTPException(404, "resume_not_found")
     return _signed_response(conn, settings, ev)
+
+
+@router.get("/api/verify/{event_id}/record", dependencies=[Depends(rate_limit)])
+def verify_record(event_id: int = Path(ge=1, le=MAX_ID), token: str | None = Query(default=None, max_length=64),
+                  conn=Depends(get_conn), settings: Settings = Depends(get_settings)):
+    """
+    The public-record state of a relay scan for the holder of its resume token, in any state: {eventId, record}
+    (record null when nothing was queued, e.g. a void passport). Anything else → 404 record_not_found.
+    """
+    ev = get_event(conn, event_id)
+    ok = token_matches(token, (ev or {}).get("resume_hash"))   # always compared (constant time), even for unknown ids
+    if not ev or not ok or int(ev["type"]) != EventType.SCAN or not _is_relay(ev):
+        raise HTTPException(404, "record_not_found")
+    return {"eventId": ev["id"], "record": relayer.record_view(relayer.row_for_event(conn, ev["id"]), settings)}
 
 
 # ---------- media ----------
@@ -355,7 +507,8 @@ async def media(request: Request, conn=Depends(get_conn), settings: Settings = D
     session nonce (unexpired, not yet used by /api/verify; at most 6 files per nonce). The body size is checked from
     Content-Length before anything is read, together with the free space and the byte budgets (fv.media_store: 507
     storage_full · 429 media_limited · 503 media_busy). The upload is only *staged* under its nonce: it is kept when a
-    VALID /api/verify consumes that nonce with this mediaHash, and deleted otherwise once the nonce has expired. Nothing
+    VALID /api/verify consumes that nonce with this mediaHash, and deleted otherwise once the nonce has expired; a scan
+    under another nonce cannot use it (422 media_not_uploaded: every scan uploads its own photos). Nothing
     is archived to Arweave here: the reconcile job's archiving queue does that once the scan is confirmed, and its media
     retention deletes kept frames no scan references any more (FV_MEDIA_RETENTION_S).
     """
@@ -913,6 +1066,8 @@ def _confirm_event(event_id: int, tx_sig: str | None, actor: str | None, conn, s
     ev = get_event(conn, event_id)
     if not ev:
         raise HTTPException(404, "event not found")
+    if int(ev["type"]) == EventType.SCAN and _is_relay(ev):
+        raise HTTPException(422, "relay scans are recorded by the verifier")   # no wallet tx confirms a public-record scan
     repair = False
     if ev["status"] == "confirmed":
         if tx_sig and ev["tx_sig"] == tx_sig:

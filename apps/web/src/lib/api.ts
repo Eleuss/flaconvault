@@ -13,6 +13,12 @@ export interface PassportEvent {
   txSig: string | null; status: "pending" | "confirmed" | "failed" | "reported"; sealUidHash: Hex32 | null;
   payload: Record<string, unknown>; arBundle: string | null; arMedia: string | null;
   gradeAfter: number | null; location: { country: string | null; city: string | null } | null;
+  /**
+   * SCAN events from a verifier with the public record (absent on older ones): who scanned, by actor kind (v2) or by
+   * the verified attester (v1), and the FVSCAN2 purpose name (null for v1 scans).
+   */
+  scanBy?: "VISITOR" | "HOLDER" | "PARTNER" | "RECIPIENT" | null;
+  purpose?: string | null;
 }
 export interface PassportStats {
   /** confirmed SCAN events (tier-0 sightings included) */

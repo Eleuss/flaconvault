@@ -3,7 +3,8 @@
  *   NODE_OPTIONS=--no-experimental-strip-types npx ts-mocha -p ./tsconfig.json tests/scripts-cli.ts
  * (also runs as part of `anchor test`).
  */
-import { Keypair, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction, type VersionedTransactionResponse } from "@solana/web3.js";
+import * as anchor from "@anchor-lang/core";
+import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction, type VersionedTransactionResponse } from "@solana/web3.js";
 import { expect } from "chai";
 import * as fs from "fs";
 import * as path from "path";
@@ -13,12 +14,20 @@ import {
   chooseServerKey,
   existingAssetProblem,
   expectationFromIdl,
+  holderConfigPdaOf,
+  initHoldingV1,
   isLocalUrl,
   keyStatus,
+  mintHoldingPlan,
+  mintPassportV1,
+  ownedBy,
   parseBindChipArgs,
   parseKeyIdFlag,
   parsePartnerArgs,
   parseServerKeyArgs,
+  planHoldings,
+  holdingPdaOf,
+  parseHolderConfigArgs,
   planServerKey,
   sealSeedPlan,
   txCreatesAccount,
@@ -217,5 +226,79 @@ describe("ops scripts", () => {
     const b = burnCoreAssetIx({ asset, payer, owner });
     expect(b.data.toString("hex")).to.equal("0c00");
     expect(b.keys.map((k) => k.pubkey.toBase58())).to.deep.equal([asset, MPL_CORE_PROGRAM_ID, payer, owner, SystemProgram.programId, MPL_CORE_PROGRAM_ID].map((k) => k.toBase58()));
+  });
+
+  it("init-holdings: init_holding_v1 only for v1 passports without a Holding (re-runnable)", () => {
+    const programId = new PublicKey(flaconIdl.address);
+    const [a, b, c] = [Keypair.generate().publicKey, Keypair.generate().publicKey, Keypair.generate().publicKey];
+    const ha = holdingPdaOf(programId, a);
+    expect(ha.equals(PublicKey.findProgramAddressSync([Buffer.from("holding"), a.toBuffer()], programId)[0])).to.be.true;
+    const plan = planHoldings([
+      { passport: a, asset: Keypair.generate().publicKey, holding: ha, holdingExists: false },
+      { passport: b, asset: Keypair.generate().publicKey, holding: holdingPdaOf(programId, b), holdingExists: true },
+      { passport: c, asset: holdingPdaOf(programId, c), holding: holdingPdaOf(programId, c), holdingExists: true },
+    ]);
+    expect(plan.map((s) => s.op)).to.deep.equal(["init", "skip", "skip"]);
+    expect(plan[0].op === "init" && plan[0].holding.equals(ha)).to.be.true;
+    expect(plan.map((s) => (s.op === "skip" ? s.reason : ""))).to.deep.equal(["", "holding exists", "v2 passport (held in an account)"]);
+    // the IDL's init_holding_v1 takes exactly the accounts the script passes
+    const ix = flaconIdl.instructions.find((i: any) => i.name === "init_holding_v1");
+    expect(ix.accounts.map((x: any) => x.name)).to.deep.equal(["registry", "passport", "holding", "authority", "payer", "system_program"]);
+  });
+
+  it("v1 mint paths: init_holding_v1 goes with mint_passport once the public record is on; alone for an existing passport without its Holding", async () => {
+    const programId = new PublicKey(flaconIdl.address);
+    const passport = Keypair.generate().publicKey, holding = holdingPdaOf(programId, passport);
+    const plan = (publicRecord: boolean, existing: { asset: PublicKey } | null, holdingExists: boolean) =>
+      mintHoldingPlan({ publicRecord, passport, existing, holding, holdingExists });
+    const coreAsset = { asset: Keypair.generate().publicKey };
+    expect(plan(true, null, false), "new passport").to.equal("with_mint");
+    expect(plan(true, coreAsset, false), "recovery: Holding missing").to.equal("alone");
+    expect(plan(true, coreAsset, true), "recovery: Holding exists").to.equal("none");
+    expect(plan(true, { asset: holding }, true), "a v2 passport").to.equal("none");
+    // no HolderConfig on the cluster (before rollout step 2): a program from before the rollout would fail the mint
+    for (const existing of [null, coreAsset]) expect(plan(false, existing, false), "before the rollout").to.equal("none");
+    // the Holding / HolderConfig must belong to the program: a PDA someone merely funded with SOL does not count
+    expect(ownedBy({ owner: programId, data: new Uint8Array(229) }, programId)).to.be.true;
+    expect(ownedBy({ owner: SystemProgram.programId, data: new Uint8Array(0) }, programId)).to.be.false;
+    expect(ownedBy({ owner: programId, data: new Uint8Array(0) }, programId)).to.be.false;
+    expect(ownedBy(null, programId)).to.be.false;
+    expect(holderConfigPdaOf(programId).equals(PublicKey.findProgramAddressSync([Buffer.from("holder_config")], programId)[0])).to.be.true;
+
+    // the builders (no RPC needed): [mint_passport, init_holding_v1] in one transaction; the wallet is issuer, authority, payer
+    const wallet = Keypair.generate().publicKey;
+    const provider = new anchor.AnchorProvider(new Connection("http://127.0.0.1:9"), new anchor.Wallet(Keypair.generate()), {});
+    const program = new anchor.Program(flaconIdl, provider);
+    const registry = PublicKey.findProgramAddressSync([Buffer.from("registry")], programId)[0];
+    const serialHash = Buffer.alloc(32, 7), asset = Keypair.generate().publicKey;
+    const pp = PublicKey.findProgramAddressSync([Buffer.from("passport"), serialHash], programId)[0];
+    const disc = (name: string) => Buffer.from(flaconIdl.instructions.find((i: any) => i.name === name).discriminator);
+    const o = { registry, passport: pp, serialHash, bindingHash: serialHash, asset, wallet };
+    const both = (await (await mintPassportV1(program, { ...o, withHolding: true })).transaction()).instructions;
+    expect(both.map((x) => x.data.subarray(0, 8).toString("hex"))).to.deep.equal([disc("mint_passport"), disc("init_holding_v1")].map((d) => d.toString("hex")));
+    expect(both.every((x) => x.programId.equals(programId))).to.be.true;
+    const keys = (x: TransactionInstruction) => x.keys.map((k) => `${k.pubkey.toBase58()}${k.isSigner ? "s" : ""}${k.isWritable ? "w" : ""}`);
+    expect(keys(both[0])).to.deep.equal([`${registry}`, `${pp}w`, `${wallet}sw`, `${SystemProgram.programId}`, `${asset}`]);
+    expect(keys(both[1])).to.deep.equal([`${registry}`, `${pp}`, `${holdingPdaOf(programId, pp)}w`, `${wallet}s`, `${wallet}sw`, `${SystemProgram.programId}`]);
+    expect(keys(await initHoldingV1(program, o).instruction())).to.deep.equal(keys(both[1]));
+    const alone = (await (await mintPassportV1(program, { ...o, withHolding: false })).transaction()).instructions;
+    expect(alone.map((x) => x.data.subarray(0, 8).toString("hex"))).to.deep.equal([disc("mint_passport").toString("hex")]);
+  });
+
+  it("holder-config: init <cluster> must match the RPC (the tag is immutable), show", () => {
+    expect(parseHolderConfigArgs(["show"], DEVNET)).to.deep.equal({ cmd: "show" });
+    expect(parseHolderConfigArgs(["init", "devnet"], DEVNET)).to.deep.equal({ cmd: "init", cluster: "devnet", tag: 2 });
+    expect(parseHolderConfigArgs(["init", "localnet"], LOCAL)).to.deep.equal({ cmd: "init", cluster: "localnet", tag: 3 });
+    expect(parseHolderConfigArgs(["init", "mainnet"], "https://api.mainnet-beta.solana.com").tag).to.equal(1);
+    expect(() => parseHolderConfigArgs(["init", "devnet"], LOCAL)).to.throw(/does not match/);
+    expect(() => parseHolderConfigArgs(["init", "localnet"], DEVNET)).to.throw(/does not match/);
+    expect(() => parseHolderConfigArgs(["init", "mainnet"], DEVNET)).to.throw(/does not match/);
+    expect(() => parseHolderConfigArgs(["init", "devnet"], "https://api.mainnet-beta.solana.com")).to.throw(/devnet RPC/);
+    expect(() => parseHolderConfigArgs(["init", "testnet"], DEVNET)).to.throw(/unknown cluster/);
+    expect(() => parseHolderConfigArgs(["init"], DEVNET)).to.throw(/usage/);
+    expect(() => parseHolderConfigArgs([], DEVNET)).to.throw(/usage/);
+    // the tags are docs/enums.json's cluster enum
+    const enums = JSON.parse(fs.readFileSync(path.join(__dirname, "../docs/enums.json"), "utf8"));
+    expect(enums.cluster).to.deep.equal({ MAINNET: 1, DEVNET: 2, LOCALNET: 3 });
   });
 });

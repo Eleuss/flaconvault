@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import io
 import json
 import os
 import struct
@@ -58,6 +59,26 @@ def post_media(client, *, files=None, nonce: str | None = None):
     """POST /api/media under a fresh session nonce (or the given one)."""
     n = nonce or client.post("/api/session", json={}).json()["nonce"]
     return client.post("/api/media", data={"nonce": n}, files=files)
+
+
+# A tier ≥ 2 scan names only photos its own session uploaded (POST /api/media with the scan's nonce; else 422
+# media_not_uploaded): tests upload PHOTO, one JPEG frame, and name its hash MEDIA.
+PHOTO = b"\xff\xd8\xff\xe0" + b"test seal frame " * 8
+MEDIA = "0x" + hashlib.sha256(PHOTO).hexdigest()
+
+
+def upload_photo(client, nonce: str, data: bytes = PHOTO):
+    """POST /api/media of one JPEG frame `data` under the session `nonce` (the response)."""
+    return post_media(client, files={"file": ("frame.jpg", io.BytesIO(data), "image/jpeg")}, nonce=nonce)
+
+
+def with_photo(client, body: dict) -> dict:
+    """A POST /api/verify body as the web sends it: a tier ≥ 2 scan naming MEDIA uploads PHOTO under its nonce first. A
+    nonce the upload refuses (used, expired, malformed: 403 media_nonce_invalid) is left to /api/verify to answer."""
+    if int(body.get("tier") or 0) >= 2 and body.get("mediaHash") == MEDIA and isinstance(body.get("nonce"), str):
+        r = upload_photo(client, body["nonce"])
+        assert r.status_code in (200, 403), r.text
+    return body
 
 
 @pytest.fixture()

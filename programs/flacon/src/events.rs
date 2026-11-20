@@ -92,3 +92,47 @@ pub struct ScanRecorded {
     pub server_key_id: u8,
     pub ts: i64,
 }
+
+#[event]
+pub struct HolderConfigInitialized {
+    pub holder_config: Pubkey,
+    pub authority: Pubkey,
+    pub cluster_tag: u8,
+    pub guardian: Pubkey,
+    pub holder_key: Pubkey,
+    pub registrar_key: Pubkey,
+}
+
+#[event]
+pub struct HolderConfigUpdated {
+    pub guardian: Pubkey,
+    pub holder_key: Pubkey,
+    pub registrar_key: Pubkey,
+    pub claim_delay_s: i64,
+    pub notap_delay_s: i64,
+}
+
+#[event]
+pub struct HoldingInitialized {
+    pub passport: Pubkey,
+    pub holding: Pubkey,
+    pub state: u8,
+    pub epoch: u32,
+    pub commitment: [u8; 32],
+}
+
+/// Emitted by `record_scan_v2` through `emit_cpi!` (an inner instruction, not a log line), with the full signed
+/// message, so an indexer can re-check the signature and re-fold `scan_head`. Values after the scan.
+#[event]
+pub struct ScanRecordedV2 {
+    pub passport: Pubkey,
+    pub seal: Pubkey,
+    pub holding: Pubkey,
+    pub server_key_id: u8,
+    pub message: [u8; 256],
+    pub grade: u8,
+    pub void: bool,
+    pub scan_count: u32,
+    pub scan_head: [u8; 32],
+    pub head_count: u32,
+}

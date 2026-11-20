@@ -5,14 +5,13 @@ import hashlib
 from solders.pubkey import Pubkey
 
 from fv import proof
-from tests.conftest import ESCROW_ID, PROGRAM_ID, SYSTEM_PROGRAM, passport_pda, registry_pda, sig
+from tests.conftest import ESCROW_ID, MEDIA, PROGRAM_ID, SYSTEM_PROGRAM, passport_pda, registry_pda, sig, with_photo
 
 SERIAL = "SN-2026-000001"
 PARTNER = "PxPGKQsGTYE2ti3awtEae4Yjk64NF2tcxQN1oDchhyR"          # seeded issuer of all three passports
 SELLER = "7GhXQ2fV4d1eo9yq1vQdD9Zk9sHkYd8qz2pM4hN6FaK2"           # seeded LIST actor of SN-2026-000001 / -000003
 BUYER = str(Pubkey.from_bytes(hashlib.sha256(b"buyer").digest()))
 MALLORY = str(Pubkey.from_bytes(hashlib.sha256(b"mallory").digest()))
-MEDIA = "0x358bd5e49a401b60105ca4fe2f6fd4563c617295f4704debe35da7844cd5b380"
 
 
 def _ev(c, **body):
@@ -26,7 +25,7 @@ def _scan(c, uid="04A1B2C3D4E5F6", attester=SELLER, **over):
             "indicators": {"heat": 0, "humidity": 0, "uv": 3}, "heatLevels": [1, 1, 0, 0, 0, 0], "fill": 92, "mediaHash": MEDIA,
             "attester": attester, "platform": "SIMULATOR"}
     body.update(over)
-    v = c.post("/api/verify", json=body).json()
+    v = c.post("/api/verify", json=with_photo(c, body)).json()
     assert v["verdict"] == "VALID", v
     return v
 

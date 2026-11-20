@@ -46,10 +46,14 @@ export const secondsLeft = (deadline: number, deviceNow = nowS()) => Math.max(0,
 export function safeScanUrl(u: string | null | undefined): string {
   return typeof u === "string" && /^\/scan(\?[^#\s]*)?$/.test(u) ? u : "/scan";
 }
-/** /scan URL that keeps tier, role and site (never the one-shot adopt / k / resume parameters). */
+/**
+ * /scan URL that keeps tier, role, site and an order scan's `flow=wallet` (never the one-shot adopt / k / resume
+ * parameters), so a tap handed back from /t returns to the same flow.
+ */
 export function scanUrlFor(params: { get(k: string): string | null }): string {
   const keep = new URLSearchParams();
   for (const key of ["tier", "role", "site"]) { const v = params.get(key); if (v != null && /^\d{1,5}$/.test(v)) keep.set(key, v); }
+  if (params.get("flow") === "wallet") keep.set("flow", "wallet");
   const q = keep.toString();
   return q ? `/scan?${q}` : "/scan";
 }
@@ -68,6 +72,61 @@ export function tapGateAction(params: TagParams, session: ScanSessionFlag | null
     ? `picc_data=${encodeURIComponent(params.piccData)}&cmac=${encodeURIComponent(params.cmac)}${params.enc ? `&enc=${encodeURIComponent(params.enc)}` : ""}`
     : `uid=${encodeURIComponent(params.uid)}&ctr=${encodeURIComponent(params.ctr)}&cmac=${encodeURIComponent(params.cmac)}`;
   return { kind: "verify", url: `${verifyUrl}/t?${q}` };
+}
+
+/** How long TapGate waits for the verifier's /health before it shows the fallback (spec §10.3). */
+export const HEALTH_TIMEOUT_MS = 2000;
+/** The verifier takes the tap only when /health answers HTTP 2xx with JSON `ok === true`. */
+export const healthOk = (status: number, body: unknown): boolean =>
+  status >= 200 && status < 300 && !!body && typeof body === "object" && (body as { ok?: unknown }).ok === true;
+/**
+ * GET {verifyUrl}/health within `timeoutMs`: the JSON body of an answer healthOk accepts, else null — a timeout (also
+ * while reading the body), a non-2xx answer, a body without `ok: true` or a network error. The timer also covers a
+ * fetch that ignores the abort signal.
+ */
+async function readHealth(verifyUrl: string, fetchImpl: typeof fetch, timeoutMs: number): Promise<Record<string, unknown> | null> {
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((res) => { timer = setTimeout(() => { ctrl?.abort(); res(null); }, timeoutMs); });
+  const check = (async () => {
+    try {
+      const r = await fetchImpl(`${verifyUrl}/health`, { cache: "no-store", headers: { accept: "application/json" }, signal: ctrl?.signal });
+      const body: unknown = r.ok ? await r.json() : null;
+      return healthOk(r.status, body) ? (body as Record<string, unknown>) : null;
+    } catch { return null; }
+  })();
+  try { return await Promise.race([check, late]); } finally { clearTimeout(timer); }
+}
+/**
+ * Before TapGate hands raw tag parameters to the verifier (which consumes the tap): is the verifier up? Anything but
+ * an `ok` answer within the timeout means no (readHealth), so /t shows "Seal check unavailable" instead of the host's
+ * error page, and the tap stays unused for "Try again".
+ */
+export async function verifierReady(verifyUrl: string, fetchImpl: typeof fetch = (...a) => fetch(...a), timeoutMs = HEALTH_TIMEOUT_MS): Promise<boolean> {
+  return (await readHealth(verifyUrl, fetchImpl, timeoutMs)) !== null;
+}
+
+/**
+ * How long the scan page waits for /health to learn whether the verifier has the public record. Nothing waits on it
+ * (the answer is needed only at the save step), so a slow connection gets a little more time than TapGate's 2 s
+ * before the page settles on the wallet flow.
+ */
+export const PUBLIC_RECORD_CHECK_MS = 5000;
+/**
+ * /health reports the public record: a verifier with it sends `relay` ({enabled, ok}; also while the relay is off,
+ * when it keeps those scans to itself), an older one sends no `relay` and ignores `anchor: "relay"` — it would sign
+ * a v1 scan whose place and device type are public.
+ */
+export function reportsPublicRecord(health: unknown): boolean {
+  const relay = health && typeof health === "object" ? (health as { relay?: unknown }).relay : null;
+  return !!relay && typeof relay === "object" && typeof (relay as { enabled?: unknown }).enabled === "boolean";
+}
+/**
+ * The scan page, once per page load: does the verifier have the public record? Only then does it offer "Save to the
+ * public record"; a /health without `relay`, or none within the timeout (readHealth), means no: the wallet flow.
+ */
+export async function verifierHasPublicRecord(verifyUrl: string, fetchImpl: typeof fetch = (...a) => fetch(...a), timeoutMs = PUBLIC_RECORD_CHECK_MS): Promise<boolean> {
+  return reportsPublicRecord(await readHealth(verifyUrl, fetchImpl, timeoutMs));
 }
 
 export interface ScanSessionFlag extends SessionClock { nonce: string; expiresAt: number; ttl?: number; issuedAt?: number; scanUrl?: string }

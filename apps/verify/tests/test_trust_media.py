@@ -64,6 +64,83 @@ def test_only_the_upload_a_valid_scan_commits_to_is_kept(client, settings):
     assert junk["sha256"][2:] not in {r[0] for r in rows}
 
 
+def test_a_scan_names_only_photos_its_own_session_uploaded(client, settings):
+    """A hash is public (bundles, FVSCAN2): a tier ≥ 2 scan whose mediaHash was not uploaded under its own nonce is refused
+    with 422 media_not_uploaded before the tap is used, whether those bytes were uploaded under another session's nonce,
+    kept by an earlier scan, or never uploaded. It can never take over (and get archived) another scan's photos."""
+    from fv.db import get_nonce
+
+    def media_rows():
+        with client.app.state.db.connect() as conn:
+            return [tuple(r) for r in conn.execute("SELECT * FROM media ORDER BY sha256").fetchall()]
+
+    first = _nonce(client)
+    kept = post_media(client, files=[_jpeg(b"someone-elses")], nonce=first).json()
+    assert _verify(client, first, kept["sha256"])["verdict"] == "VALID"            # kept by the first scan
+    elsewhere = post_media(client, files=[_jpeg(b"other-session")], nonce=_nonce(client)).json()   # staged elsewhere
+    before = media_rows()
+    own = _nonce(client)
+    for named in (kept["sha256"], elsewhere["sha256"], "0x" + "ab" * 32):
+        tap = client.post("/api/dev/tap", json={"uid": SEEDED_UID}).json()
+        r = client.post("/api/verify", json={"uid": tap["uid"], "ctr": tap["ctrHex"], "cmac": tap["cmac"], "nonce": own,
+                                             "role": 1, "tier": 2, "indicators": {"heat": 0, "humidity": 0, "uv": 3},
+                                             "heatLevels": [1, 1, 0, 0, 0, 0], "fill": 92, "mediaHash": named,
+                                             "platform": "SIMULATOR"})
+        assert r.status_code == 422 and r.json()["detail"] == "media_not_uploaded", named
+        # nothing consumed: the tap is still fresh and the session nonce unused
+        assert client.post("/api/preview", json={"uid": tap["uid"], "ctr": tap["ctrHex"],
+                                                 "cmac": tap["cmac"]}).json()["verdict"] == "VALID"
+    with client.app.state.db.connect() as conn:
+        assert get_nonce(conn, own[2:])["used_at"] is None
+    assert media_rows() == before and elsewhere["sha256"][2:] + ".bin" not in _blobs(settings)
+    # an unusable nonce is still NONCE_INVALID (checked first), whatever the photos
+    assert _verify(client, first, kept["sha256"])["verdict"] == "NONCE_INVALID"
+    # the same bytes uploaded by this session: signed; the kept row is shared
+    assert post_media(client, files=[_jpeg(b"someone-elses")], nonce=own).json()["sha256"] == kept["sha256"]
+    v = _verify(client, own, kept["sha256"])
+    assert v["verdict"] == "VALID" and v["bundle"]["media"][0]["sha256"] == kept["sha256"] and media_rows() == before
+
+
+def test_promote_takes_over_nothing_it_did_not_stage(client, settings):
+    """media_store.promote raises NotStaged — and touches nothing — when the nonce staged no upload with that hash, also
+    when an earlier scan kept those bytes (no fallback to the kept row): /api/verify then answers 422 and rolls back."""
+    nonce = _nonce(client)
+    kept = post_media(client, files=[_jpeg(b"kept-bytes")], nonce=nonce).json()
+    assert _verify(client, nonce, kept["sha256"])["verdict"] == "VALID"
+    other = _nonce(client)
+    staged = post_media(client, files=[_jpeg(b"staged-bytes")], nonce=other).json()
+    assert ms.is_staged(settings, other[2:], staged["sha256"][2:]) and not ms.is_staged(settings, other[2:], kept["sha256"][2:])
+    assert not ms.is_staged(settings, "zz", staged["sha256"][2:]) and not ms.is_staged(settings, other[2:], "../x")
+    with client.app.state.db.connect() as conn, pytest.raises(ms.NotStaged):
+        ms.promote(conn, settings, other[2:], kept["sha256"][2:], 1)
+    assert ms.is_staged(settings, other[2:], staged["sha256"][2:])                  # the session's own upload is untouched
+
+
+def test_a_scan_whose_upload_vanished_meanwhile_is_rolled_back(client, settings, monkeypatch):
+    """The upload is checked before the tap is used and again when it is promoted: gone in between (its nonce expired and
+    the staging was purged meanwhile) → 422 media_not_uploaded, and the transaction is rolled back (tap and nonce unused)."""
+    nonce = _nonce(client)
+    m = post_media(client, files=[_jpeg(b"vanishing")], nonce=nonce).json()
+    real = ms.promote
+
+    def purged_first(conn, settings_, nonce_hex, sha_hex, ts):
+        ms.discard(settings_, nonce_hex)
+        return real(conn, settings_, nonce_hex, sha_hex, ts)
+    monkeypatch.setattr(ms, "promote", purged_first)
+    tap = client.post("/api/dev/tap", json={"uid": SEEDED_UID}).json()
+    body = {"uid": tap["uid"], "ctr": tap["ctrHex"], "cmac": tap["cmac"], "nonce": nonce, "role": 1, "tier": 2,
+            "indicators": {"heat": 0, "humidity": 0, "uv": 3}, "heatLevels": [1, 1, 0, 0, 0, 0], "fill": 92,
+            "mediaHash": m["sha256"], "platform": "SIMULATOR"}
+    with client.app.state.db.connect() as conn:
+        events_before = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    r = client.post("/api/verify", json=body)
+    assert r.status_code == 422 and r.json()["detail"] == "media_not_uploaded"
+    with client.app.state.db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == events_before
+        assert conn.execute("SELECT used_at FROM nonces WHERE nonce_hex=?", (nonce[2:],)).fetchone()[0] is None
+    assert client.post("/api/preview", json={"uid": tap["uid"], "ctr": tap["ctrHex"], "cmac": tap["cmac"]}).json()["verdict"] == "VALID"
+
+
 def test_a_scan_without_a_valid_verdict_keeps_nothing(client, settings):
     nonce = _nonce(client)
     m = post_media(client, files=[_jpeg(b"replayed")], nonce=nonce).json()

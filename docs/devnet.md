@@ -1,6 +1,6 @@
 # Programs on devnet
 
-Two Anchor programs: `programs/flacon` (registry, passports, seals, scan proofs) and `programs/escrow` (USDC escrow). Both are deployed on Solana devnet. The source in this repository is ahead of the devnet deployment (server-key revocation, partner removal, issuer-only seal administration, sticky VOID and C grades, issuer-owned Core assets, owner-only listing re-checked at reserve, price-bound reserve, fresh shipping and receipt scans, escrow timeouts and admin resolve): see [Upgrading devnet](#upgrading-devnet). [`programs/README.md`](../programs/README.md) lists every instruction with its signer rules.
+Two Anchor programs: `programs/flacon` (registry, passports, seals, scan proofs) and `programs/escrow` (USDC escrow). Both are deployed on Solana devnet. The source in this repository is ahead of the devnet deployment (server-key revocation, partner removal, issuer-only seal administration, sticky VOID and C grades, issuer-owned Core assets, owner-only listing re-checked at reserve, price-bound reserve, fresh shipping and receipt scans, escrow timeouts and admin resolve, the v2 public record): see [Upgrading devnet](#upgrading-devnet) and [Public record (P1) rollout](#public-record-p1-rollout). [`programs/README.md`](../programs/README.md) lists every instruction with its signer rules.
 
 Toolchain: Anchor CLI 1.2.0 (via `avm`), Solana CLI 4.1.x (Agave), Rust from `rust-toolchain.toml` (1.89), Node 22.18 or newer, and the npm client `@anchor-lang/core` 1.2 (`@coral-xyz/anchor` 0.32 cannot read Anchor 1.x IDLs).
 
@@ -19,13 +19,13 @@ The program ids are fixed in `Anchor.toml` (`[programs.localnet]`, `[programs.de
 
 ## Registry on devnet
 
-Read on 2026-10-16 from the registry account (`solana account 4JPPCBA7DpbmfDsq1oHDuiJD1zL8VhfuJSoWQyYZXZWt --url devnet`, or `GET https://verify.flaconvault.com/api/registry`):
+Read on 2026-11-19 from the registry account (`solana account 4JPPCBA7DpbmfDsq1oHDuiJD1zL8VhfuJSoWQyYZXZWt --url devnet`, or `GET https://verify.flaconvault.com/api/registry`):
 
 | Item | Value |
 |---|---|
 | authority | the deploy wallet `Bsy5DFxt…` |
-| server key | key id `1`, public key `0f5b0efa6284cee08eb3ca19493be2391e86e902bce6d94fb8e47f157d068690`, `valid_from 0`, `valid_to 0` (open-ended); the production verifier's `GET /health` reports the same key |
-| partners | `Bsy5DFxtugs5PGqjF8ADrPYm7kt89dFpwEe9hTZokpFy` (deploy wallet) · `AciBj4mKqxhPDF7KRYqvpGt8EZm75b582dumVmTv2LJ1` (**Dev wallet A, a demo keypair held in browser `localStorage`**: treat it as public) · `JSMC3U7YqEwfvJMzsKEm17Uk1jspegk1L6KsE1nKiob` · `3HTM8mzTWe7aPcQY2Jf1QB38anr4G19v8eWjY7rU5RNC` · `5AhqcuywyxWNVhv8DPSHKdefKhYrFAdM9Q9ziZexpRvV` (test partner wallets added with `scripts/add-partner.ts`) |
+| server keys | key id `1`, public key `0f5b0efa6284cee08eb3ca19493be2391e86e902bce6d94fb8e47f157d068690`, revoked on 2026-10-16 (`valid_to 1792176384`); key id `2`, public key `9b624959863b2adb657ca82927fd11b7fc46b3399a9bb43064397ec3b5d5f0ff`, `valid_from 0`, `valid_to 0` (open-ended). The production verifier's `GET /health` must report the valid key (`keyId`, `pubkeyHex`) |
+| partners | `Bsy5DFxtugs5PGqjF8ADrPYm7kt89dFpwEe9hTZokpFy` (deploy wallet) · `JSMC3U7YqEwfvJMzsKEm17Uk1jspegk1L6KsE1nKiob` (a test partner wallet added with `scripts/add-partner.ts`). No longer partners: `AciBj4mKqxhPDF7KRYqvpGt8EZm75b582dumVmTv2LJ1` (**Dev wallet A, a demo keypair held in browser `localStorage`**: treat it as public) and the test wallets `3HTM8mzTWe7aPcQY2Jf1QB38anr4G19v8eWjY7rU5RNC`, `5AhqcuywyxWNVhv8DPSHKdefKhYrFAdM9Q9ziZexpRvV` |
 | site 1 | `Parfümerie X, Düsseldorf` |
 | site 2 | `FlaconVault Vault, Wickede` |
 
@@ -42,6 +42,9 @@ cargo test -p flacon && cargo test -p escrow
 
 # integration tests on a local validator (Anchor 1.2 defaults to surfpool; use the legacy validator)
 anchor test --validator legacy            # or: ANCHOR_TEST_VALIDATOR=legacy anchor test
+
+# LiteSVM (SBPF v2 builds in target/sbf-v2): record_scan_v2 under a Clock override; escrow windows and PassHeldInAccount
+bash scripts/test-flacon-litesvm.sh && bash scripts/test-escrow-time-travel.sh
 
 # copy the IDLs and types for the web app after a program change
 cp target/idl/flacon.json packages/proof/src/idl/flacon.json && cp target/types/flacon.ts packages/proof/src/idl/flacon.ts
@@ -73,7 +76,7 @@ npx tsx scripts/server-key.ts revoke <keyId>        # valid_to = now − 1; the 
 npx tsx scripts/partner.ts add|remove <pubkey>      # registry partners; partner.ts list shows them
 ```
 
-The scripts honour `ANCHOR_PROVIDER_URL` and `ANCHOR_WALLET` (default `~/.config/solana/id.json`); for example `ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 npx tsx scripts/seed-devnet.ts --test-key` after `anchor localnet --validator legacy`. Other helpers: `scripts/bind-chip.ts <serial> <uid14hex> <brand> <name> <batch> <coreAsset|new> [kind] [verifyUrl]` (mint a passport with a Metaplex Core asset and attach a real chip from the CLI; an existing asset must be owned by the wallet and not back another passport, `new` mints one whose uri is the verifier's `/api/passport/<serial>/metadata.json`; when the passport or seal already exists it re-posts the MINT/SEAL_ATTACH event for the `mint_passport` / `attach_seal` transaction that created it, signed by the wallet), `scripts/list-order.ts <serial> <priceUsdc> [--no-deposit] [--no-event] [verifyUrl]` (list a passport on the escrow, deposit its Core asset and post the LIST event), `scripts/seed-passports.ts` (attaches every seal of a passport before it marks the seed's dead ones), `scripts/core-transfer.ts <asset> <newOwner>` (move a Core asset away from the CLI wallet), `scripts/fund-dev-wallet.ts <pubkey> [sol] [usdc]` (SOL and test USDC for a demo wallet).
+The scripts honour `ANCHOR_PROVIDER_URL` and `ANCHOR_WALLET` (default `~/.config/solana/id.json`); for example `ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 npx tsx scripts/seed-devnet.ts --test-key` after `anchor localnet --validator legacy`. Other helpers: `scripts/bind-chip.ts <serial> <uid14hex> <brand> <name> <batch> <coreAsset|new> [kind] [verifyUrl]` (mint a passport with a Metaplex Core asset and attach a real chip from the CLI; an existing asset must be owned by the wallet and not back another passport, `new` mints one whose uri is the verifier's `/api/passport/<serial>/metadata.json`; once the cluster has a HolderConfig (public-record rollout step 2) `init_holding_v1` goes in the mint transaction right after `mint_passport`, and an existing passport of the wallet without its Holding gets it alone; when the passport or seal already exists it re-posts the MINT/SEAL_ATTACH event for the `mint_passport` / `attach_seal` transaction that created it, signed by the wallet), `scripts/list-order.ts <serial> <priceUsdc> [--no-deposit] [--no-event] [verifyUrl]` (list a passport on the escrow, deposit its Core asset and post the LIST event), `scripts/seed-passports.ts` (attaches every seal of a passport before it marks the seed's dead ones; `init_holding_v1` as in bind-chip), `scripts/core-transfer.ts <asset> <newOwner>` (move a Core asset away from the CLI wallet), `scripts/fund-dev-wallet.ts <pubkey> [sol] [usdc]` (SOL and test USDC for a demo wallet).
 
 ## flacon: program surface
 
@@ -86,12 +89,16 @@ PDAs (seeds from `docs/vectors.json` → `constants.PDA_SEEDS`):
 | `Seal` | `["seal", uid_hash]` |
 | `ScanProof` | `["scan", seal_pubkey, counter u32 LE]` |
 | `Origin` | `["origin", passport]` (reserved, not implemented) |
+| `HolderConfig` | `["holder_config"]` (v2 public record, singleton) |
+| `Holding` | `["holding", passport]` (v2 public record) |
 
 Instructions: `init_registry` (the program's upgrade authority only); `add_server_key`, `revoke_server_key`, `add_partner`, `remove_partner`, `add_site`, `transfer_authority` (registry authority; `transfer_authority` needs the new authority's signature too); `mint_passport` (registry partners or the authority; the appended `core_asset` account must be the Metaplex Core asset named in the args); `attach_seal`, `mark_seal_dead` (the passport's issuer while it is a partner, or the authority; at most 2 seals, never on a void passport); `record_scan(args)` (any signer for tier ≤ 2 and role OWNER, SELLER or BUYER; a partner for tier ≥ 3 or role VAULT or PARTNER). The exact signer checks live in `programs/flacon/src/instructions/`; the IDL in `packages/proof/src/idl/flacon.json` is the authoritative interface.
 
 `record_scan` must be sent as `[Ed25519Program.createInstructionWithPublicKey({publicKey: serverPubkey, message, signature}), flacon.record_scan(args)]`. The program reads the previous instruction from the instructions sysvar, checks that it is the Ed25519 precompile, that the public key is the registry server key `args.server_key_id` valid at `args.ts` and at the cluster clock, that `|args.ts − clock| ≤ 600 s` and the counter fits 24 bits, and that the signed 152-byte message equals its reconstruction (`"FVSCAN1" ‖ serial_hash ‖ uid_hash ‖ counter ‖ tamper ‖ uv ‖ hum ‖ heat ‖ fill ‖ media_hash ‖ nonce ‖ ts`) byte for byte. VOID and C are sticky and A/B/D follow the latest scan's fill level (the fill is a self-reported slider value); an OPENED tamper or a VOID grade voids the passport for good. Errors are typed (`MissingEd25519Instruction`, `MessageMismatch`, `CounterNotIncreasing`, `SealDead`, `NotPartner`, `StaleScanTimestamp`, `ServerKeyNotValidNow`, `NotIssuerOrAuthority`, `TooManySeals`, …). Events: `RegistryInitialized`, `ServerKeyAdded`, `ServerKeyRevoked`, `PartnerAdded`, `PartnerRemoved`, `AuthorityTransferred`, `SiteAdded`, `PassportMinted`, `SealAttached`, `SealMarkedDead`, `ScanRecorded`.
 
-All enum values (`tamper`, `indicator`, `tier`, `role`, `grade`, `seal_kind`, `event`), the seeds, `MSG_PREFIX`, `MSG_LEN` and the grade thresholds (`GRADE_FILL_A_MIN = 90`, `GRADE_FILL_B_MIN = 60`) are IDL constants (`program.rawIdl.constants`). `cargo test -p flacon` and `tests/flacon.ts` assert them against `docs/enums.json` and `docs/vectors.json`; `npm run proof:test` checks those files against `packages/proof`.
+`record_scan_v2(server_key_id)` (the public record, [`public-record.md`](public-record.md) §7.6) must be sent as a top-level `[Ed25519 over the 256-byte FVSCAN2 message, flacon.record_scan_v2]`; whoever sends it pays only the fee (no rent account), the message carries every field plus the program id and the HolderConfig's cluster tag, and only HOLDER, WALLET and PARTNER scans change grade and void. Accounts in IDL order: `registry, holder_config, passport, seal, holding, instructions, actor_signer (optional), asset (optional), event_authority, program`. Its event `ScanRecordedV2` is an inner instruction (`emit_cpi!`) carrying the full message. Setup: `init_holder_config`, `set_holder_config`, `init_holding_v1`, `mint_passport_v2`, `attach_seal_v2` ([`programs/README.md`](../programs/README.md#flacon-instructions)).
+
+All enum values (`tamper`, `indicator`, `tier`, `role`, `grade`, `seal_kind`, `event`, and for v2 `purpose`, `actor_kind`, `cluster`, `holding_state`), the seeds, `MSG_PREFIX`, `MSG_LEN` and the grade thresholds (`GRADE_FILL_A_MIN = 90`, `GRADE_FILL_B_MIN = 60`) are IDL constants (`program.rawIdl.constants`). `cargo test -p flacon` and `tests/flacon.ts` assert them against `docs/enums.json` and `docs/vectors.json`; `npm run proof:test` checks those files against `packages/proof`.
 
 ## escrow
 
@@ -151,7 +158,8 @@ accounts). Operator steps, from the upgrade/registry authority wallet:
    programs are larger than the deployed ones: `solana program deploy` extends the ProgramData account by itself; if
    `anchor upgrade` refuses for lack of space, run `solana program extend <program id> <additional bytes>` first.
 1. `anchor build --verifiable`, then `anchor upgrade target/verifiable/flacon.so --program-id 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL --provider.cluster devnet` and `anchor upgrade target/verifiable/escrow.so --program-id 9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL --provider.cluster devnet`. The verifiable build writes to `target/verifiable/`; `target/deploy/` holds whatever plain `anchor build` ran last, which `anchor verify` would not reproduce. Check both programs with `anchor verify` against the pushed commit ([`programs/README.md`](../programs/README.md#verifiable-builds)), copy the IDLs (see Commands) and record the commit next to the upgrade signatures here.
-2. Register a production-only server key under a new key id (`scripts/server-key.ts add <pubkeyHex> <keyId>`), switch the verifier to it (`FV_SERVER_ED25519_SEED`, `FV_SERVER_KEY_ID`), then revoke key id 1 (`scripts/server-key.ts revoke 1`): its seed is also in local development environments, and demo scans signed with it were published.
+2. Register a production-only server key under a new key id (`scripts/server-key.ts add <pubkeyHex> <keyId>`), switch the verifier to it (`FV_SERVER_ED25519_SEED`, `FV_SERVER_KEY_ID`), then revoke key id 1 (`scripts/server-key.ts revoke 1`): its seed is also in local development environments, and demo scans signed with it were published. (Done on devnet: key id 1 was revoked on 2026-10-16, key id 2 is valid.)
+   Rotating again, for example after a leak of the verifier's variables (Railway recommended rotating them after its October 2026 incident): `zsh scripts/p1-rollout.sh rotate-keys` (one question, `--dry-run` for the plan). It sets a new random `FV_ADMIN_TOKEN` and a new seed through `railway variable set NAME --stdin`, registers the new public key under the next free key id before the verifier uses it, switches `FV_SERVER_KEY_ID`, waits until `/health` reports the new key, and revokes the old key id only 11 minutes later: a scan the old key signed that is not on chain yet still lands in that window (a wallet scan while its signed `ts` is within 600 s of the cluster clock, a relay row until `ts + 570`, sent with the key id that signed it), and after it could not land anyway. A run that stopped half way resumes when started again (`~/flaconvault-rollout/rotate-keys.state` records its progress); once a rotation has finished, the next run starts a new one, and its plan says so before the question. Every rotation takes one of the registry's 8 key ids for good (revoked ids stay taken). It never touches `FV_MASTER_KEY`: every programmed tag derives its keys from it, so a new master key would make every existing tag fail.
 3. Remove the browser-held demo partner Dev wallet A (`scripts/partner.ts remove AciBj4mKqxhPDF7KRYqvpGt8EZm75b582dumVmTv2LJ1`) and review the other test partners.
    Removing the partner does not take away what Dev wallet A *owns*: it owns the Core asset `FEM7HG84tRevMsUWcazdYJJhDCu2tWDLYpDdFeyKm4xG` of SN-2026-000005 (minted from `/certify`), and the escrow lets the asset's owner list and sell the bottle. Move the asset to the deploy wallet with Dev wallet A's key: in the browser that holds it, copy the value of `localStorage["fv.devwallet.a"]` (the 64-byte secret key as a JSON array) into a temporary file, run `ANCHOR_WALLET=<that file> npx tsx scripts/core-transfer.ts FEM7HG84tRevMsUWcazdYJJhDCu2tWDLYpDdFeyKm4xG <deploy wallet>`, then delete the file. Check that no open order of Dev wallet A exists for SN-2026-000005 (`getProgramAccounts(escrow)` with the seller filter at offset 40); `reserve` now refuses such an order once the asset has moved, and the seller can cancel it.
 4. Retire the seed-only seals whose published demo signatures could be replayed: `mark_seal_dead` (issuer or authority wallet) for the seals of SN-2026-000002 and SN-2026-000003 (`scripts/seed-passports.ts` does it for the seals the seed marks dead, i.e. SN-2026-000003). After step 2 those old signatures cannot be anchored anyway (key revoked, older than 10 minutes). Then run the verifier's `POST /api/admin/purge-seed` (see [`deploy.md`](deploy.md)).
@@ -159,6 +167,95 @@ accounts). Operator steps, from the upgrade/registry authority wallet:
 5. The escrow admin (the deploy wallet) settles what the program leaves open: a buyer's non-delivery report on a SHIPPED order before its receipt deadline (refund with `dispute` if the parcel did not arrive; otherwise `release_after_timeout` pays the seller), a dead seal after shipping, and MISMATCH orders (`resolve`). See [`programs/README.md`](../programs/README.md#escrow-admin-duties); set `NEXT_PUBLIC_ESCROW_ADMIN_CONTACT` (a `mailto:` or `https:` link) on the web app so the order page shows buyers how to reach the admin.
 
 `scripts/seed-escrow.ts` env: `ANCHOR_PROVIDER_URL` (default localnet), `ANCHOR_WALLET`, `FV_USDC_MINT` (use an existing mint instead of creating one), `FV_DISPUTE_AFTER_S` (default 604800; an existing config is updated to it when the wallet is the admin). Mint more test USDC with the helpers in `scripts/lib/spl.ts` (`mintTo`, mint authority = the CLI wallet).
+
+## Public record (P1) rollout
+
+The owner's steps for [`public-record.md`](public-record.md) §11, from the upgrade/registry authority wallet. Builders
+and CI never run them.
+
+**Owner path: `scripts/p1-rollout.sh`**, one command per step, each also with `--dry-run` (checks and plan, no change):
+
+| Step | Command | What it does |
+|---|---|---|
+| 0 | `zsh scripts/p1-rollout.sh deploy` | verifier, then web app of the commit online with the relay off ([`deploy.md`](deploy.md#deploying)) |
+| 1 to 3 | `zsh scripts/p1-rollout.sh chain` | backups, both upgrades (escrow first), HolderConfig, Holdings |
+| 4 and 5 | `zsh scripts/p1-rollout.sh relay` | relayer key and funding, `FV_RELAY_ENABLED=true`, waits for `relay.ok` |
+| afterwards | `zsh scripts/p1-rollout.sh rotate-keys` | new `FV_ADMIN_TOKEN` and server key ([Upgrading devnet](#upgrading-devnet), step 2); run it again after any later leak |
+| any time | `zsh scripts/p1-rollout.sh status` | read-only overview: health, programs, HolderConfig, Holdings, balances |
+
+`chain` refuses unless the CLI wallet (`ANCHOR_WALLET`, default `~/.config/solana/id.json`) is the upgrade authority of
+both programs and the registry authority, `GET /health` reports the checked-out commit (and `deploy` published its web
+app), the manual CI run with "anchor" ticked passed for that commit (step 0 below; the script starts it when it is
+missing), and the wallet holds enough devnet SOL: the extend rent, the HolderConfig and Holding rent and the fees, plus
+whichever is larger of 0.6 SOL kept for step 4 and the biggest upload buffer (an upgrade first writes the program into a
+buffer account and gets its rent back afterwards: about 2.4 SOL for flacon). It then runs a plain `anchor build` (the
+owner's Mac has no Docker, which `anchor build --verifiable` needs) and records each file's sha256, saves both deployed
+programs with `solana program dump` into `~/flaconvault-rollout/<UTC date>-<short commit>/` next to the build log and a
+log of every signature, shows the plan and its cost and asks once (j/n). Then it extends (only when the new file is
+larger, by `NEW - OLD + 4096` bytes but at least 10,240) and upgrades escrow and flacon as in step 1, compares the
+deployed bytes with the build after each upgrade, and runs steps 2 and 3. A re-run skips what is done (a program equal
+to the build, an existing HolderConfig, existing Holdings) and first closes an upload buffer an interrupted upgrade left
+behind. With a plain build, `anchor verify` cannot reproduce the deployed binaries; the recorded sha256 and the
+comparison after each upgrade stand in for it until the verifiable build can run on a machine with Docker. `relay`
+creates the relayer key only when the verifier has none (it never replaces one), stores it before it funds it with 0.5
+SOL, sets `FV_CLUSTER=devnet` and `FV_PROGRAM_ID` when they are missing and `FV_RELAY_ENABLED=true` last, and waits for
+`relay.ok`. On screen the script speaks German; the tools' own output (Anchor, the Solana CLI, the scripts) goes to the
+log in the backup folder, and only a failing tool's last lines are shown.
+
+Rehearsal (for Claude, not the owner): `FV_ROLLOUT_LOCAL=1` runs the steps against a local validator, verifier and web
+app (`http://127.0.0.1:8899`, `:8787`, `:3000`, or `FV_ROLLOUT_RPC`, `FV_ROLLOUT_VERIFY_URL`, `FV_ROLLOUT_WEB_URL`; any
+address other than 127.0.0.1, localhost or [::1] is refused) with cluster localnet, no Vercel and no gh: `deploy` only
+checks that the local verifier reports the commit and the web app answers, the other steps work as on devnet. It keeps
+its deploy markers, backups and logs in `~/flaconvault-rollout-local`: a state folder belongs to the cluster that first
+wrote to it, so devnet's `chain` never takes a rehearsal's deploy marker or backup for its own. It never calls Railway;
+with `FV_ROLLOUT_RAILWAY=<absolute path of a stand-in>` (a program that answers `whoami` with `fv-rollout stand-in`,
+keeps the local verifier's variables for `variable list --json` and `variable set`, and restarts the verifier on a set
+without `--skip-deploys`), `relay`, `rotate-keys` and `status` use their Railway path against it, with the real
+`solana-keygen`, `solana transfer` and `scripts/server-key.ts`. A plain `solana-test-validator` charges 6,960 lamports
+of rent per byte, devnet 5,080 (`solana rent 1 --url devnet` on 2026-11-20: 655,320 lamports for 1 + 128 bytes), so a
+rehearsal's balance check asks for more SOL than devnet's.
+
+The manual commands below are the reference the script follows.
+
+0. Before: the manual CI run passes (it includes `scripts/test-flacon-litesvm.sh` and the escrow LiteSVM tests). The
+   verifier and the web app of the same commit can be deployed first: with `FV_RELAY_ENABLED` unset nothing is sent,
+   and the new web app keeps working against the old programs (the relay records stay "failed"; `/certify` adds
+   `init_holding_v1` to a mint only once the HolderConfig of step 2 exists, as do the scripts).
+1. Upgrade both programs, **escrow first**: `anchor build --verifiable`, then size each upgrade from the file you
+   deploy, at rollout time (every build differs; never copy a number from this page). Escrow:
+   `NEW=$(wc -c < target/verifiable/escrow.so)`, `OLD=` the `Data Length` printed by
+   `solana program show 9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL --url devnet`; only when `NEW` is larger, run
+   `solana program extend 9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL $((NEW - OLD + 4096)) --url devnet`
+   (`solana rent $((NEW - OLD + 4096)) --url devnet` shows the rent it costs; the Solana CLI 4.1 refuses an extension
+   below 10,240 bytes, so use 10240 when the sum is smaller), then
+   `anchor upgrade target/verifiable/escrow.so --program-id 9vabByStbAqKH6sM6fuf8HhfGZbV3993Ncp3uZScexKL --provider.cluster devnet`.
+   Then flacon, which no longer fits its devnet ProgramData: `NEW=$(wc -c < target/verifiable/flacon.so)`, `OLD=` the
+   `Data Length` printed by `solana program show 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL --url devnet`; when
+   `NEW` is larger, run `solana program extend 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL $((NEW - OLD + 4096)) --url devnet`
+   (again `solana rent $((NEW - OLD + 4096)) --url devnet` shows the rent), then
+   `anchor upgrade target/verifiable/flacon.so --program-id 7dCr825ibTyE6Y5oPHP2RCmUi5qFPCaKdZmE9TYeAcWL --provider.cluster devnet`.
+   Example from 2026-11-19 (a plain `anchor build`; the verifiable build may differ, use its size): flacon 466,592
+   bytes against a devnet `Data Length` of 342,384, so extend by 124,208 + 4,096 = 128,304 bytes (`solana rent` on
+   devnet: about 0.65 SOL); escrow 420,384 bytes, fits its 432,296.
+   Check both with `anchor verify` against the pushed commit, copy the IDLs and record the commit, as in
+   [Upgrading devnet](#upgrading-devnet) step 1. The escrow goes first so its `PassHeldInAccount` guard is live before
+   flacon can run `mint_passport_v2` (two upgrades are two transactions, never atomic; the new escrow reads only the
+   frozen Passport and Registry layouts, so it runs safely against the old flacon); send no `mint_passport_v2` before
+   step 2.
+2. `npx tsx scripts/holder-config.ts init devnet` (`init_holder_config`, cluster tag 2, immutable; guardian, holder
+   and registrar keys zero until P2), then `npx tsx scripts/holder-config.ts show`.
+3. `npx tsx scripts/init-holdings.ts --dry-run`, then without `--dry-run`: `init_holding_v1` (state WALLET) for every
+   existing passport (rent for 229 bytes each: `solana rent 229 --url devnet`, 0.0018 SOL on 2026-11-19).
+   Re-runnable. From then on the partner console, `scripts/bind-chip.ts` and `scripts/seed-passports.ts` send
+   `init_holding_v1` in the mint transaction (the HolderConfig of step 2 exists) and add it alone to an existing
+   passport without one, so new bottles need no re-run; run it again only for a passport whose relay scans end
+   `failed` / `no_holding` (minted by an older client).
+4. Set the verifier's relay variables ([`deploy.md`](deploy.md)), fund the relayer with at most 0.5 SOL, set
+   `FV_RELAY_ENABLED=true`.
+5. Check `GET /health` → `relay.ok`, then tap a seal and run `npm run verify-pass -- --rpc https://api.devnet.solana.com --serial <serial>`.
+
+The relayer pays about 10,000 lamports per recorded scan plus the priority fee; a `record_scan_v2` uses about 24,000
+compute units (LiteSVM, SBPF v2 build), well under the verifier's default limit of 150,000.
 
 ## History on devnet
 

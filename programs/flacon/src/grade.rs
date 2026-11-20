@@ -83,6 +83,27 @@ pub fn passport_after_scan(old_grade: u8, old_void: bool, tamper: u8, heat: u8, 
     (grade_from_fill(fill), false)
 }
 
+/// Passport `(grade, void)` after a `record_scan_v2` scan (docs/public-record.md §7.7). A scan without a fill
+/// reading (FILL_NONE: every tier-0 sighting) keeps A/B/D; VOID and C apply as in `passport_after_scan`. Applied
+/// only when `actor_changes_grade(actor_kind)`.
+pub fn passport_after_scan_v2(old_grade: u8, old_void: bool, tamper: u8, heat: u8, hum: u8, fill: u8) -> (u8, bool) {
+    if fill == FILL_NONE {
+        if old_void || old_grade == GRADE_VOID || is_opened(tamper) {
+            return (GRADE_VOID, true);
+        }
+        if old_grade == GRADE_C || is_triggered(heat, hum) {
+            return (GRADE_C, false);
+        }
+        return (old_grade, false);
+    }
+    passport_after_scan(old_grade, old_void, tamper, heat, hum, fill)
+}
+
+/// Only HOLDER, WALLET and PARTNER scans change grade and void; visitor (NONE) and RECIPIENT scans are evidence.
+pub fn actor_changes_grade(actor_kind: u8) -> bool {
+    matches!(actor_kind, ACTOR_KIND_HOLDER | ACTOR_KIND_WALLET | ACTOR_KIND_PARTNER)
+}
+
 /// Full rule including the off-chain flags — used by tests and off-chain readers.
 pub fn grade_with_flags(
     verdict_valid: bool,
@@ -211,6 +232,50 @@ mod tests {
         assert_eq!(passport_after_scan(GRADE_B, false, TAMPER_UNKNOWN, 0, 0, 95), (GRADE_A, false));
         assert_eq!(passport_after_scan(GRADE_B, false, TAMPER_UNKNOWN, 0, 0, 59), (GRADE_D, false));
         assert_eq!(passport_after_scan(GRADE_D, false, TAMPER_UNKNOWN, 0, 0, 60), (GRADE_B, false));
+    }
+
+    #[test]
+    fn v2_no_reading_keeps_a_b_d() {
+        for g in [GRADE_A, GRADE_B, GRADE_D] {
+            assert_eq!(passport_after_scan_v2(g, false, TAMPER_UNKNOWN, INDICATOR_MISSING, INDICATOR_MISSING, FILL_NONE), (g, false));
+            assert_eq!(passport_after_scan_v2(g, false, TAMPER_CLOSED, INDICATOR_MISSING, INDICATOR_MISSING, FILL_NONE), (g, false));
+        }
+        // sticky states and an opened seal still apply without a reading
+        assert_eq!(passport_after_scan_v2(GRADE_C, false, TAMPER_UNKNOWN, INDICATOR_MISSING, INDICATOR_MISSING, FILL_NONE), (GRADE_C, false));
+        assert_eq!(passport_after_scan_v2(GRADE_A, false, TAMPER_UNKNOWN, INDICATOR_TRIGGERED, INDICATOR_MISSING, FILL_NONE), (GRADE_C, false));
+        assert_eq!(passport_after_scan_v2(GRADE_A, false, TAMPER_UNKNOWN, INDICATOR_MISSING, INDICATOR_TRIGGERED, FILL_NONE), (GRADE_C, false));
+        assert_eq!(passport_after_scan_v2(GRADE_A, false, TAMPER_OPENED_NOW, INDICATOR_MISSING, INDICATOR_MISSING, FILL_NONE), (GRADE_VOID, true));
+        assert_eq!(passport_after_scan_v2(GRADE_B, false, TAMPER_OPENED_BEFORE, 0, 0, FILL_NONE), (GRADE_VOID, true));
+        assert_eq!(passport_after_scan_v2(GRADE_VOID, false, TAMPER_CLOSED, 0, 0, FILL_NONE), (GRADE_VOID, true));
+        assert_eq!(passport_after_scan_v2(GRADE_A, true, TAMPER_CLOSED, 0, 0, FILL_NONE), (GRADE_VOID, true));
+        // with a reading: the v1 rule
+        for (g, v, t, h, u, f) in [(GRADE_A, false, 3, 0, 0, 70), (GRADE_D, false, 3, 0, 0, 95), (GRADE_A, false, 3, 1, 0, 95), (GRADE_C, false, 3, 0, 0, 0), (GRADE_A, false, 1, 0, 0, 100)] {
+            assert_eq!(passport_after_scan_v2(g, v, t, h, u, f), passport_after_scan(g, v, t, h, u, f));
+        }
+        assert!(!actor_changes_grade(ACTOR_KIND_NONE));
+        assert!(!actor_changes_grade(ACTOR_KIND_RECIPIENT));
+        assert!(actor_changes_grade(ACTOR_KIND_HOLDER) && actor_changes_grade(ACTOR_KIND_WALLET) && actor_changes_grade(ACTOR_KIND_PARTNER));
+        assert!(!actor_changes_grade(5));
+    }
+
+    /// v2.scans: affectsGrade / gradeAfter / voidAfter follow the chain from A / not void (§5.1: A, A, A, B, B, C).
+    #[test]
+    fn v2_scan_vectors_grade_chain() {
+        let v = vectors();
+        let (mut g, mut void) = (GRADE_A, false);
+        let mut chain = Vec::new();
+        for s in v["v2"]["scans"].as_array().expect("v2.scans[]") {
+            let i = &s["input"];
+            let affects = actor_changes_grade(u8_of(&i["actorKind"]));
+            assert_eq!(affects, s["affectsGrade"].as_bool().unwrap(), "scan {}", s["name"]);
+            if affects {
+                (g, void) = passport_after_scan_v2(g, void, u8_of(&i["tamper"]), u8_of(&i["heat"]), u8_of(&i["hum"]), u8_of(&i["fill"]));
+            }
+            assert_eq!(g, u8_of(&s["gradeAfter"]), "scan {}", s["name"]);
+            assert_eq!(void, s["voidAfter"].as_bool().unwrap(), "scan {}", s["name"]);
+            chain.push(g);
+        }
+        assert_eq!(chain, vec![GRADE_A, GRADE_A, GRADE_A, GRADE_B, GRADE_B, GRADE_C]);
     }
 
     #[test]

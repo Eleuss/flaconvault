@@ -71,6 +71,17 @@ uv run uvicorn fv.main:app --port 8787 --reload
 | `FV_TRUSTED_PROXY_HOPS` | `1` | proxies in front of the app; the client IP is taken from `X-Forwarded-For` only when the socket peer is a private (platform proxy) address |
 | `FV_MAX_JSON_BODY` | `65536` | request body limit in bytes for every route and method except `POST /api/media` (which checks its own `Content-Length`): ASGI middleware in front of routing and JSON parsing, chunked bodies counted as they stream in; 413 `request_too_large`, with CORS headers so the browser can read it |
 | `FV_BUILD_SHA` | `RAILWAY_GIT_COMMIT_SHA` | commit shown as `build` by `GET /health`. Deploys are manual `railway up` uploads, which set no commit: set it to `git rev-parse HEAD` before each deploy ([`docs/deploy.md`](../../docs/deploy.md#deploying)); `RAILWAY_GIT_COMMIT_SHA` only counts when it is unset |
+| `FV_CLUSTER` | `devnet` | `devnet` · `mainnet` · `localnet`: the `cluster_tag` of every FVSCAN2 the verifier signs; must equal `HolderConfig.cluster_tag` on chain (the relay stops with `cluster_mismatch` otherwise) |
+| `FV_RELAY_ENABLED` | `false` (unset or empty = false) | kill switch of the [public-record relay](#public-record-relay): nothing is ever sent while false (relay rows end `failed` / `relay_off`, the scans stay off chain) |
+| `FV_RELAYER_KEY` | — | **secret** Solana keypair JSON (64 numbers): fee payer of relay transactions only, no program authority. Required with `FV_RELAY_ENABLED=true` |
+| `FV_HOLDER_KEY` | — | **secret** keypair JSON for P2 (holder moves); parsed and validated only, its public key is shown in `/api/admin/status` |
+| `FV_ISSUER_KEY` | — | **secret** keypair JSON of a registry partner for sealing (P2); parsed and validated only |
+| `FV_SOLANA_RPC_FALLBACK` | — | second JSON-RPC for relay sends and status reads (the relay loop and the reconcile job alike), used after a failure of `FV_SOLANA_RPC` and asked as a second source before an attempt is given up; it needs no transaction history: a signature it does not find never counts as lost (only `FV_SOLANA_RPC` can say so) |
+| `FV_RELAY_DAILY_LAMPORTS` | `10000000` | global relay fee cap per UTC day; a scan that would exceed it ends `over_cap` / `budget` |
+| `FV_RELAY_LOW_BALANCE_LAMPORTS` | `100000000` (0.1 SOL) | relayer balance below this → a warning in the log (at most hourly) and `relay.ok: false` in `/health` |
+| `FV_RELAY_CU_LIMIT` | `150000` | compute unit limit of a relay transaction |
+| `FV_RELAY_MAX_PRIORITY_MICROLAMPORTS` | `10000` | ceiling of the priority fee price (µlamports per CU; 75th percentile of `getRecentPrioritizationFees`, clamped) |
+| `FV_RELAY_INTERVAL_S` | `2` | relay loop interval (the loop is also woken when a CHECK is queued) |
 
 Comments must be on their own lines (python-dotenv treats an inline `# …` after an empty value as the value).
 
@@ -80,6 +91,11 @@ Comments must be on their own lines (python-dotenv treats an inline `# …` afte
 against a local validator; simulator on against a shared cluster (`FV_PROGRAM_ID` set, `FV_SOLANA_RPC` not local) with an
 `FV_SERVER_ED25519_SEED` whose public key is a live server key of that cluster's registry (one `getAccountInfo` at
 startup, else the registry the reconcile job cached; if neither can be read the start goes on with an error in the log).
+Public record: `FV_RELAY_ENABLED=true` without `FV_RELAYER_KEY` or without `FV_PROGRAM_ID`; a malformed key in
+`FV_RELAYER_KEY`, `FV_HOLDER_KEY` or `FV_ISSUER_KEY` (the error never quotes the value); two equal public keys among the
+scan key, relayer, holder and issuer keys; `FV_CLUSTER` not `devnet`/`mainnet`/`localnet`; `localnet` with a non-local
+`FV_SOLANA_RPC` (or fallback); `FV_RELAY_ENABLED=true` with `devnet`/`mainnet` against a local RPC; `mainnet` with the
+simulator; `FV_RELAY_ENABLED=true` with the simulator against a non-local RPC.
 
 A local simulator therefore always runs with `FV_KEY_MODE=factory`, a **dev-only** `FV_MASTER_KEY` and a **dev-only**
 `FV_SERVER_ED25519_SEED` that is not registered on devnet. An older local `.env` that still holds the production master
@@ -92,20 +108,21 @@ Hashes in responses are `0x` + lowercase hex (32 bytes); in the DB they are stor
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | `{ok, keyId, pubkeyHex, simulator, programId, build, arweave:{enabled, ok, problem, lastOkAt, lastErrorAt, lastErrorCode, failures, balanceSol, balanceOk}}` — the Arweave part is status only: `problem` is a code (`key_missing`, `key_invalid`, `key_file_missing`, `sidecar_missing`, `sidecar_dependencies_missing`, `node_missing`), never a path, key, wallet address or sidecar output (full detail in `/api/admin/status`) |
+| GET | `/health` | `{ok, keyId, pubkeyHex, simulator, programId, build, arweave:{enabled, ok, problem, lastOkAt, lastErrorAt, lastErrorCode, failures, balanceSol, balanceOk}}` — the Arweave part is status only: `problem` is a code (`key_missing`, `key_invalid`, `key_file_missing`, `sidecar_missing`, `sidecar_dependencies_missing`, `node_missing`), never a path, key, wallet address or sidecar output (full detail in `/api/admin/status`). Also `cluster` (`FV_CLUSTER`) and `relay: {enabled, ok}` — `ok` = enabled, the on-chain HolderConfig read with a matching cluster tag, relayer balance not low, daily budget left; no balances, no keys. It answers with the relay off too (the web's TapGate checks it before forwarding a tap) |
 | GET | `/t?uid&ctr&cmac` or `/t?picc_data&cmac[&enc]` | Real tag landing (plain mirror, or encrypted SUN from the NFC Developer App — `enc` is decrypted and ignored). Checks CMAC + counter (**consumes**: advances `seals.last_counter`), logs a Tier-0 SCAN event when VALID and a `taps` row (random id in [2^32, 2^53), so ids cannot be enumerated) for every hit with a parsable chip UID; hits without one are not stored (`tapId` null). INVALID taps are deleted after 24 h. A VALID tap on a dead seal is answered and stored as `NO_RESPONSE` (no token, no sighting). A VALID tap gets a one-time adoption token (`secrets.token_urlsafe(16)`, only its sha256 is stored). `Accept: application/json` or `&format=json` → tap JSON (+ `tapToken` when VALID); otherwise `302 → ${FV_WEB_URL}/t?tap=<tapId>&k=<token>` (no `k` unless VALID) |
-| GET | `/api/tap/<tapId>` | Stored tap `{tapId, ts, verdict, counter, uid, serial, serialHash, uidHash, sealKind, sealDead, message}` — `uid` only when the verdict is `UNREGISTERED` (else `null`); never the token |
+| GET | `/api/tap/<tapId>` | Stored tap `{tapId, ts, verdict, counter, uid, serial, serialHash, uidHash, sealKind, sealDead, message}` — `uid` only when the verdict is `UNREGISTERED` (else `null`); never the token — plus `record`, the [public-record](#public-record-relay) state of the tap (its TAP, or the CHECK that replaced it) or `null`; `GET /t?format=json` carries it too |
 | POST | `/api/session` | `{}` → `{nonce: "0x…", issuedAt, expiresAt, ttl}` (32 random bytes, single use) |
 | POST | `/api/preview` | `{uid, ctr, cmac}` → non-consuming check `{verdict, counter, serial, serialHash, uidHash, sealKind, sealDead, message}` |
 | POST | `/api/verify` | Scan flow step 7 — see below |
-| GET | `/api/verify/<eventId>?token=<resumeToken>` | The same JSON as the VALID `/api/verify` answer while that SCAN is still `pending` (constant-time token compare); anything else → 404 `resume_not_found`. Used by the wallet-app resume link `/scan?resume=<eventId>.<token>` |
-| POST | `/api/media` | multipart `file` (or `files`) plus the field `nonce` = the current session nonce (unexpired and not yet used by `/api/verify`, else 403 `media_nonce_invalid`). `Content-Length` is required (411) and checked before the body is read, together with the free space (507 `storage_full`) and the byte budgets per client (429 `media_limited`) and per server (503 `media_busy`), see the `FV_MEDIA_*` settings. At most 6 files per upload and per nonce (413), ≤ 8 MB each (413), only `image/jpeg`, `image/png`, `image/webp` (415) → `{sha256: "0x…", ar, url, arPreview, bytes, files}`. Several files are hashed as one concatenation in upload order. The upload is only **staged** under its nonce (`<FV_MEDIA_DIR>/staging/<nonce>/`): a VALID `/api/verify` that consumes this nonce with `mediaHash` = this sha256 keeps it (`<sha256>.bin`, a `media` row, the first of several frames as `<sha256>.preview.<ext>`); everything else staged under the nonce is deleted then, or once the nonce has expired. Nothing is uploaded to Arweave here, so `ar`/`url`/`arPreview` (and `bundle.media[0].ar` of the scan) are `null` unless the same bytes were archived for an earlier scan: with `FV_ARWEAVE=true` the reconcile job's archiving queue uploads the file (`ar`/`url`) once its scan is confirmed; several image frames additionally upload the first frame alone as `arPreview` (viewable thumbnail); a single image is its own preview. Kept frames no scan references any more expire after `FV_MEDIA_RETENTION_S` |
+| GET | `/api/verify/<eventId>?token=<resumeToken>` | The same JSON as the VALID `/api/verify` answer while that SCAN is still `pending` (constant-time token compare); anything else → 404 `resume_not_found` (a relay scan too). Used by the wallet-app resume link `/scan?resume=<eventId>.<token>` |
+| GET | `/api/verify/<eventId>/record?token=<resumeToken>` | A relay scan's public-record state in any state: `{eventId, record}` (`record` null when nothing was queued, e.g. a void passport); anything else → 404 `record_not_found` (constant-time token compare, rate limited like the resume link) |
+| POST | `/api/media` | multipart `file` (or `files`) plus the field `nonce` = the current session nonce (unexpired and not yet used by `/api/verify`, else 403 `media_nonce_invalid`). `Content-Length` is required (411) and checked before the body is read, together with the free space (507 `storage_full`) and the byte budgets per client (429 `media_limited`) and per server (503 `media_busy`), see the `FV_MEDIA_*` settings. At most 6 files per upload and per nonce (413), ≤ 8 MB each (413), only `image/jpeg`, `image/png`, `image/webp` (415) → `{sha256: "0x…", ar, url, arPreview, bytes, files}`. Several files are hashed as one concatenation in upload order. The upload is only **staged** under its nonce (`<FV_MEDIA_DIR>/staging/<nonce>/`): a VALID `/api/verify` that consumes this nonce with `mediaHash` = this sha256 keeps it (`<sha256>.bin`, a `media` row, the first of several frames as `<sha256>.preview.<ext>`); everything else staged under the nonce is deleted then, or once the nonce has expired. A scan can only commit to photos uploaded under its own nonce: `/api/verify` answers 422 `media_not_uploaded` for any other `mediaHash` (a hash is public, so naming one must never get another scan's photos archived). Nothing is uploaded to Arweave here, so `ar`/`url`/`arPreview` (and `bundle.media[0].ar` of the scan) are `null` unless the same bytes were archived for an earlier scan: with `FV_ARWEAVE=true` the reconcile job's archiving queue uploads the file (`ar`/`url`) once its scan is confirmed; several image frames additionally upload the first frame alone as `arPreview` (viewable thumbnail); a single image is its own preview. Kept frames no scan references any more expire after `FV_MEDIA_RETENTION_S` |
 | POST | `/api/events` | Client-reported events — verified against the chain, see [`POST /api/events`](#post-apievents) below |
 | GET | `/api/passport/<serial>` | Passport + timeline (shape below), 404 if unknown or not a valid serial |
 | GET | `/api/passport/<serial>/metadata.json` | Metaplex-style metadata for the passport's Core asset `uri`: `{name, symbol, description, image, external_url, attributes, properties}` |
 | GET | `/api/passports` | `[{serial, brand, name, grade, void, scanCount, lastEventTs}]` (confirmed events only; `lastEventTs` ignores pending events) |
 | POST | `/api/reconcile` | Header `x-admin-token: $FV_ADMIN_TOKEN` (403 otherwise / when unset). Run one reconcile cycle now (§10) → `{checked, confirmed, recovered, failed, pending, mismatched, ignoredAccounts, refreshed:{passports, seals}, registry, escrow, arweave, media:{staging, rows, files, bytes}, enabled}` |
-| GET | `/api/admin/status` | Admin token. Key mode, simulator/seed flags, program ids and the full Arweave status `{enabled, configured, problem, uploads, failures, consecutiveFailures, lastOkAt, lastErrorAt, lastErrorCode, lastError, probe}` |
+| GET | `/api/admin/status` | Admin token. Key mode, simulator/seed flags, program ids and the full Arweave status `{enabled, configured, problem, uploads, failures, consecutiveFailures, lastOkAt, lastErrorAt, lastErrorCode, lastError, probe}`, and `relay: {enabled, cluster, holderConfigCluster, relayer, holderKey, issuerKey, balanceLamports, lowBalance, spentTodayLamports, dailyCapLamports, queued, sending, recorded24h, overCap24h, failed24h, lastError}` (public keys only, `lastError` a short code) |
 | POST | `/api/admin/purge-seed?dry_run=true` | Admin token. Report (default) or, with `dry_run=false`, delete what the demo seed put into this database — see [Removing seed data](#removing-seed-data-from-a-deployed-database) |
 | GET | `/api/registry` | Registry PDA `{programId, authority, partners:[base58], serverKeys:[{keyId, pubkeyHex, validFrom, validTo}], sites:[{siteId, label}], source:"chain"\|"fallback"}` — read at most once a minute (the last chain read stays usable for 15 min while the RPC fails, then the registry the reconcile job stored, if it is younger than 15 min); fallback (no program id / RPC down / PDA missing): `authority null`, `serverKeys []`, `partners` = partner attesters from the DB, seed sites |
 | GET | `/api/sites` | `[{siteId, label}]` for the certification console: the on-chain registry's sites (possibly none) whenever the registry is readable (`source: "chain"`); the two seed sites only in the fallback (no program id, RPC down, PDA missing) |
@@ -134,10 +151,14 @@ partner list (403 `not_partner`; the registry is cached 60 s). Extra fields such
 landed on `/t` moments before: `{"tapId": <id>, "tapToken": "<k from the /t redirect>"}` — accepted once, within
 180 s, only for a VALID `/t` tap; a wrong or missing token → `INVALID`, a second use or an older tap → `REPLAY`. Encrypted tags send `piccData` (+ optional `enc`) and `cmac` instead of `uid`/`ctr` (same for `/api/preview`); the response then carries the decrypted `uid` and `counter`. `indicators.uv` is signed as sent (frame mode reads it). `indicators.heat`
 must equal `heatLevels[4]` when it is 0/1 (2 UNREADABLE / 3 MISSING are trusted as sent). `mediaHash` is
-required for tier ≥ 2 and ignored (zero hash) below. `tamper` is always UNKNOWN (3): NTAG 424 DNA has no tamper loop.
+required for tier ≥ 2 and must be the `sha256` of an upload of this session (`POST /api/media` with the same `nonce`);
+a hash uploaded under another nonce, kept by an earlier scan or never uploaded → 422 `media_not_uploaded` (both
+anchors), checked right after the nonce and before the tap is used, so nothing is consumed. Ignored (zero hash) below
+tier 2. `tamper` is always UNKNOWN (3): NTAG 424 DNA has no tamper loop.
 Optional: `note`.
 
-Order of checks (briefing §5): nonce → key by mode → CMAC (`INVALID`) → `ctr > last_counter` (`REPLAY`, then
+Order of checks (briefing §5): nonce → (tier ≥ 2) the photo upload staged under this nonce (422
+`media_not_uploaded`) → key by mode → CMAC (`INVALID`) → `ctr > last_counter` (`REPLAY`, then
 advance) → seal lookup (`UNREGISTERED`; dead seal → `NO_RESPONSE`) → build message, sign, consume nonce, insert
 `events` SCAN `pending` with the full bundle; the claimed attester lives only in the signed bundle (the event's actor
 and label stay empty). Passport grade and attester statistics are **not** touched here — they change only when the
@@ -162,6 +183,40 @@ Response:
 
 `msgHex` is the exact 152-byte message for `Ed25519Program.createInstructionWithPublicKey`; `eventId` goes back
 to `POST /api/events` with the `txSig` after confirmation.
+
+**Public record** (`docs/public-record.md` §9.9). New body fields: `anchor` (`"relay"` | `"wallet"`, default
+`"wallet"`: the path above, byte for byte), `purpose` (relay only, default `"CHECK"`; `"TAP"` or anything else → 422
+`purpose_invalid`; with `"wallet"` only absent or `"CHECK"`) and `ticket` (≤ 2048 characters; a site attester ticket
+from P2 on — `fv/tickets.py` rejects every ticket in P1). Checked before any tap is consumed, in this order:
+`purpose_invalid` (422); a ticket → 403 `ticket_invalid`; relay without a ticket and a purpose other than CHECK → 403
+`ticket_required`; relay with tier ≥ 3 or role VAULT/PARTNER → 422 `relay_not_for_certified`; a relay scan
+`record_scan_v2` would refuse (e.g. tier 0: a sighting is a TAP, not a CHECK) → 422 `scan_fields_invalid`. `attester`
+is ignored for relay (kept in SQLite only). Then, inside the write transaction (rolled back on error): `"wallet"` for a
+passport held in a FlaconVault account (`passports.asset` = its Holding PDA) → 409 `wallet_anchor_not_allowed`; a tap
+whose public-record TAP counts as sent → verdict `REPLAY` (the counter is, or may be, used on chain; nothing is
+consumed, and the TAP row stays as it is). Sent means `sending`, `recorded`, or `queued` again after an attempt that
+was given up (`relay_tx.earlier_sigs` not empty: it may have landed unseen).
+
+`anchor: "relay"` signs an FVSCAN2 (purpose CHECK, actor NONE = a visitor, `cluster_tag` from `FV_CLUSTER`,
+`program_id` from `FV_PROGRAM_ID` or the default flacon id) over the v2 bundle — no note, city, platform or attester
+pubkey; those stay in the SQLite payload only and `GET /api/passport` never shows them for a relay scan (its
+`location.city` is null) — stores the SCAN `pending` and queues it for the relayer (due now). A
+CHECK that adopts a `/t` tap (`tapId`) replaces that tap's queued TAP (same counter) when the seal's CHECK cap allows,
+otherwise it is kept off chain (`over_cap`) and the TAP stays queued. `anchor: "wallet"` adopting a tap replaces its
+queued TAP (the wallet's v1 scan uses the counter). Only a queued TAP that was never sent is replaced: one that counts
+as sent (above) answers `REPLAY` on both paths and stays. A visitor scan never changes the passport grade, void flag or
+header. Every answer adds `anchor`, `purpose` and `actorKind` (null for wallet), `cluster` (`"DEVNET"` …) and `record`
+(null for wallet and for non-VALID answers). For relay, `msgHex` / `serverSig` are the 256-byte FVSCAN2 and its
+signature, `bundle` / `bundleHash` the v2 bundle; `resumeToken` reads `GET /api/verify/<eventId>/record`.
+
+```json
+"record": { "state": "pending", "purpose": "CHECK", "eventId": 123, "dueAt": 1790000300, "txSig": null, "reason": null, "cluster": "DEVNET" }
+```
+
+`state`: `pending` (queued or sending; `dueAt` set) · `recorded` (`txSig` = the relay transaction) · `over_cap`
+(`reason` `seal_daily` or `budget`) · `failed` (`reason` `relay_off`, `expired`, `not_on_chain`, `no_holding`,
+`counter_used`, `rejected` or `cluster_mismatch`). A recorded relay CHECK is `confirmed` with that `tx_sig`; an
+`over_cap` / `failed` one is `confirmed` without (a genuine scan kept off chain, never `failed`).
 
 ### `POST /api/events`
 
@@ -206,7 +261,8 @@ write text into the timeline).
   signer. On success the event turns `confirmed`, attester, tier, role and site are taken from the `record_scan` args
   (`payload.confirmed = {attester, tier, role, siteId, source, mismatch}`), and the passport grade / attester stats
   are applied once. The same `txSig` again → 200 (idempotent); any
-  other change of a confirmed event → 409 `event_confirmed`.
+  other change of a confirmed event → 409 `event_confirmed`. A public-record (relay) scan is never confirmed this way
+  (422): the relayer records it.
 * **SEAL_DEAD report** without `txSig`: `{serial, type: "SEAL_DEAD", nonce, sealUidHash?, payload?}` with an unused,
   unexpired `/api/session` nonce (consumed; 403 `nonce_invalid`). Stored with status `reported` — it does not void the
   passport, does not mark the seal dead and does not affect `sealStatus`; the claimed reporter is kept as
@@ -228,7 +284,9 @@ write text into the timeline).
 | 429 | `report_limited` | a SEAL_DEAD report for this seal is already open, or the IP's report budget is used up |
 | 413 | `request_too_large` | request body above `FV_MAX_JSON_BODY` |
 
-Other codes the web maps: 403 `not_partner` (`/api/verify`), 403 `media_nonce_invalid`, 411, 413, 415,
+Other codes the web maps: 403 `not_partner` (`/api/verify`), 422 `purpose_invalid`, 403 `ticket_invalid`,
+403 `ticket_required`, 422 `relay_not_for_certified`, 422 `scan_fields_invalid`, 422 `media_not_uploaded`, 409 `wallet_anchor_not_allowed`
+(`/api/verify`), 404 `record_not_found` (`GET /api/verify/<id>/record`), 403 `media_nonce_invalid`, 411, 413, 415,
 507 `storage_full`, 429 `media_limited`, 503 `media_busy` (`/api/media`), 404 `resume_not_found`
 (`GET /api/verify/<id>`), 403 `admin token required` (`/api/reconcile`, `/api/admin/*`, `/api/dev/reset`) and 413
 `request_too_large` (any route).
@@ -249,8 +307,14 @@ Other codes the web maps: 403 `not_partner` (`/api/verify`), 403 `media_nonce_in
                 "gradeAfter": 0, "location": { "country": "DE", "city": "Düsseldorf" } } ] }
 ```
 
+Each SCAN event also carries `scanBy` — `"VISITOR"` (a public-record visitor scan, a Tier-0 sighting, a v1 scan whose
+verified attester is not a registry partner), `"HOLDER"`, `"PARTNER"` (a public-record partner scan, a v1 scan by a
+registry partner or with verified tier ≥ 3) or `"RECIPIENT"` (not produced in P1) — and `purpose` (the FVSCAN2 purpose
+name, e.g. `"CHECK"`, `null` for v1 scans and for a sighting whose TAP is not recorded). The signed FVSCAN2 of a relay
+scan (`msgHex`, `server.sig`, the session nonce) is public only once it is recorded.
+
 `latest` (the header) is the newest **confirmed** SCAN whose heat or humidity was actually read (not MISSING), so a
-pending scan or a no-photo scan never blanks it. `status` is `pending | confirmed | failed | reported`; a `reported`
+pending scan or a no-photo scan never blanks it; a visitor scan (public record, actor NONE) never sets it either. `status` is `pending | confirmed | failed | reported`; a `reported`
 SEAL_DEAD appears in the timeline only.
 
 `stats` count **confirmed** SCAN events only (a pending scan and the attester it claims never count):
@@ -311,7 +375,8 @@ transaction (`arweave.backfill`). No request waits for the sidecar — `POST /ap
 
 * Queue: confirmed SCANs (not seeded) whose bundle is not archived, or whose media is not, at most 5 per cycle — fewest
   failed attempts first, then newest. Newly confirmed scans (by `POST /api/events` or by the reconcile job) are picked
-  up by the next cycle.
+  up by the next cycle. Public-record (relay) scans are never queued (P1, D14), and their photos cannot reach the queue
+  through another scan either: every scan's media is an upload of its own session (`media_not_uploaded`).
 * Per scan (`arweave.archive_scan`) the media blob goes first (tags `App-Type=seal-frames`, `FV-Sha256`; for several
   frames also the first frame as `seal-frame-preview`; links kept in the `media` table), so a newly confirmed scan never
   gets its `ar_media` copied from a row that is not archived yet; then the canonical bundle (exactly the bytes whose sha256
@@ -370,10 +435,87 @@ cycle, which re-checks each event's status (a parallel `POST /api/events` confir
    job may still recover (24 h), and blob files without a `media` row whose mtime is that old. At most 200 rows and 200
    files per cycle, in one write transaction, so a parallel `/api/verify` keeping the same bytes never loses its file.
    Only `<sha256>.bin` / `<sha256>.preview.<ext>` names are ever deleted.
+7. **Public record**: queued relay rows past their deadline → `failed` / `expired` (also with the relay off or without
+   `FV_PROGRAM_ID`, so no relay scan stays pending; a row with earlier attempts only after their
+   `getSignatureStatuses` look-up, which records it instead if one of them landed), then `sending` rows are confirmed
+   like the relay loop does and through the same RPC client (`confirm_sending` with `FV_SOLANA_RPC` plus
+   `FV_SOLANA_RPC_FALLBACK`, so the fallback is asked before an attempt is given up; no RPC call without such rows).
+   The look-up of earlier attempts goes through that client too, in the background loop and on
+   `POST /api/reconcile` alike. Step 1 never checks a relay scan against a ScanProof, and the Arweave queue skips relay
+   scans in P1.
 
 `events` are sorted by `ts` ascending. SCAN payloads of tier ≥ 1 are the full §4.4 bundle plus `grade`,
 `reviewRecommended`, `msgHex`, `bundleHash` (and `reconcile` / `chain` once checked); Tier-0 sightings carry
 `{tier: 0, verdict, counter, tapId}`.
+
+## Public record relay
+
+`fv/relayer.py` (spec `docs/public-record.md` §9) is the only code in the verifier that sends transactions. A genuine
+iPhone tap becomes a public on-chain record without a wallet, account, fee or signature from the visitor: the verifier
+signs the scan as FVSCAN2 and the relayer key (`FV_RELAYER_KEY`, fee payer only) sends
+
+```
+[SetComputeUnitLimit(FV_RELAY_CU_LIMIT), SetComputeUnitPrice(p), Ed25519(scan key, FVSCAN2), record_scan_v2(key_id)]
+```
+
+`record_scan_v2` writes the Passport, Seal and Holding and creates no account (no rent). Every transaction passes
+`check_relay_shape` before it is signed: exactly these four instructions, the relayer as fee payer and only signer and
+in no instruction's account list, the Ed25519 data with the scan key over a 256-byte FVSCAN2 for `FV_PROGRAM_ID` and
+`FV_CLUSTER`, the §7.6 accounts of `record_scan_v2` in IDL order with only passport, seal and holding writable, and a
+price at most `FV_RELAY_MAX_PRIORITY_MICROLAMPORTS`. Anything else is refused.
+
+* **What is queued** (`relay_tx`, one row per scan, signed once when the row is created with `ts` = the time of the
+  check): a VALID `/t` tap of a registered, live seal → a TAP (tier-0 sighting, visitor), due 185 s later (after the
+  180 s adopt window); a relay `POST /api/verify` → a CHECK, due now. No row for a void passport, a dead seal or an
+  unregistered tag. Idempotency: at most one live row (`queued`, `sending`, `recorded`) per (seal, counter) — a partial
+  unique index.
+* **Caps**: a visitor gets at most 3 TAPs and 1 CHECK per seal per rolling 24 h on the public record (code constants;
+  more are kept off chain as `over_cap` / `seal_daily`); a global fee cap per UTC day (`FV_RELAY_DAILY_LAMPORTS`,
+  table `relay_budget`, estimate `2 × 5000 + ⌈price × CU limit / 10⁶⌉`, corrected by the paid `meta.fee`).
+* **Sending** (the lifespan loop, only with `FV_RELAY_ENABLED=true` and `FV_PROGRAM_ID`; every `FV_RELAY_INTERVAL_S`
+  and right after a CHECK is queued; RPC never inside a SQLite write transaction): it reads HolderConfig once and sends
+  nothing before (a `cluster_tag` ≠ `FV_CLUSTER` fails due rows with `cluster_mismatch`); per seal one row in flight,
+  lowest counter first (a later counter that is due pulls an earlier one forward unless that one is backing off after
+  a failed attempt); a row past `ts + 570` s at the moment it is claimed for sending expires;
+  the accounts are read first (`not_on_chain`, `no_holding`, `counter_used`, `rejected` for a dead seal or void
+  passport); the row is marked `sending` (and the budget charged) before `sendTransaction` with preflight. A preflight
+  program error → `failed` / `rejected`; an RPC error before sending → retry after 2, 4, 8, 16, 30 s, through
+  `FV_SOLANA_RPC_FALLBACK` after a primary failure; a send whose outcome is unknown stays `sending` (also when the
+  primary failed on the transport, whatever the fallback answers then). The send error is applied, and the estimate
+  refunded, only while the row is still `sending` that attempt: when the reconcile job gave the attempt up meanwhile
+  (and refunded it), the loop changes nothing. The Ed25519 instruction carries the scan key that signed the row
+  (`relay_tx.server_pubkey`), so rows queued before a key rotation still go out with their key.
+* **Confirming** (the loop, its start, and the reconcile job, all through the same RPC client
+  `relayer.relay_rpc_client`): `getSignatureStatuses` → `recorded` (the fee from
+  `getTransaction`) or `failed` / `rejected`; an attempt that is unknown once the finalized block height has passed its
+  `lastValidBlockHeight` can never land and goes back to `queued` (new blockhash) or, past the deadline, `expired`. A
+  row is never re-sent while its previous attempt could still land; if two ever land, the second fails on chain with
+  `CounterNotIncreasing`. Status reads ask each RPC on its own: `FV_SOLANA_RPC` is the source with the full history,
+  `FV_SOLANA_RPC_FALLBACK` may have none, so an attempt is given up only when the primary does not find it (and the
+  fallback, asked as a second source, does not either) and the primary's block height is past it; while only the
+  fallback answers, the row waits.
+* **Earlier attempts** (`relay_tx.earlier_sigs`): every attempt given up on keeps its signature. Before a row with
+  earlier attempts ends without being recorded (`counter_used` above all: its own first attempt may have used the
+  counter), they are looked up (primary, then fallback); one that landed records the row with its signature (`txSig`),
+  nothing is sent again, and its fee is charged once (it was refunded when given up). While that look-up cannot tell,
+  the row stays pending and backs off.
+* **Adoption** (`relayer.was_sent`, the one rule): a row counts as sent once a transaction of it went out — `sending`,
+  `recorded`, or `queued` again with earlier attempts. A CHECK or a wallet scan that adopts the tap of such a row gets
+  `REPLAY` (nothing is consumed) and the row is never `replaced` (`replace_tap` refuses it), so a TAP that was given up
+  and requeued is still recorded with the attempt that landed, or sent again. A queued TAP that was never sent (also
+  one that only backed off after RPC trouble, or whose send the node refused) is replaced by the adopter as before.
+* **Balance**: `getBalance(relayer)` at most every 60 s and after each recorded row; below
+  `FV_RELAY_LOW_BALANCE_LAMPORTS` a warning (at most hourly) and `relay.ok: false`.
+* **Events**: a recorded TAP gives its `/t` sighting the relay `tx_sig` and the FVSCAN2 detail (`anchor: "relay"`,
+  `purpose`, `actorKind`, `msgHex`, `bundleHash`, `bundleV2`), so it counts in `onChainScanCount`. A relay CHECK
+  turns `confirmed` once its row is terminal (with `tx_sig` only when recorded); `payload.confirmed` comes from the
+  FVSCAN2 fields (`source: "fvscan2"`, no attester), and a visitor scan never changes grade, void or header. The `/t`
+  sighting of the tap a CHECK adopted is dropped unless a TAP row of that counter can still record it (one tap, one
+  entry, also with the relay off).
+* **Keys**: `FV_RELAYER_KEY`, `FV_HOLDER_KEY`, `FV_ISSUER_KEY` are separate secrets per cluster; only their public keys
+  are ever shown (`/api/admin/status`). The relayer needs no program authority; fund it with little (devnet: at most
+  0.5 SOL). The scan key (`FV_SERVER_ED25519_SEED`) signs FVSCAN1 and FVSCAN2 alike (prefix and length keep the two
+  apart). Devnet rollout order: [`docs/deploy.md`](../../docs/deploy.md#public-record-relay-devnet-rollout).
 
 ## Production deployment (Docker / Railway)
 
@@ -427,9 +569,10 @@ curl -s -X POST $H/api/dev/tag -H "$J" -d '{"serial":"SN-2026-000001","kind":1}'
 curl -s -X POST $H/api/dev/tap -H "$J" -d '{"uid":"04A1B2C3D4E5F6"}'                  # → {"ctr":15,"ctrHex":"00000F","cmac":"…","url":"…"}
 curl -s -X POST $H/api/preview -H "$J" -d '{"uid":"04A1B2C3D4E5F6","ctr":"00000F","cmac":"<cmac>"}'
 curl -s -X POST $H/api/session -H "$J" -d '{}'                                         # → {"nonce":"0x…"}
+curl -s -X POST $H/api/media --form-string nonce=<nonce> -F 'file=@frame.jpg;type=image/jpeg'   # → {"sha256":"0x…"}: a tier ≥ 2 scan names its own upload
 curl -s -X POST $H/api/verify -H "$J" -d '{"uid":"04A1B2C3D4E5F6","ctr":"00000F","cmac":"<cmac>","nonce":"<nonce>",
   "role":1,"tier":2,"indicators":{"heat":0,"humidity":0,"uv":3},"heatLevels":[1,1,0,0,0,0],"fill":92,
-  "mediaHash":"0x358bd5e49a401b60105ca4fe2f6fd4563c617295f4704debe35da7844cd5b380",
+  "mediaHash":"<sha256 from /api/media>",
   "location":{"country":"DE","city":"Wickede"},"attester":"7GhXQ2fV4d1eo9yq1vQdD9Zk9sHkYd8qz2pM4hN6FaK2"}'
 # same tap again → "verdict":"REPLAY"
 curl -s -H 'Accept: application/json' "$H/t?uid=04A1B2C3D4E5F6&ctr=000010&cmac=<cmac>"  # real-tag landing as JSON
@@ -458,6 +601,7 @@ fv/arweave.py     Irys sidecar wrapper, bundle archiving                    irys
 fv/chain.py       PDAs (solders), Anchor account decoders, JSON-RPC       fv/reconcile.py   §10 reconcile cycle
 fv/txverify.py    getTransaction checks behind POST /api/events          fv/routes_admin.py /api/admin/status, /api/admin/purge-seed
 fv/ratelimit.py   per-IP token buckets (FV_RATE_LIMIT_PER_MIN …)          fv/bodylimit.py   request body size limit (ASGI)
+fv/relayer.py     public-record relay: queue, caps, shape allowlist, send fv/tickets.py     site attester tickets (P1: stub)
 config.py         SDMMAC_PARAM for libsdm                                libsdm/           vendored icedevml/sdm-backend (MIT)
                                                                          tests/            pytest suite
 ```

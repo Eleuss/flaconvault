@@ -1,6 +1,6 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { ADOPT_WINDOW_S, adoptDeadline, safeScanUrl, scanSession, scanUrlFor, secondsLeft, sessionClock, tapGateAction, tapHandoff } from "./handoff";
+import { ADOPT_WINDOW_S, HEALTH_TIMEOUT_MS, PUBLIC_RECORD_CHECK_MS, adoptDeadline, healthOk, reportsPublicRecord, safeScanUrl, scanSession, scanUrlFor, secondsLeft, sessionClock, tapGateAction, tapHandoff, verifierHasPublicRecord, verifierReady } from "./handoff";
 
 class MemStorage implements Storage {
   private m = new Map<string, string>();
@@ -97,4 +97,106 @@ test("tap handoff without Web Locks: the claim + re-check lets only one tab take
   const [a, b] = await Promise.all([tapHandoff.take(), tapHandoff.take()]);
   assert.equal([a, b].filter(Boolean).length, 1, "the second claim overwrote the first, so only one survives");
   assert.equal(await tapHandoff.take(), null, "taken handoffs are gone");
+});
+
+// ---- TapGate: the verifier's /health before the tap is handed over (spec §10.3) ---------------------------------
+
+const json = (status: number, body: unknown) => new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+test("TapGate gate: only HTTP 2xx with JSON ok === true lets the tap go to the verifier", () => {
+  assert.equal(healthOk(200, { ok: true, keyId: 1 }), true);
+  assert.equal(healthOk(204, { ok: true }), true);
+  assert.equal(healthOk(200, { ok: false }), false);
+  assert.equal(healthOk(200, { ok: "true" }), false);
+  assert.equal(healthOk(200, null), false);
+  assert.equal(healthOk(200, [true]), false);
+  assert.equal(healthOk(503, { ok: true }), false);
+  assert.equal(healthOk(404, { ok: true }), false);
+});
+
+test("TapGate gate: asks {verify}/health without cache; non-2xx, ok !== true, bad JSON and network errors say no", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const answer = (r: () => Response | Promise<Response>) => (async (url: string, init?: RequestInit) => { calls.push({ url, init }); return r(); }) as unknown as typeof fetch;
+  assert.equal(await verifierReady("https://v.example", answer(() => json(200, { ok: true, simulator: false }))), true);
+  assert.equal(calls[0].url, "https://v.example/health");
+  assert.equal(calls[0].init?.cache, "no-store");
+  assert.ok(calls[0].init?.signal, "the request can be aborted");
+  assert.equal(await verifierReady("https://v.example", answer(() => json(200, { ok: false }))), false);
+  assert.equal(await verifierReady("https://v.example", answer(() => json(502, { ok: true }))), false);
+  assert.equal(await verifierReady("https://v.example", answer(() => json(404, "<html>Not Found</html>"))), false, "the host's 404 page");
+  assert.equal(await verifierReady("https://v.example", answer(() => json(200, "not json"))), false);
+  assert.equal(await verifierReady("https://v.example", (async () => { throw new TypeError("Load failed"); }) as typeof fetch), false);
+});
+
+test("TapGate gate: gives up after 2 s, even when the request never settles", async (t) => {
+  assert.equal(HEALTH_TIMEOUT_MS, 2000);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let aborted = false;
+  // a fetch that honours the abort, and one that ignores it: both end at 2 s
+  const honours = ((_u: string, init?: RequestInit) => new Promise<Response>((_res, rej) => init?.signal?.addEventListener("abort", () => { aborted = true; rej(new DOMException("aborted", "AbortError")); }))) as unknown as typeof fetch;
+  const ignores = (() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+  for (const f of [honours, ignores]) {
+    let result: boolean | null = null;
+    const p = verifierReady("https://v.example", f).then((v) => { result = v; });
+    await Promise.resolve();
+    t.mock.timers.tick(HEALTH_TIMEOUT_MS - 1);
+    await Promise.resolve();
+    assert.equal(result, null, "still waiting before 2 s");
+    t.mock.timers.tick(1);
+    await p;
+    assert.equal(result, false);
+  }
+  assert.equal(aborted, true, "the hung request is aborted");
+  // a body that arrives too late counts as a timeout as well
+  const slowBody = (async () => ({ ok: true, status: 200, json: () => new Promise(() => {}) })) as unknown as typeof fetch;
+  const p = verifierReady("https://v.example", slowBody);
+  await Promise.resolve();
+  t.mock.timers.tick(HEALTH_TIMEOUT_MS);
+  assert.equal(await p, false);
+});
+
+// ---- the scan page: does the verifier have the public record? (asked once per page load) --------------------------
+
+/** GET /health of the verifier at main (8fc705b), before the public record: no `relay`, `anchor` is ignored there. */
+const HEALTH_BEFORE = { ok: true, keyId: 1, pubkeyHex: "ab".repeat(32), simulator: false, programId: null, build: null, arweave: null };
+/** GET /health with the public record: `cluster` and `relay` (also while the relay is switched off). */
+const HEALTH_P1 = (relay: unknown) => ({ ...HEALTH_BEFORE, cluster: "devnet", relay });
+
+test("the relay button needs a /health that reports the public record (`relay`); an older verifier has none", async () => {
+  assert.equal(reportsPublicRecord(HEALTH_P1({ enabled: true, ok: true })), true);
+  // switched off, or not ok (low balance, budget spent): the verifier still signs FVSCAN2 and keeps the place to itself
+  assert.equal(reportsPublicRecord(HEALTH_P1({ enabled: false, ok: false })), true);
+  assert.equal(reportsPublicRecord(HEALTH_P1({ enabled: true, ok: false })), true);
+  // main's verifier: no relay key → it would sign a v1 scan whose place and device type are public
+  assert.equal(reportsPublicRecord(HEALTH_BEFORE), false);
+  for (const relay of [null, undefined, true, "on", [], {}, { enabled: "true" }]) assert.equal(reportsPublicRecord(HEALTH_P1(relay)), false, JSON.stringify(relay));
+  for (const h of [null, undefined, "ok", 1]) assert.equal(reportsPublicRecord(h), false, String(h));
+
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const answer = (r: () => Response) => (async (url: string, init?: RequestInit) => { calls.push({ url, init }); return r(); }) as unknown as typeof fetch;
+  assert.equal(await verifierHasPublicRecord("https://v.example", answer(() => json(200, HEALTH_P1({ enabled: false, ok: false })))), true);
+  assert.equal(calls[0].url, "https://v.example/health");
+  assert.equal(calls[0].init?.cache, "no-store");
+  assert.ok(calls[0].init?.signal, "the request can be aborted");
+  assert.equal(await verifierHasPublicRecord("https://v.example", answer(() => json(200, HEALTH_BEFORE))), false);
+  // /health that cannot be read: the wallet flow
+  assert.equal(await verifierHasPublicRecord("https://v.example", answer(() => json(200, { ...HEALTH_P1({ enabled: true, ok: true }), ok: false }))), false);
+  assert.equal(await verifierHasPublicRecord("https://v.example", answer(() => json(502, HEALTH_P1({ enabled: true, ok: true })))), false);
+  assert.equal(await verifierHasPublicRecord("https://v.example", answer(() => json(200, "not json"))), false);
+  assert.equal(await verifierHasPublicRecord("https://v.example", (async () => { throw new TypeError("Load failed"); }) as typeof fetch), false);
+});
+
+test("the scan page gives /health a short time (5 s), then settles on the wallet flow", async (t) => {
+  assert.equal(PUBLIC_RECORD_CHECK_MS, 5000);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const hangs = (() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+  let result: boolean | null = null;
+  const p = verifierHasPublicRecord("https://v.example", hangs).then((v) => { result = v; });
+  await Promise.resolve();
+  t.mock.timers.tick(PUBLIC_RECORD_CHECK_MS - 1);
+  await Promise.resolve();
+  assert.equal(result, null, "still asking before the timeout");
+  t.mock.timers.tick(1);
+  await p;
+  assert.equal(result, false);
 });

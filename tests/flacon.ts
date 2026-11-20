@@ -678,6 +678,16 @@ describe("flacon", () => {
     expect(constValue("MAX_SEALS_PER_PASSPORT")).to.equal("2");
     expect(constValue("MAX_SCAN_TS_SKEW_S")).to.equal("600");
     expect(constValue("MAX_COUNTER")).to.equal(String(0xffffff));
+    // v2 public record (docs/public-record.md §2.2)
+    expect(constBytes("MSG2_PREFIX").toString("ascii")).to.equal(vectors.constants.MSG2_PREFIX);
+    expect(constValue("MSG2_LEN")).to.equal(String(vectors.constants.MSG2_LEN));
+    expect(constBytes("SCAN_HEAD_PREFIX").toString("ascii")).to.equal(vectors.constants.SCAN_HEAD_PREFIX);
+    expect(constBytes("COMMITMENT_PREFIX").toString("ascii")).to.equal(vectors.constants.COMMITMENT_PREFIX);
+    expect(constValue("FILL_NONE")).to.equal(String(vectors.constants.FILL_NONE));
+    expect(constValue("DEFAULT_CLAIM_DELAY_S")).to.equal("259200");
+    expect(constValue("DEFAULT_NOTAP_DELAY_S")).to.equal("604800");
+    expect(constValue("MIN_HOLD_DELAY_S")).to.equal("86400");
+    expect(constValue("MAX_HOLD_DELAY_S")).to.equal("2592000");
   });
 
   it("(g) grade rule in TS matches vectors.grades (18 rows) and vectors.scans", () => {

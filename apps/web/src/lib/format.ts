@@ -1,12 +1,18 @@
 import { EventType, Grade, GradeName, Indicator, Role, Tier } from "@flaconvault/proof";
 import type { PassportEvent } from "./api";
-import { CLUSTER } from "./config";
+import { CLUSTER, SOLANA_RPC, type ClusterName } from "./config";
 
 const dateFmt = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" });
 export const fmtDate = (ts: number) => dateFmt.format(new Date(ts * 1000));
 export const short = (s: string | null | undefined, n = 4) => (s ? `${s.slice(0, n)}…${s.slice(-n)}` : "–");
-export const txUrl = (sig: string) => `https://explorer.solana.com/tx/${sig}?cluster=${CLUSTER}`;
-export const addrUrl = (a: string) => `https://explorer.solana.com/address/${a}?cluster=${CLUSTER}`;
+/** Explorer query for a cluster: none on mainnet (the explorer's default), the RPC itself for a local validator. */
+export function explorerQuery(cluster: ClusterName, rpc: string = SOLANA_RPC): string {
+  if (cluster === "mainnet") return "";
+  if (cluster === "localnet") return `?cluster=custom&customUrl=${encodeURIComponent(rpc)}`;
+  return "?cluster=devnet";
+}
+export const txUrl = (sig: string, cluster: ClusterName = CLUSTER) => `https://explorer.solana.com/tx/${sig}${explorerQuery(cluster)}`;
+export const addrUrl = (a: string, cluster: ClusterName = CLUSTER) => `https://explorer.solana.com/address/${a}${explorerQuery(cluster)}`;
 
 /** Test passports (brand "Test", any case) stay reachable by URL but are kept out of public lists. */
 export const isTestPassport = (p: { brand?: string | null }) => (p.brand ?? "").trim().toLowerCase() === "test";
@@ -81,6 +87,10 @@ const indicatorWord = (code: unknown): string | null =>
 /** A row of the verifier's demo seed (payload.seed): its txSig is not a real transaction. */
 export const isSeedEvent = (e: Pick<PassportEvent, "payload">): boolean => e.payload?.seed === true;
 
+/** A scan of the public record (FVSCAN2): the verifier names its purpose, or its payload says it was relayed. */
+export const isRecordScan = (e: Pick<PassportEvent, "type" | "payload" | "purpose">): boolean =>
+  e.type === EventType.SCAN && (typeof e.purpose === "string" || e.payload?.anchor === "relay");
+
 /** Title and detail words of a timeline entry; demo seed rows say so. */
 export function eventLine(e: PassportEvent): { title: string; details: string[] } {
   const l = lineOf(e);
@@ -111,7 +121,9 @@ function lineOf(e: PassportEvent): { title: string; details: string[] } {
       if (!confirmed && tier != null && tier >= Tier.CERTIFIED) title = "Scan · certification claimed";
       if (p.purpose === "PRE_SHIP" || p.kind === "pre_ship") title = "Shipping scan";
       if (p.purpose === "RECEIPT" || p.kind === "receipt") title = "Receipt scan";
-      if (role != null && !e.actorLabel) details.push(!confirmed && role >= Role.VAULT ? `${roleLabel[role] ?? "Wallet"} (claimed)` : roleLabel[role] ?? "Wallet");
+      // a public-record (FVSCAN2) scan is labelled by its actor kind (Timeline, scanBy): the role it carries is only
+      // self-declared, so it is not listed; v1 scans keep their role label
+      if (role != null && !e.actorLabel && !isRecordScan(e)) details.push(!confirmed && role >= Role.VAULT ? `${roleLabel[role] ?? "Wallet"} (claimed)` : roleLabel[role] ?? "Wallet");
       if (typeof p.counter === "number") details.push(`Counter ${p.counter}`);
       if (tier != null && tier >= Tier.SELF) {
         const heat = indicatorWord(ind.heat), humidity = indicatorWord(ind.humidity);

@@ -3,21 +3,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { ArrowRight, Camera, Loader2, Nfc, RefreshCw, ShieldOff, Zap } from "lucide-react";
-import { Indicator, Tier, NONCE_TTL_S } from "@flaconvault/proof";
+import { ArrowRight, Camera, ChevronDown, Loader2, Nfc, RefreshCw, ShieldOff, Zap } from "lucide-react";
+import { Indicator, Role, Tier, NONCE_TTL_S } from "@flaconvault/proof";
 import { combineReadings, type CardReading, type FrameLike, type HeatFieldsConfig } from "@flaconvault/vision";
 import { VisionClient, frameFromSource } from "@/vision/client";
 import { api, parseTagUrl, sha256Hex, signedAttester, signedScanSummary, uploadMediaOnce, verifyBody, type Preview, type Session, type SimTag, type TagParams, type UploadedMedia, type VerifyResult } from "@/lib/verify-api";
-import { adoptDeadline, scanSession, scanUrlFor, secondsLeft, sessionClock, tapHandoff, type SessionClock } from "@/lib/handoff";
+import { adoptDeadline, scanSession, scanUrlFor, secondsLeft, sessionClock, tapHandoff, verifierHasPublicRecord, type SessionClock } from "@/lib/handoff";
 import { buildRecordScanTx, flaconProgram, programId } from "@/lib/flacon";
 import { creatingSignature, sendAsV0 } from "@/lib/send-tx";
 import { AnchorRefused, anchorScan, needsOwnScanConfirmation } from "@/lib/anchor-scan";
-import { cameraOn, escrowScanWarning, initialRole, iosSignHint, partnerWalletGate, roleChoices, timedStep, uncertifiedScanLink, type ScanStep } from "@/lib/scan-steps";
-import { friendly } from "@/lib/errors";
-import { PROGRAM_ID, WALLETCONNECT_PROJECT_ID } from "@/lib/config";
+import { ADVANCED_INTRO, ADVANCED_PLACE_NOTE, WALLET_PLACE_NOTE, cameraOn, escrowScanWarning, initialRole, iosSignHint, partnerWalletGate, recordStatusAfterPoll, roleChoices, scanPath, stepAfterSessionStart, stepAfterVerify, timedStep, uncertifiedScanLink, type ScanStep } from "@/lib/scan-steps";
+import { ApiError, friendly } from "@/lib/errors";
+import { ADVANCED, NOT_SAVED, ORDER_SCAN_NOTE, PLACE_NOTE, SAVE_BUTTON, SAVING, asRecord, isTerminalRecord, scanRecordPollDelay, startRecordPoll, type PublicRecord } from "@/lib/public-record";
+import { PROGRAM_ID, PUBLIC_VERIFY_URL, WALLETCONNECT_PROJECT_ID } from "@/lib/config";
 import { demoMode } from "@/lib/demo";
 import { effectiveVerdict, gradeLetter, gradeSentence, indicatorText, passportHref, roleLabel, short, txUrl, verdictText } from "@/lib/format";
 import { GradeMark, Lamp, Pill } from "./badges";
+import { RecordLine, TestPhaseNotice } from "./public-record";
 import { WalletButton } from "./wallet-button";
 import { isIOS, noInjectedWallet, resumeRef, resumeUrl, walletBrowseLinks } from "@/lib/wallet-links";
 import { WalletReadyState } from "@solana/wallet-adapter-base";
@@ -32,10 +34,11 @@ const nonceCode = (nonce: string) => nonce.replace(/^0x/, "").slice(0, 6).toUppe
 /** steps before the server signature, where a missing partner wallet still matters */
 const PRE_SIGNATURE: Step[] = ["session", "tap", "preview", "camera", "read"];
 
-function StepHeader({ n, title, hint }: { n: number; title: string; hint?: string }) {
+/** `of`: 7 steps with the wallet (anchor transaction), 6 when the scan is saved to the public record. */
+function StepHeader({ n, of = 7, title, hint }: { n: number; of?: number; title: string; hint?: string }) {
   return (
     <div>
-      <p className="eyebrow">Step {n} of 7</p>
+      <p className="eyebrow">Step {n} of {of}</p>
       <h1 className="mt-2 font-serif text-3xl sm:text-4xl">{title}</h1>
       {hint && <p className="mt-2 max-w-lg text-sm text-muted">{hint}</p>}
     </div>
@@ -69,6 +72,9 @@ export function ScanFlow() {
   const [country, setCountry] = useState("");
   const [verify, setVerify] = useState<VerifyResult | null>(null);
   const [txSig, setTxSig] = useState<string | null>(null);
+  /** relay path: the public record of the signed scan (polled on the record step), and why its status is gone */
+  const [record, setRecord] = useState<PublicRecord | null>(null);
+  const [recordGone, setRecordGone] = useState<string | null>(null);
   /** the signed scan came from a resume link (?resume=), and whether the user confirmed it is their own scan */
   const [resumedScan, setResumedScan] = useState(false);
   const [ownScan, setOwnScan] = useState(false);
@@ -107,6 +113,24 @@ export function ScanFlow() {
   const injectedWallet = !noInjectedWallet(wallet.wallets.map((w) => ({ name: w.adapter.name, installed: w.readyState === WalletReadyState.Installed })));
   /** certified flow: the partner wallet must be connected before the server signs (lib/scan-steps.ts) */
   const walletGate = partnerWalletGate(tier, role, { connected: wallet.connected && !!wallet.publicKey, ios, injectedWallet, walletConnect: !!WALLETCONNECT_PROJECT_ID });
+  /**
+   * Does the verifier have the public record (its /health reports `relay`)? Asked once per page load; null until it
+   * answers, false when it has none or does not answer in time (lib/handoff.ts verifierHasPublicRecord).
+   */
+  const [publicRecord, setPublicRecord] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    verifierHasPublicRecord(PUBLIC_VERIFY_URL).then((yes) => { if (alive) setPublicRecord(yes); });
+    return () => { alive = false; };
+  }, []);
+  /**
+   * The consumer path: no wallet, "Save to the public record" (tier ≤ 2, owner/seller/buyer), only from a verifier
+   * with the public record. The wallet flow stays under "Advanced"; certified scans and an order's shipping or receipt
+   * scan (the order page links with `flow=wallet`) keep it directly, and so does every scan when the verifier has no
+   * public record. `walletFlow`: this scan goes (or went) the wallet's way (lib/scan-steps.ts).
+   */
+  const { relay, walletFlow } = scanPath({ certified, flow: params.get("flow"), tier, role, step, txSig, publicRecord });
+  const totalSteps = walletFlow ? 7 : 6;
 
   /**
    * Takes a fresh session from the server: local deadline + clock offset. `share` publishes it to /t in other tabs
@@ -122,16 +146,31 @@ export function ScanFlow() {
   }, [scanUrl]);
 
   // ---- 1. session -------------------------------------------------------
+  /**
+   * "Start session", "Restart", "New scan": the scan on screen stays until the new session is there (its step renders
+   * nothing without its data), then the page starts from scratch at the tap step. A session that cannot be started
+   * leaves the session step with its "Start session" button and the error, never a step emptied by the reset.
+   */
   const startSession = useCallback(async () => {
-    setError(null); setTag(null); setPreview(null); setFrames(null); setReading(null); setVerify(null); setTxSig(null);
-    // a resumed scan (?resume=) may have set tier and role: a new scan starts from the page's own defaults again
-    setTierOverride(null); setRole(defaultRole); setNfcState(""); setDeadSerial("");
-    setResumedScan(false); setOwnScan(false);
+    setError(null);
+    const reset = () => {
+      setTag(null); setPreview(null); setFrames(null); setReading(null); setVerify(null); setTxSig(null);
+      setRecord(null); setRecordGone(null);
+      // a resumed scan (?resume=) may have set tier and role: a new scan starts from the page's own defaults again
+      setTierOverride(null); setRole(defaultRole); setNfcState(""); setDeadSerial("");
+      setResumedScan(false); setOwnScan(false);
+    };
     try {
       const s = await api.session();
+      reset();
       adoptSession(s);
-      setStep("tap");
-    } catch (e) { setError(friendly(e)); }
+      setStep(stepAfterSessionStart(true));
+    } catch (e) {
+      // the old session is given up as well: no countdown or "Session expired" card over the session step
+      reset(); setSession(null); setClock(null);
+      setStep(stepAfterSessionStart(false));
+      setError(friendly(e));
+    }
   }, [defaultRole, adoptSession]);
   useEffect(() => {
     vision.current = new VisionClient();
@@ -226,11 +265,11 @@ export function ScanFlow() {
       } catch (e) { setError(`Tap could not be handed over: ${friendly(e)}`); }
     })();
   }, [params, adoptSession]);
-  // adopt / k / resume are one-shot: drop them from the address bar once read (keeps tier, role, site)
+  // adopt / k / resume are one-shot: drop them from the address bar once read (keeps tier, role, site, flow)
   useEffect(() => {
     if (!params.has("adopt") && !params.has("k") && !params.has("resume")) return;
     const keep = new URLSearchParams();
-    for (const key of ["tier", "role", "site"]) { const v = params.get(key); if (v != null) keep.set(key, v); }
+    for (const key of ["tier", "role", "site", "flow"]) { const v = params.get(key); if (v != null) keep.set(key, v); }
     const q = keep.toString();
     router.replace(q ? `${pathname}?${q}` : pathname, { scroll: false });
   }, [params, pathname, router]);
@@ -367,11 +406,17 @@ export function ScanFlow() {
   const skipCamera = () => { setFrames(null); setReading(null); setStep("read"); };
 
   // ---- 6–7. bundle + signature -----------------------------------------
-  const requestSignature = async () => {
+  /**
+   * "relay": the verifier signs the scan for the public record and its relayer sends it (no wallet, no attester).
+   * "wallet": today's signed scan, anchored by the connected wallet at the tx step.
+   */
+  const requestSignature = async (anchor: "relay" | "wallet") => {
     if (!tag || !session) return;
+    // the relay button exists only while `relay` holds (a verifier with the public record): never ask without it
+    if (anchor === "relay" && !relay) return;
     // a certified scan is signed for the connected wallet: without the partner wallet it would be refused (not_partner)
-    if (walletGate) { setError(walletGate.text); return; }
-    setBusy("verify"); setError(null);
+    if (anchor === "wallet" && walletGate) { setError(walletGate.text); return; }
+    setBusy(anchor === "relay" ? "relay" : "verify"); setError(null);
     try {
       let mediaHash: string | undefined;
       if (frames) {
@@ -384,9 +429,14 @@ export function ScanFlow() {
       const v = await api.verify(verifyBody({
         tag, nonce: session.nonce, role, tier, reading: reading && reading.found ? reading : null, fill, mediaHash,
         serial: preview?.serial, country, city, attester: wallet.publicKey?.toBase58() ?? null, platform: platform(),
+        anchor: anchor === "relay" ? "relay" : undefined,
       }));
-      setVerify(v);
-      setStep(v.verdict === "VALID" ? "tx" : "verify");
+      const next = stepAfterVerify(anchor, v);
+      setVerify(v); setRecord(next === "record" ? asRecord(v.record) : null); setRecordGone(null);
+      // a VALID relay answer always goes to the record step (record null = nothing queued, e.g. a void passport: kept
+      // off chain); only a verifier without the public record (no `anchor` in the answer) signed a v1 scan for the
+      // tx step, which only a wallet can anchor, so it is not lost
+      setStep(next);
     } catch (e) {
       const text = friendly(e);
       setError(text);
@@ -396,6 +446,24 @@ export function ScanFlow() {
     }
     finally { setBusy(null); }
   };
+
+  // ---- record step: the public record (relay) ---------------------------
+  // 2 s for 2 minutes, then 10 s up to 10 minutes, until the record is terminal (spec §10.3); a 404
+  // (record_not_found) ends it with its message. Started once per signed scan. Polling that ends without a terminal
+  // record clears the pending line: only its text stays (lib/scan-steps.ts recordStatusAfterPoll).
+  useEffect(() => {
+    if (step !== "record" || !verify?.eventId || !verify.resumeToken) return;
+    const first = asRecord(verify.record);
+    if (!first || isTerminalRecord(first)) return;
+    const eventId = verify.eventId, token = verify.resumeToken;
+    return startRecordPoll({
+      load: async () => asRecord((await api.record(eventId, token)).record),
+      delay: scanRecordPollDelay,
+      onRecord: setRecord,
+      stopOn: (e) => e instanceof ApiError && e.status === 404,
+      onEnd: (end, e) => { setRecord(null); setRecordGone(recordStatusAfterPoll(end, e)); },
+    });
+  }, [step, verify]);
 
   // ---- anchor step: transaction -----------------------------------------
   const signed = signedAttester(verify);
@@ -465,7 +533,7 @@ export function ScanFlow() {
       : verdictText(preview.verdict, preview.counter)
     : null;
   const finalGrade = verify?.grade ?? null;
-  const stepNo = useMemo(() => ({ session: 1, tap: 2, preview: 3, camera: 4, read: 5, verify: 6, tx: 6, done: 7, dead: 3 })[step], [step]);
+  const stepNo = useMemo(() => ({ session: 1, tap: 2, preview: 3, camera: 4, read: 5, verify: 6, tx: 6, record: 6, done: totalSteps, dead: 3 })[step], [step, totalSteps]);
   const doneSerial = verify?.serial ?? deadSerial;
   const resumeLinks = verify?.eventId && verify.resumeToken
     ? walletBrowseLinks(resumeUrl({ eventId: verify.eventId, token: verify.resumeToken, tier: txTier, role: txRole, siteId }))
@@ -507,22 +575,25 @@ export function ScanFlow() {
 
       {step === "session" && (
         <div>
-          <StepHeader n={1} title="Witness a scan" hint="Tap, photo of the card, server signature, transaction. All in one 90-second session; the session code is overlaid on the photo." />
+          <StepHeader n={1} of={totalSteps} title="Witness a scan" hint={walletFlow
+            ? "Tap, photo of the card, server signature, transaction. All in one 90-second session; the session code is overlaid on the photo."
+            : "Tap the seal, photograph the card, save the check to the public record. All in one 90-second session; the session code is overlaid on the photo."} />
           {busy === "resume" ? (
             <p className="mt-6 flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Loading the signed scan …</p>
           ) : (
             <div className="mt-6 flex flex-wrap items-center gap-3">
               <button onClick={startSession} disabled={!!walletGate} className="btn">Start session <ArrowRight className="h-4 w-4" aria-hidden /></button>
-              {walletGate?.canConnect !== false && <WalletButton browseLinks={false} />}
+              {/* the consumer path connects no wallet: the wallet button sits under "Advanced" at the save step */}
+              {walletFlow && walletGate?.canConnect !== false && <WalletButton browseLinks={false} />}
             </div>
           )}
-          {!PROGRAM_ID && <p className="mt-4 text-xs text-muted">Note: no program ID set — the anchor step is disabled.</p>}
+          {walletFlow && !PROGRAM_ID && <p className="mt-4 text-xs text-muted">Note: no program ID set — the anchor step is disabled.</p>}
         </div>
       )}
 
       {step === "tap" && !expired && (
         <div>
-          <StepHeader n={2} title="Tap the seal" hint="The chip returns a URL with UID, counter and checksum. Only the server can verify the checksum." />
+          <StepHeader n={2} of={totalSteps} title="Tap the seal" hint="The chip returns a URL with UID, counter and checksum. Only the server can verify the checksum." />
           <div className="mt-6 grid gap-6 md:grid-cols-2">
             <div className="card p-4">
               <p className="flex items-center gap-2 text-sm font-medium"><Nfc className="h-4 w-4 text-amber" aria-hidden /> WebNFC (Android Chrome)</p>
@@ -554,7 +625,7 @@ export function ScanFlow() {
 
       {step === "preview" && preview && previewVerdict && !expired && (
         <div>
-          <StepHeader n={3} title="Seal checked" />
+          <StepHeader n={3} of={totalSteps} title="Seal checked" />
           <div className="mt-6 flex items-center gap-3">
             <Lamp tone={previewVerdict.tone} className="h-3.5 w-3.5" />
             <p className={`font-serif text-3xl ${previewVerdict.tone === "ok" ? "text-ok" : previewVerdict.tone === "bad" ? "text-bad" : "text-warn"}`}>{previewVerdict.title}</p>
@@ -571,7 +642,7 @@ export function ScanFlow() {
 
       {step === "camera" && !expired && (
         <div>
-          <StepHeader n={4} title="Photograph the card" hint="Place the card in its holder fully inside the frame. Five frames; the session code is overlaid. Keep faces and personal items out of the picture: the photos become part of the public scan record." />
+          <StepHeader n={4} of={totalSteps} title="Photograph the card" hint="Place the card in its holder fully inside the frame. Five frames; the session code is overlaid. Keep faces and personal items out of the picture: the photos become part of the public scan record." />
           <div className="relative mt-6 overflow-hidden rounded-2xl border border-line bg-line">
             <video ref={video} playsInline muted className="block w-full" onPlaying={() => setCamReady(true)} onLoadedData={(e) => { if (e.currentTarget.videoWidth > 0) setCamReady(true); }} />
             <div className="pointer-events-none absolute inset-0">
@@ -595,7 +666,7 @@ export function ScanFlow() {
 
       {step === "read" && !expired && (
         <div>
-          <StepHeader n={5} title="Indicators" hint={frames ? "Read from the frames: card outline → rectification → white balance → colour distance; each indicator needs 3 of 5 frames to agree." : "Without photo: indicators count as not read (MISSING), tier 1."} />
+          <StepHeader n={5} of={totalSteps} title="Indicators" hint={frames ? "Read from the frames: card outline → rectification → white balance → colour distance; each indicator needs 3 of 5 frames to agree." : "Without photo: indicators count as not read (MISSING), tier 1."} />
           {busy === "read" && <p className="mt-6 flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Reading the card …</p>}
           {reading && !reading.found && (
             <div className="card mt-6 p-4 text-sm"><p className="font-medium">Card not recognized</p><p className="mt-1 text-muted">{reading.reason}. Photograph again or continue without a reading (indicators MISSING).</p></div>
@@ -629,19 +700,42 @@ export function ScanFlow() {
                 <input value={country} onChange={(e) => setCountry(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 2))} placeholder="DE" className="w-14 rounded-full border border-line bg-surface px-2 py-0.5 text-sm" aria-label="Country (optional)" />
                 <input value={city} onChange={(e) => setCity(e.target.value.slice(0, 80))} placeholder="Place (rough, optional)" className="flex-1 rounded-full border border-line bg-surface px-3 py-0.5 text-sm" aria-label="Place (optional)" />
               </div>
-              <p className="mt-1 text-xs text-muted">Optional. Country and place are not in the Solana transaction, but they are part of the public scan record and its permanent archive. No GPS. <Link href="/privacy" className="link">Privacy</Link></p>
+              <p className="mt-1 text-xs text-muted">{relay ? PLACE_NOTE : WALLET_PLACE_NOTE} <Link href="/privacy" className="link">Privacy</Link></p>
             </div>
           </div>
           <div className="mt-6 flex flex-wrap gap-3">
-            <button onClick={requestSignature} disabled={busy !== null || !!walletGate} className="btn">{busy === "verify" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Get signature <ArrowRight className="h-4 w-4" aria-hidden /></button>
+            {relay ? (
+              <button onClick={() => requestSignature("relay")} disabled={busy !== null} className="btn">
+                {busy === "relay" ? <><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> {SAVING}</> : <>{SAVE_BUTTON} <ArrowRight className="h-4 w-4" aria-hidden /></>}
+              </button>
+            ) : (
+              <button onClick={() => requestSignature("wallet")} disabled={busy !== null || !!walletGate} className="btn">{busy === "verify" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Get signature <ArrowRight className="h-4 w-4" aria-hidden /></button>
+            )}
             {frames && <button onClick={() => setStep("camera")} disabled={busy !== null} className="btn-outline">Photograph again</button>}
           </div>
+          {relay && (role === Role.SELLER || role === Role.BUYER) && <p role="note" className="mt-3 max-w-lg text-sm text-muted">{ORDER_SCAN_NOTE}</p>}
+          {relay && (
+            // today's wallet flow, unchanged, for partners and wallet users (collapsed)
+            <details className="group mt-6 max-w-lg rounded-2xl border border-line p-4 text-sm">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-medium [&::-webkit-details-marker]:hidden">
+                {ADVANCED}
+                <ChevronDown className="h-4 w-4 shrink-0 text-muted transition group-open:rotate-180" aria-hidden />
+              </summary>
+              <p className="mt-2 text-muted">{ADVANCED_INTRO}</p>
+              <p className="mt-1 text-xs text-muted">{ADVANCED_PLACE_NOTE}</p>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <WalletButton browseLinks={false} />
+                <button onClick={() => requestSignature("wallet")} disabled={busy !== null} className="btn-outline">{busy === "verify" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Get signature <ArrowRight className="h-4 w-4" aria-hidden /></button>
+              </div>
+              {!PROGRAM_ID && <p className="mt-2 text-xs text-muted">Note: no program ID set — the anchor step is disabled.</p>}
+            </details>
+          )}
         </div>
       )}
 
       {step === "verify" && verify && (
         <div>
-          <StepHeader n={6} title={verdictText(verify.verdict, verify.counter).title} hint={verdictText(verify.verdict, verify.counter).hint} />
+          <StepHeader n={6} of={totalSteps} title={verdictText(verify.verdict, verify.counter).title} hint={verdictText(verify.verdict, verify.counter).hint} />
           <button onClick={startSession} className="btn-outline mt-6">Restart</button>
         </div>
       )}
@@ -706,9 +800,28 @@ export function ScanFlow() {
         </div>
       )}
 
+      {step === "record" && verify && (
+        <div>
+          <StepHeader n={6} of={6} title={verdictText(verify.verdict, verify.counter).title} hint={verdictText(verify.verdict, verify.counter).hint} />
+          {reading?.found && heatTxt && humTxt && (
+            <div className="mt-6 flex flex-wrap gap-2"><Pill tone={heatTxt.tone}>{heatTxt.label}: {heatTxt.detail}</Pill><Pill tone={humTxt.tone}>{humTxt.label}: {humTxt.detail}</Pill></div>
+          )}
+          <div className="card mt-6 p-4">
+            {record && <RecordLine record={record} serial={verify.serial} />}
+            {!record && !recordGone && <p className="text-sm text-muted">{NOT_SAVED}</p>}
+            {!record && recordGone && <p className="text-sm text-muted">{recordGone}</p>}
+          </div>
+          <TestPhaseNotice className="mt-4" />
+          <div className="mt-8 flex flex-wrap gap-3">
+            {verify.serial && <Link href={passportHref(verify.serial)} className="btn">View passport with history <ArrowRight className="h-4 w-4" aria-hidden /></Link>}
+            <button onClick={startSession} className="btn-outline">New scan</button>
+          </div>
+        </div>
+      )}
+
       {step === "done" && (
         <div>
-          <StepHeader n={7} title={txSig ? "Scan anchored" : "Seal not responding — report recorded"} />
+          <StepHeader n={totalSteps} of={totalSteps} title={txSig ? "Scan anchored" : "Seal not responding — report recorded"} />
           <div className="mt-6 flex items-center gap-5">
             {txSig ? <GradeMark grade={finalGrade} /> : <ShieldOff className="h-12 w-12 shrink-0 text-warn" aria-hidden />}
             <div className="text-sm text-muted">
@@ -735,9 +848,9 @@ export function ScanFlow() {
       {step === "dead" && (
         <div>
           {preview?.sealDead ? (
-            <StepHeader n={3} title="Seal recorded as not responding" hint="This seal is already marked as not responding on chain, so the passport is void. There is nothing more to report." />
+            <StepHeader n={3} of={totalSteps} title="Seal recorded as not responding" hint="This seal is already marked as not responding on chain, so the passport is void. There is nothing more to report." />
           ) : (
-            <StepHeader n={3} title="No seal found" hint="Seal separated, removed or out of range. Your report is recorded as unverified; a partner checks the seal and confirms it on chain." />
+            <StepHeader n={3} of={totalSteps} title="No seal found" hint="Seal separated, removed or out of range. Your report is recorded as unverified; a partner checks the seal and confirms it on chain." />
           )}
           <div className="mt-6 flex items-center gap-3 text-bad"><ShieldOff className="h-5 w-5" aria-hidden /><span className="font-serif text-2xl">Seal not responding</span></div>
           {preview?.serial && <p className="mt-2 text-sm text-muted">Passport <Link href={passportHref(preview.serial)} className="link mono text-ink">{preview.serial}</Link></p>}
@@ -750,7 +863,7 @@ export function ScanFlow() {
           </div>
         </div>
       )}
-      <p className="mt-10 text-xs text-muted">Step {stepNo} · Tier {step === "tx" || step === "done" ? txTier : tier} · Wallet {wallet.publicKey ? `${wallet.publicKey.toBase58().slice(0, 4)}…` : "not connected"}</p>
+      <p className="mt-10 text-xs text-muted">Step {stepNo} · Tier {step === "tx" || step === "done" ? txTier : tier}{walletFlow && <> · Wallet {wallet.publicKey ? `${wallet.publicKey.toBase58().slice(0, 4)}…` : "not connected"}</>}</p>
     </div>
   );
 }

@@ -49,6 +49,32 @@
     "DISPUTE": 8,
     "SEAL_DEAD": 9
   },
+  "purpose": {
+    "TAP": 0,
+    "CHECK": 1,
+    "LIST": 2,
+    "SHIP": 3,
+    "RECEIPT": 4,
+    "CLAIM": 5,
+    "BIRTH": 6
+  },
+  "actor_kind": {
+    "NONE": 0,
+    "HOLDER": 1,
+    "WALLET": 2,
+    "PARTNER": 3,
+    "RECIPIENT": 4
+  },
+  "cluster": {
+    "MAINNET": 1,
+    "DEVNET": 2,
+    "LOCALNET": 3
+  },
+  "holding_state": {
+    "ACCOUNT": 0,
+    "CLAIM_PENDING": 1,
+    "WALLET": 2
+  },
   "verdict": [
     "VALID",
     "INVALID",

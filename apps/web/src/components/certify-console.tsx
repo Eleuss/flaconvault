@@ -6,8 +6,8 @@ import { PublicKey, SystemProgram, type Transaction } from "@solana/web3.js";
 import { creatingSignature, describeTxError, sendAsV0 } from "@/lib/send-tx";
 import { TxFailedError, friendly } from "@/lib/errors";
 import { ArrowRight, Loader2, Printer, ShieldCheck } from "lucide-react";
-import { bindingHash, bytesToHex, serialHash, uidHash } from "@flaconvault/proof";
-import { MAX_SEALS_PER_PASSPORT, fetchCoreAsset, fetchPassportChain, flaconProgram, passportPda, registryPda, sealPda } from "@/lib/flacon";
+import { PDA_SEEDS, bindingHash, bytesToHex, serialHash, uidHash } from "@flaconvault/proof";
+import { MAX_SEALS_PER_PASSPORT, fetchCoreAsset, fetchPassportChain, flaconProgram, passportPda, programId, registryPda, sealPda } from "@/lib/flacon";
 import { coreAssetUri, isValidSerial, normalizeSerial, passportPath } from "@/lib/escrow-rules";
 import { api, type SimTag } from "@/lib/verify-api";
 import { DEV_SIMULATOR, PROGRAM_ID, PUBLIC_VERIFY_URL, SOLANA_RPC } from "@/lib/config";
@@ -21,6 +21,12 @@ import { WalletButton } from "./wallet-button";
 interface Site { siteId: number; label: string }
 interface Registry { authority: string; partners: string[]; sites: Site[] }
 const labelOf = (bytes: number[]) => new TextDecoder().decode(new Uint8Array(bytes)).replace(/\0+$/, "");
+const seed = (s: string) => new TextEncoder().encode(s);
+/** `["holding", passport]` and `["holder_config"]` of the flacon program (docs/public-record.md §6). */
+const holdingPdaOf = (passport: PublicKey) => PublicKey.findProgramAddressSync([seed(PDA_SEEDS.holding), passport.toBytes()], programId())[0];
+const holderConfigPda = () => PublicKey.findProgramAddressSync([seed(PDA_SEEDS.holder_config)], programId())[0];
+/** An account the flacon program owns (an address someone merely funded with SOL does not count). */
+const programOwns = (info: { owner: PublicKey; data: Uint8Array } | null) => !!info && info.owner.equals(programId()) && info.data.length > 0;
 /** Where an error is shown: next to the section whose action failed, or at the top. Each error appears once. */
 type ErrAt = "top" | "uid" | "core" | "mint" | "seal" | "scan";
 type NdefReaderLike = { scan: (o?: { signal?: AbortSignal }) => Promise<void>; onreading: ((ev: { serialNumber?: string }) => void) | null; onreadingerror: (() => void) | null };
@@ -128,12 +134,25 @@ export function CertifyConsole() {
       const pda = passportPda(sh);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const existing = (await (program.account as any).passport.fetchNullable(pda)) as { issuer: PublicKey; asset: PublicKey; bindingHash: number[] } | null;
+      // The passport's Holding (init_holding_v1, the wallet signs and pays) lets its taps reach the public record. It goes
+      // with the mint once this cluster has the public record (its HolderConfig exists): a program from before the
+      // rollout does not know the instruction and would fail the mint; scripts/init-holdings.ts covers those passports.
+      const holding = holdingPdaOf(pda), me = wallet.publicKey;
+      const [holdingInfo, configInfo] = await connection.getMultipleAccountsInfo([holding, holderConfigPda()]);
+      const publicRecord = programOwns(configInfo);
+      const initHolding = () => program.methods.initHoldingV1()
+        .accountsStrict({ registry: registryPda(), passport: pda, holding, authority: me, payer: me, systemProgram: SystemProgram.programId });
       let sig: string, usedAsset: string, bh: Uint8Array, recovered = false;
       if (existing) {
         // The passport is already on chain (e.g. the wallet app sent it but the answer never reached this page):
         // asset and binding hash come from the chain, no Core asset in this page's state is needed.
         if (existing.issuer.toBase58() !== wallet.publicKey.toBase58()) throw new Error(`Passport ${serial} already exists and belongs to another wallet (${existing.issuer.toBase58().slice(0, 8)}…)`);
         usedAsset = existing.asset.toBase58(); bh = Uint8Array.from(existing.bindingHash);
+        // no Holding yet (minted without it): init_holding_v1 alone; nothing when it exists or for a v2 passport
+        if (publicRecord && !existing.asset.equals(holding) && !programOwns(holdingInfo)) {
+          const holdingSig = await sendViaWallet(await initHolding().transaction());
+          note(`init_holding_v1 ${serial} · ${holdingSig.slice(0, 12)}…`);
+        }
         const found = await creatingSignature(connection, pda, { instruction: "mint_passport", signer: wallet.publicKey });
         if (!found) throw new Error(`Passport ${serial} is on chain, but its mint transaction was not found. Try again in a moment.`);
         sig = found; recovered = true; setAsset({ pubkey: usedAsset, serial });
@@ -146,13 +165,15 @@ export function CertifyConsole() {
         // mint_passport refuses an asset the issuer does not own (AssetNotOwnedByIssuer)
         if (!core.owner.equals(wallet.publicKey)) throw new Error(`The Core asset belongs to another wallet (${core.owner.toBase58().slice(0, 8)}…). Connect that wallet, or mint a new Core asset with this one.`);
         usedAsset = asset.pubkey; bh = bindingHash(serial, form.batch, uidHash(form.uid));
+        // one transaction: mint_passport, then init_holding_v1 for the new passport (when the public record is on)
         const tx = await program.methods.mintPassport(Array.from(sh), Array.from(bh), new PublicKey(usedAsset))
-          .accountsStrict({ registry: registryPda(), passport: pda, issuer: wallet.publicKey, systemProgram: SystemProgram.programId, coreAsset: new PublicKey(usedAsset) }).transaction();
+          .accountsStrict({ registry: registryPda(), passport: pda, issuer: wallet.publicKey, systemProgram: SystemProgram.programId, coreAsset: new PublicKey(usedAsset) })
+          .postInstructions(publicRecord ? [await initHolding().instruction()] : []).transaction();
         sig = await sendViaWallet(tx);
       }
       setTxs((t) => ({ ...t, mint: sig }));
       await api.events({ serial, type: 0, txSig: sig, actor: wallet.publicKey.toBase58(), payload: { brand: form.brand, name: form.name, batch: form.batch, asset: usedAsset, issuerLabel: site?.label ?? null, siteId: form.siteId, bindingHash: bytesToHex(bh, true) } });
-      note(recovered ? `Passport ${serial} was already on chain · log backfilled (${sig.slice(0, 12)}…)` : `mint_passport ${serial} · ${sig.slice(0, 12)}…`);
+      note(recovered ? `Passport ${serial} was already on chain · log backfilled (${sig.slice(0, 12)}…)` : `mint_passport${publicRecord ? " + init_holding_v1" : ""} ${serial} · ${sig.slice(0, 12)}…`);
     } catch (e) { setError(friendly(e), "mint"); }
     finally { setBusy(null); }
   };

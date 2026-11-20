@@ -29,6 +29,7 @@ import {
   ensureRegistry,
   enums,
   expectAnchorError,
+  mintPassportV2WithSeal,
   mintPassportWithSeal,
   programDataOf,
   recordScan,
@@ -667,6 +668,17 @@ describe("escrow", () => {
       .rpc();
     await escrow.methods.closeOrder().accountsStrict({ order: o, seller: issuer.publicKey }).signers([issuer]).rpc();
     await expectAnchorError(listBuilder(p, PRICE, issuer).rpc(), "NotPassportOwner", idlErrors);
+  });
+
+  it("a pass held in a FlaconVault account (mint_passport_v2: asset = its Holding) cannot be listed, not even by its issuer", async () => {
+    const p = await mintPassportV2WithSeal(flacon, reg.registryPda);
+    expect((await flacon.account.passport.fetch(p.passportPda)).asset.equals(p.holdingPda)).to.be.true;
+    // the issuer (the wallet, a partner) would pass the "no Core asset" issuer rule without the guard
+    await expectAnchorError(listBuilder(p, PRICE, payer, p.holdingPda).rpc(), "PassHeldInAccount", idlErrors);
+    await expectAnchorError(listBuilder(p, PRICE, buyer, p.holdingPda).rpc(), "PassHeldInAccount", idlErrors);
+    expect(await connection.getAccountInfo(orderPdaOf(p.passportPda, wallet))).to.be.null;
+    // reserve refuses it too (check_seller_of); an order for such a pass cannot be created here, so that case runs in
+    // LiteSVM: programs/escrow/tests/held_in_account.rs
   });
 
   it("a seller who never held USDC is paid: the web app's release builder creates the seller's token account first (M15)", async () => {

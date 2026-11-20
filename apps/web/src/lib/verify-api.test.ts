@@ -35,6 +35,33 @@ test("an adopted tap sends tapId + token instead of chip parameters; empty locat
   assert.equal(verifyBody({ ...base, tag: { ...base.tag, source: "simulator" } }).platform, "SIMULATOR");
 });
 
+test("the relay body asks for the public record (anchor relay, purpose CHECK) and never names an attester", () => {
+  const b = verifyBody({ ...base, attester: "WalletA", anchor: "relay" });
+  assert.equal(b.anchor, "relay");
+  assert.equal(b.purpose, "CHECK");
+  assert.equal(b.attester, null);
+  assert.equal("ticket" in b, false);
+});
+
+test("the wallet body stays exactly as before (anchor absent, spec D1)", () => {
+  const keys = ["uid", "ctr", "cmac", "piccData", "enc", "tapId", "tapToken", "nonce", "role", "tier", "indicators", "heatLevels", "fill", "mediaHash", "serial", "location", "attester", "platform"];
+  for (const b of [verifyBody({ ...base, attester: "WalletA" }), verifyBody({ ...base, attester: "WalletA", anchor: "wallet" })]) {
+    assert.deepEqual(Object.keys(b), keys);
+    assert.equal(b.attester, "WalletA");
+  }
+  assert.equal(JSON.stringify(verifyBody({ ...base, anchor: "wallet" })), JSON.stringify(verifyBody(base)));
+});
+
+test("the record status is read with the event id and its resume token", async () => {
+  let url = "";
+  const record = { state: "recorded", purpose: "CHECK", eventId: 42, txSig: "Sig", cluster: "DEVNET" };
+  globalThis.fetch = (async (u: string) => { url = u; return new Response(JSON.stringify({ eventId: 42, record }), { status: 200 }); }) as typeof fetch;
+  assert.deepEqual(await api.record(42, "tok en"), { eventId: 42, record });
+  assert.match(url, /\/api\/verify\/42\/record\?token=tok%20en$/);
+  globalThis.fetch = (async () => new Response(JSON.stringify({ detail: "record_not_found" }), { status: 404 })) as typeof fetch;
+  await assert.rejects(api.record(42, "x"), (e: unknown) => e instanceof ApiError && e.code === "record_not_found" && e.status === 404);
+});
+
 test("the scan must be anchored by the wallet it was signed for", () => {
   const v = { bundle: { heatLevels: [], attester: { pubkey: "WalletA", tier: 4, role: 4 } } };
   assert.deepEqual(signedAttester(v), { pubkey: "WalletA", tier: 4, role: 4 });

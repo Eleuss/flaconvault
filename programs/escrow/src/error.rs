@@ -60,4 +60,6 @@ pub enum EscrowError {
     ScanBeforeOrderStep,
     #[msg("The order is shipped: a dead seal is settled by the escrow admin, not by the buyer")]
     DeadSealAfterShipping,
+    #[msg("The pass is held in a FlaconVault account (Passport.asset is its Holding): it cannot be sold through the escrow")]
+    PassHeldInAccount,
 }
